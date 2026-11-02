@@ -12,21 +12,27 @@ import { decodeRequest } from "../schemas.mjs";
 import { checkRequest } from "../server.mjs";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+function trackedClasses() {
+  const values = new Set();
+  return { add: (...names) => names.forEach(name => values.add(name)), remove: (...names) => names.forEach(name => values.delete(name)),
+    contains: name => values.has(name), toggle(name, force) { const on = force ?? !values.has(name); if (on) values.add(name); else values.delete(name); return on; } };
+}
 
 test("browser bootstrap supplies instance binding and request ID without prompts", async () => {
   const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const calls = [], nodes = new Map();
   function element(key) {
-    if (!nodes.has(key)) nodes.set(key, { content: "instance", classList: { add() {}, remove() {}, toggle() {} }, addEventListener() {},
-      removeAttribute() {}, querySelector: () => element("child"), style: {}, dataset: {}, value: "" });
+    if (!nodes.has(key)) nodes.set(key, { content: "instance", classList: trackedClasses(), addEventListener() {},
+      removeAttribute() {}, querySelector: () => element("child"), getContext: () => ({ drawImage() {}, clearRect() {} }), width: 400, height: 800, style: {}, dataset: {}, value: "" });
     return nodes.get(key);
   }
   vm.runInNewContext(script, {
-    console, AbortSignal, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask, performance,
+    console, AbortSignal, AbortController, TextDecoder, Blob, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask, performance,
     document: { body: element("body"), getElementById: element, querySelector: element, querySelectorAll: () => [], activeElement: null },
     window: { addEventListener() {} }, setTimeout: () => 1, clearTimeout() {},
     fetch: async (url, options) => {
+      if (url.startsWith("/stream")) return new Promise(() => {});
       calls.push([url, options]);
       return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: false } : { ok: true } };
     },
@@ -46,16 +52,17 @@ test("native loading tracks queued input, reconnects and the first fallback fram
   let dispatchedHomes = 0;
   function element(key) {
     if (!nodes.has(key)) nodes.set(key, { content: "instance", listeners: {},
-      classList: { add() {}, remove() {}, toggle() {} },
+      classList: trackedClasses(),
       addEventListener(name, fn) { this.listeners[name] = fn; }, removeAttribute() {},
-      querySelector: () => element("child"), style: {}, dataset: {}, value: "" });
+      querySelector: () => element("child"), getContext: () => ({ drawImage() {}, clearRect() {} }), width: 400, height: 800, style: {}, dataset: {}, value: "" });
     return nodes.get(key);
   }
-  const context = vm.createContext({ console, AbortSignal, URLSearchParams, location: { search: "?app=1&video=native", reload() {} },
+  const context = vm.createContext({ console, AbortSignal, AbortController, TextDecoder, Blob, URLSearchParams, location: { search: "?app=1&video=native", reload() {} },
     crypto, queueMicrotask, performance, setTimeout: () => 1, clearTimeout() {},
     document: { body: element("body"), getElementById: element, querySelector: element, querySelectorAll: () => [], activeElement: null },
     window: { addEventListener() {}, webkit: { messageHandlers: { native: { postMessage: message => messages.push(message) } } } },
     fetch: async url => {
+      if (url.startsWith("/stream")) return new Promise(() => {});
       if (url === "/api/status" && offline) throw new Error("offline");
       if (url === "/api/home") { dispatchedHomes++; await new Promise(resolve => releases.push(resolve)); }
       return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true, lifecycle: remoteLifecycle } : { ok: true } };
@@ -65,23 +72,39 @@ test("native loading tracks queued input, reconnects and the first fallback fram
   const settle = () => new Promise(resolve => setImmediate(resolve));
   const loading = () => messages.filter(m => "loading" in m).at(-1).loading;
   await settle(); assert.equal(loading(), true);
-  vm.runInContext("setNativeVideoReady(true)", context); assert.equal(loading(), false);
+  vm.runInContext("setNativeVideoReady(true, videoEpoch, bridgeId)", context); assert.equal(loading(), false);
+  assert.equal(element("body").classList.contains("unavailable"), false, "ready native input must not retain pointer-events:none");
   const first = vm.runInContext("api('home')", context);
   const second = vm.runInContext("api('home')", context);
   await settle(); assert.equal(loading(), true);
   assert.equal(messages.at(-1).waitingForVideo, false, "queued input must keep live video visible");
   releases.shift()(); await first; await settle(); assert.equal(loading(), true);
   releases.shift()(); await second; assert.equal(loading(), false);
+  const previousEpoch = vm.runInContext("videoEpoch", context);
+  const previousRevision = vm.runInContext("statusRevision", context);
+  vm.runInContext("reportLoading(); setNativeVideoReady(true, videoEpoch, bridgeId)", context);
+  assert.equal(vm.runInContext("statusRevision", context), previousRevision, "loading/readiness callbacks cannot fake a fresh status observation");
   offline = true; await vm.runInContext("poll()", context); assert.equal(loading(), true);
   assert.equal(element("overlay").hidden, false);
   assert.equal(messages.at(-1).waitingForVideo, true, "lost connection reveals the native blur");
+  assert.equal(messages.at(-1).lifecycle, "connecting", "failures must notify the native lifecycle immediately");
+  assert.equal(messages.at(-1).statusRevision, previousRevision + 1, "failed poll is a completed fresh observation");
+  assert.ok("deviceUdid" in messages.at(-1));
   offline = false; await vm.runInContext("poll()", context); assert.equal(loading(), true);
-  vm.runInContext("setNativeVideoReady(true)", context); assert.equal(loading(), false);
+  assert.equal(messages.at(-1).statusRevision, previousRevision + 2, "successful poll advances observation revision");
+  vm.runInContext(`setNativeVideoReady(true, ${previousEpoch}, bridgeId)`, context);
+  assert.equal(loading(), true, "stale native readiness cannot unfreeze a new epoch");
+  vm.runInContext("setNativeVideoReady(true, videoEpoch, 'obsolete-document')", context);
+  assert.equal(loading(), true, "stale document readiness cannot unfreeze a new page");
+  vm.runInContext("startStream(videoEpoch, 'obsolete-document')", context);
+  assert.equal(vm.runInContext("nativeVideo", context), true, "obsolete native fallback cannot switch a new page");
+  vm.runInContext("setNativeVideoReady(true, videoEpoch, bridgeId)", context); assert.equal(loading(), false);
+  assert.equal(element("body").classList.contains("unavailable"), false, "ready native input must not retain pointer-events:none");
   vm.runInContext("startStream()", context); assert.equal(loading(), true);
-  element("screen").listeners.load(); assert.equal(loading(), false);
-  element("screen").listeners.error(); assert.equal(loading(), true);
+  vm.runInContext("presentStreamFrame({width:400,height:800}, streamGeneration)", context); assert.equal(loading(), false);
+  vm.runInContext("stopStream(); reportLoading()", context); assert.equal(loading(), true);
   await vm.runInContext("poll()", context);
-  vm.runInContext("useNativeVideo(); setNativeVideoReady(true)", context);
+  vm.runInContext("useNativeVideo(); setNativeVideoReady(true, videoEpoch, bridgeId)", context);
   const running = vm.runInContext("api('home')", context);
   const queued = vm.runInContext("api('home')", context);
   await settle();
@@ -95,9 +118,10 @@ test("native loading tracks queued input, reconnects and the first fallback fram
   remoteLifecycle = "ready";
   await vm.runInContext("poll()", context);
   assert.equal(vm.runInContext("canInteract()", context), false, "unlock waits for a fresh native frame");
-  vm.runInContext("setNativeVideoReady(true)", context);
+  vm.runInContext("setNativeVideoReady(true, videoEpoch, bridgeId)", context);
   assert.equal(vm.runInContext("canInteract()", context), true);
-  vm.runInContext("typed = 'stale'; setNativeVideoReady(false)", context);
+  assert.equal(element("body").classList.contains("unavailable"), false);
+  vm.runInContext("typed = 'stale'; setNativeVideoReady(false, videoEpoch, bridgeId)", context);
   assert.equal(vm.runInContext("typed", context), "", "stalled video clears buffered typing");
   remoteLifecycle = "disconnected";
   await vm.runInContext("poll()", context);
@@ -105,9 +129,154 @@ test("native loading tracks queued input, reconnects and the first fallback fram
   remoteLifecycle = "ready";
   await vm.runInContext("poll()", context);
   assert.equal(vm.runInContext("canInteract()", context), false);
-  vm.runInContext("setNativeVideoReady(true)", context);
+  vm.runInContext("setNativeVideoReady(true, videoEpoch, bridgeId)", context);
   assert.equal(vm.runInContext("canInteract()", context), true);
+  assert.equal(element("body").classList.contains("unavailable"), false);
 
+});
+
+// Stateful browser harness: classes, canvas contents, time and network liveness
+// remain observable, so readiness tests cannot bypass CSS or native handshakes.
+function browserHarness({ fetchAction, decodeFrame } = {}) {
+  const nodes = new Map(), timers = new Map(), messages = [], draws = [], calls = [], streams = [];
+  let now = 100, serial = 0, remoteLifecycle = "ready", udid = "phone-a";
+  function element(key) {
+    if (!nodes.has(key)) nodes.set(key, { content: "instance", width: 400, height: 800,
+      classList: trackedClasses(), listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
+      querySelector: () => element("child"), removeAttribute() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 800 }),
+      setPointerCapture() {}, append() {}, remove() {}, style: {}, dataset: {}, value: "",
+      getContext: () => ({ drawImage: frame => draws.push(frame.id), clearRect: () => draws.push("clear") }) });
+    return nodes.get(key);
+  }
+  const context = vm.createContext({ console, AbortSignal, AbortController, TextDecoder, Blob, URLSearchParams, crypto, queueMicrotask,
+    location: { search: "?app=1&video=native", reload() {} }, performance: { now: () => now },
+    document: { body: element("body"), getElementById: element, querySelector: element, querySelectorAll: () => [],
+      createElement: () => element("ripple"), activeElement: null },
+    window: { addEventListener() {}, webkit: { messageHandlers: { native: { postMessage: message => messages.push(message) } } } },
+    setTimeout: (fn, ms) => { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
+    clearTimeout: id => timers.delete(id),
+    createImageBitmap: decodeFrame ?? (async blob => ({ width: 400, height: 800, id: new Uint8Array(await blob.arrayBuffer())[0], close() {} })),
+    fetch: async (url, options = {}) => {
+      calls.push([url, options]);
+      if (url === "/api/status") return { json: async () => ({ service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true,
+        lifecycle: remoteLifecycle, device: { udid }, captureIdentity: { singleUsbDevice: true } }) };
+      if (url.startsWith("/stream")) {
+        let waiting;
+        const stream = { push: bytes => { const pending = waiting; waiting = null; pending.resolve({ value: bytes, done: false }); },
+          reader: { read: () => new Promise((resolve, reject) => { waiting = { resolve, reject }; }), cancel: async () => {} } };
+        streams.push(stream);
+        options.signal.addEventListener("abort", () => waiting?.reject(new Error("aborted")), { once: true });
+        return { ok: true, headers: { get: () => "multipart/x-mixed-replace; boundary=--BoundaryString" }, body: { getReader: () => stream.reader } };
+      }
+      const response = fetchAction?.(url, options);
+      return response ?? { json: async () => ({ ok: true }) };
+    },
+  });
+  vm.runInContext(fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8").match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  const run = code => vm.runInContext(code, context);
+  const settle = async () => { for (let i=0; i<4; i++) await new Promise(resolve => setImmediate(resolve)); };
+  return { run, settle, element, messages, draws, calls, streams, lifecycle: value => { remoteLifecycle = value; },
+    device: value => { udid = value; },
+    async advance(ms) { now += ms; for (const [id,timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn(); await settle(); } };
+}
+function mjpegPart(bytes) {
+  return Buffer.concat([Buffer.from(`--BoundaryString\r\nContent-Type: image/jpeg\r\nContent-Length: ${bytes.length}\r\n\r\n`), Buffer.from(bytes), Buffer.from("\r\n")]);
+}
+
+test("MJPEG parsing handles split headers/frames and rejects unbounded or malformed parts", async () => {
+  const h = browserHarness(); await h.settle();
+  const parser = h.run("new MjpegFrames()");
+  const body = Buffer.concat([mjpegPart([1, 2, 3]), mjpegPart([4, 5])]);
+  const frames = [];
+  for (let i=0; i<body.length; i+=7) frames.push(...parser.push(body.subarray(i, i+7)));
+  assert.deepEqual(frames.map(frame => [...frame]), [[1, 2, 3], [4, 5]]);
+  assert.throws(() => h.run("new MjpegFrames()").push(Buffer.from("Content-Length: 99999999\r\n\r\n")), /size/);
+  assert.throws(() => h.run("new MjpegFrames()").push(Buffer.from("Content-Type: image/jpeg\r\n\r\n")), /size/);
+  assert.throws(() => h.run("new MjpegFrames()").push(Buffer.alloc(16385, 65)), /header/);
+});
+
+test("MJPEG freezes its last presented frame, rejects stale decodes and recovers from silent stalls", async () => {
+  const h = browserHarness(); await h.settle();
+  h.run("startStream()"); await h.settle();
+  assert.equal(h.streams.length, 1);
+  h.streams[0].push(mjpegPart([11])); await h.settle();
+  assert.equal(h.run("canInteract()"), true);
+  assert.equal(h.element("body").classList.contains("unavailable"), false);
+  const oldGeneration = h.run("streamGeneration");
+  const oldDraws = [...h.draws];
+  h.lifecycle("locked"); await h.run("poll()"); await h.settle();
+  assert.equal(h.run("canInteract()"), false);
+  assert.equal(h.element("body").classList.contains("unavailable"), true);
+  assert.deepEqual(h.draws, oldDraws, "locking freezes rather than clears/replaces the canvas");
+  assert.equal(h.run(`presentStreamFrame({width:400,height:800,id:99}, ${oldGeneration})`), false);
+  h.lifecycle("ready"); await h.run("poll()"); await h.settle();
+  assert.equal(h.run("canInteract()"), false, "unlock requires a new presented frame");
+  h.streams[1].push(mjpegPart([12])); await h.settle();
+  assert.equal(h.run("canInteract()"), true);
+  assert.equal(h.draws.at(-1), 12);
+  await h.advance(3001);
+  assert.equal(h.run("streamReady"), false, "open but silent stream becomes unavailable");
+  assert.equal(h.element("body").classList.contains("unavailable"), true);
+  assert.equal(h.draws.at(-1), 12, "stall retains the last frame beneath blur");
+  await h.advance(501); await h.run("poll()"); await h.settle();
+  assert.equal(h.streams.length, 3, "healthy control plane retries the video channel independently");
+  h.streams[2].push(mjpegPart([13])); await h.settle();
+  assert.equal(h.run("canInteract()"), true);
+  h.run("useNativeVideo()"); await h.settle();
+  assert.equal(h.element("body").classList.contains("preserve-stream-frame"), true, "native retry keeps the blurred canvas visible until first native frame");
+  assert.equal(h.element("body").classList.contains("unavailable"), true);
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  assert.equal(h.element("body").classList.contains("preserve-stream-frame"), false);
+});
+
+test("native unlock restores CSS hit testing and real pointer handlers; device changes reject old readiness", async () => {
+  const h = browserHarness(); await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  h.lifecycle("locked"); await h.run("poll()");
+  h.lifecycle("ready"); await h.run("poll()");
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  assert.equal(h.element("body").classList.contains("unavailable"), false);
+  assert.equal(h.element("body").classList.contains("loading"), false);
+  const e = { button: 0, pointerId: 1, clientX: 200, clientY: 400, preventDefault() {} };
+  h.element("screen").listeners.pointerdown(e);
+  await h.advance(40);
+  h.element("screen").listeners.pointerup(e); await h.settle();
+  assert.equal(h.calls.filter(([url]) => url === "/api/gesture").length, 1);
+  h.element("screen").listeners.pointerdown(e);
+  await h.advance(50);
+  h.element("screen").listeners.pointermove({ ...e, clientX: 100 });
+  await h.advance(50);
+  h.element("screen").listeners.pointerup({ ...e, clientX: 40 }); await h.settle();
+  const drag = JSON.parse(h.calls.filter(([url]) => url === "/api/gesture").at(-1)[1].body);
+  assert.ok(drag.points.length >= 3, "drag continues to deliver points after lock/unlock");
+  assert.equal(drag.points.at(-1)[0], 0.1);
+  const epoch = h.run("videoEpoch");
+  h.device("phone-b"); await h.run("poll()");
+  assert.equal(h.run("canInteract()"), false);
+  assert.ok(h.run("videoEpoch") > epoch);
+  h.run(`setNativeVideoReady(true, ${epoch}, bridgeId)`);
+  assert.equal(h.run("canInteract()"), false);
+  h.run("setLifecycle('connecting', '', 'new-server')");
+  assert.equal(h.run("deviceUdid"), "", "new-server observation without a target cannot retain the old device");
+  assert.equal(h.element("body").classList.contains("preserve-stream-frame"), false);
+});
+
+test("hung action and receipt requests expire without retrying input or blocking the queue forever", async () => {
+  let homes = 0;
+  const h = browserHarness({ fetchAction: (url, options) => {
+    if (url === "/api/home" && ++homes === 1 || url.startsWith("/api/commands/")) return new Promise(() => {});
+  } });
+  await h.settle(); h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const first = h.run("api('home')"); const second = h.run("api('home')");
+  await h.settle(); assert.equal(homes, 1);
+  await h.advance(18000);
+  assert.equal(h.calls.find(([url]) => url === "/api/home")[1].signal.aborted, true);
+  await h.advance(3000);
+  await first; await second;
+  assert.equal(homes, 2, "next distinct action can run after bounded receipt recovery");
+  const ids = h.calls.filter(([url]) => url === "/api/home").map(([, opts]) => JSON.parse(opts.body).requestId);
+  assert.notEqual(ids[0], ids[1], "no ambiguous action is replayed");
+  assert.equal(h.run("pendingActions"), 0);
 });
 
 test("Effect schemas reject malformed actions before device dispatch", async () => {
@@ -127,18 +296,19 @@ test("continuous wheel input dispatches promptly, coalesces under load and prese
   const calls = [], nodes = new Map(), timers = new Map(), releases = [];
   let now = 0, serial = 0;
   function element(key) {
-    if (!nodes.has(key)) nodes.set(key, { content: "instance", listeners: {}, classList: { add() {}, remove() {}, toggle() {} },
+    if (!nodes.has(key)) nodes.set(key, { content: "instance", listeners: {}, classList: trackedClasses(),
       addEventListener(name, fn) { this.listeners[name] = fn; }, removeAttribute() {}, querySelector: () => element("child"),
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 800 }), setPointerCapture() {},
-      append() {}, remove() {}, style: {}, dataset: {}, value: "" });
+      append() {}, remove() {}, getContext: () => ({ drawImage() {}, clearRect() {} }), width: 400, height: 800, style: {}, dataset: {}, value: "" });
     return nodes.get(key);
   }
-  const context = vm.createContext({ console, AbortSignal, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask,
+  const context = vm.createContext({ console, AbortSignal, AbortController, TextDecoder, Blob, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask,
     performance: { now: () => now }, document: { body: element("body"), getElementById: element, querySelector: element,
       createElement: () => element("ripple"), querySelectorAll: () => [], activeElement: null }, window: { addEventListener() {} },
     setTimeout: (fn, ms) => { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
     clearTimeout: id => timers.delete(id),
     fetch: async (url, options) => {
+      if (url.startsWith("/stream")) return new Promise(() => {});
       calls.push([url, options]);
       if (url === "/api/gesture") await new Promise(resolve => releases.push(resolve));
       return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true, lifecycle: "ready" } : { ok: true } };
@@ -153,7 +323,7 @@ test("continuous wheel input dispatches promptly, coalesces under load and prese
   }
   await settle();
   const screen = vm.runInContext("screen", context);
-  screen.listeners.load();
+  vm.runInContext("presentStreamFrame({width:400,height:800}, streamGeneration)", context);
   const wheel = () => screen.listeners.wheel({ clientX: 200, clientY: 400, deltaX: 0, deltaY: 40, preventDefault() {} });
   const gestures = () => calls.filter(([url]) => url === "/api/gesture").map(([, opts]) => JSON.parse(opts.body));
   wheel(); await advance(8); wheel(); await advance(8);

@@ -6,19 +6,69 @@ import CoreMediaIO
 import Cocoa
 import CoreImage
 
+// BEGIN TESTABLE CAPTURE EXECUTOR
+// Cancellation is visible immediately, even while AVFoundation is blocked in
+// startRunning(). Every session shares this queue: replacement capture must not
+// configure the same USB device until the preceding session has stopped.
+final class CaptureLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock(); cancelled = true; lock.unlock()
+    }
+}
+
+enum CaptureSessionExecutor {
+    private static let queue = DispatchQueue(label: "iphone-portal.capture-sessions", qos: .userInitiated)
+
+    static func start(_ lifetime: CaptureLifetime, operation: @escaping @Sendable () -> Bool,
+                      completion: @escaping @Sendable (Bool) -> Void) {
+        queue.async {
+            guard !lifetime.isCancelled else { return }
+            let started = operation()
+            guard !lifetime.isCancelled else { return }
+            completion(started)
+        }
+    }
+
+    static func stop(_ lifetime: CaptureLifetime, teardown: @escaping @Sendable () -> Void) {
+        lifetime.cancel()
+        queue.async(execute: teardown)
+    }
+}
+// END TESTABLE CAPTURE EXECUTOR
+
 // Retain one pixel buffer, not a history of frames. The capture queue never
 // performs image conversion; snapshots are made only on lifecycle transitions.
 private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let lock = NSLock()
+    private let lifetime: CaptureLifetime
     private var pixel: CVPixelBuffer?
     private var timestamp: TimeInterval = 0
+
+    init(lifetime: CaptureLifetime) { self.lifetime = lifetime }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
+        guard !lifetime.isCancelled, CMSampleBufferIsValid(sample), CMSampleBufferDataIsReady(sample),
+              let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
         lock.lock()
-        self.pixel = pixel
-        timestamp = ProcessInfo.processInfo.systemUptime
+        if !lifetime.isCancelled {
+            self.pixel = pixel
+            timestamp = ProcessInfo.processInfo.systemUptime
+        }
         lock.unlock()
     }
+
+    func clear() {
+        lock.lock(); pixel = nil; timestamp = 0; lock.unlock()
+    }
+
     var lastFrameAt: TimeInterval {
         lock.lock(); defer { lock.unlock() }
         return timestamp
@@ -38,25 +88,34 @@ final class PhoneCapture {
     let layer: AVCaptureVideoPreviewLayer
     let audio = AVCaptureAudioPreviewOutput()
     var onSize: ((CGSize) -> Void)?
-    private var observer: NSObjectProtocol?
-    private let frames = FrameStore()
+    var onFailure: (() -> Void)?
+    private var observers: [NSObjectProtocol] = []
+    private let lifetime = CaptureLifetime()
+    private let frames: FrameStore
     private let video = AVCaptureVideoDataOutput()
-    private let sessionQueue = DispatchQueue(label: "iphone-portal.capture-session", qos: .userInitiated)
     private let frameQueue = DispatchQueue(label: "iphone-portal.capture-frames", qos: .userInitiated)
+    private var completion: (@MainActor (Bool) -> Void)?
+    private var started = false
     private var stopped = false
+    private var failureReported = false
+    private(set) var startupTimeoutAt: TimeInterval? = nil
     var lastFrameAt: TimeInterval { frames.lastFrameAt }
     func snapshot() -> NSImage? { frames.snapshot() }
     private var deviceUDID = ""
     private var allowSingleDeviceFallback = false
 
-    init() {
+    init(audioVolume: Float = 1) {
+        frames = FrameStore(lifetime: lifetime)
         layer = AVCaptureVideoPreviewLayer(session: session)
         layer.videoGravity = .resize // the window already has the screen's aspect ratio
-        audio.volume = 1
+        audio.volume = min(1, max(0, audioVolume))
     }
 
     /// Calls done(true) once video is running, or done(false) if access is denied or no iPhone shows up.
     func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, _ done: @escaping @MainActor (Bool) -> Void) {
+        guard !started, !stopped else { return done(false) }
+        started = true
+        completion = done
         deviceUDID = udid
         allowSingleDeviceFallback = singleUsbDevice
         var prop = CMIOObjectPropertyAddress(
@@ -71,8 +130,9 @@ final class PhoneCapture {
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         guard !self.stopped else { return }
-                        guard video else { return done(false) }
-                        self.waitForDevice(until: Date().addingTimeInterval(timeout), withAudio: audio, done)
+                        self.startupTimeoutAt = ProcessInfo.processInfo.systemUptime + 10
+                        guard video else { return self.finish(false) }
+                        self.waitForDevice(until: ProcessInfo.processInfo.systemUptime + timeout, withAudio: audio)
                     }
                 }
             }
@@ -80,11 +140,37 @@ final class PhoneCapture {
     }
 
     func stop() {
+        guard !stopped else { return }
         stopped = true
-        if let observer { NotificationCenter.default.removeObserver(observer) }
-        observer = nil
+        completion = nil
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
         let session = self.session
-        sessionQueue.async { session.stopRunning() }
+        let video = self.video
+        let frames = self.frames
+        CaptureSessionExecutor.stop(lifetime) {
+            video.setSampleBufferDelegate(nil, queue: nil)
+            session.stopRunning()
+            session.beginConfiguration()
+            session.inputs.forEach(session.removeInput)
+            session.outputs.forEach(session.removeOutput)
+            session.commitConfiguration()
+            frames.clear()
+        }
+    }
+
+    private func finish(_ ok: Bool) {
+        guard !stopped else { return }
+        let callback = completion
+        completion = nil
+        callback?(ok)
+    }
+
+    private func failed() {
+        guard !stopped, !failureReported else { return }
+        failureReported = true
+        if completion != nil { finish(false) }
+        else { onFailure?() }
     }
 
     private func findDevice() -> AVCaptureDevice? {
@@ -101,41 +187,58 @@ final class PhoneCapture {
     }
 
     // The device appears a second or two after screen capture devices are allowed.
-    private func waitForDevice(until deadline: Date, withAudio: Bool, _ done: @escaping @MainActor (Bool) -> Void) {
+    private func waitForDevice(until deadline: TimeInterval, withAudio: Bool) {
         guard !stopped else { return }
-        if let device = findDevice() { return run(device, withAudio: withAudio, done) }
-        if Date() > deadline { return done(false) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            MainActor.assumeIsolated { self.waitForDevice(until: deadline, withAudio: withAudio, done) }
+        if let device = findDevice() { return run(device, withAudio: withAudio) }
+        if ProcessInfo.processInfo.systemUptime > deadline { return finish(false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            MainActor.assumeIsolated { self?.waitForDevice(until: deadline, withAudio: withAudio) }
         }
     }
 
-    private func run(_ device: AVCaptureDevice, withAudio: Bool, _ done: @escaping @MainActor (Bool) -> Void) {
-        guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return done(false) }
-        session.beginConfiguration()
-        session.addInput(input)
-        video.alwaysDiscardsLateVideoFrames = true
-        video.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        guard session.canAddOutput(video) else { session.commitConfiguration(); return done(false) }
-        video.setSampleBufferDelegate(frames, queue: frameQueue)
-        session.addOutput(video)
-        // Capturing reroutes the iPhone's sound to the Mac, so play it here (like Apple's mirroring does).
-        if withAudio, session.canAddOutput(audio) { session.addOutput(audio) }
-        session.commitConfiguration()
-        observer = NotificationCenter.default.addObserver(forName: AVCaptureInput.Port.formatDescriptionDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reportSize(device) }
+    private func run(_ device: AVCaptureDevice, withAudio: Bool) {
+        observe(AVCaptureInput.Port.formatDescriptionDidChangeNotification, object: nil) { [weak self] in
+            self?.reportSize(device)
         }
+        observe(AVCaptureSession.runtimeErrorNotification, object: session) { [weak self] in self?.failed() }
+        observe(AVCaptureSession.wasInterruptedNotification, object: session) { [weak self] in self?.failed() }
+        observe(AVCaptureDevice.wasDisconnectedNotification, object: device) { [weak self] in self?.failed() }
         let session = self.session
-        sessionQueue.async {
+        let video = self.video
+        let audio = self.audio
+        let frames = self.frames
+        let frameQueue = self.frameQueue
+        CaptureSessionExecutor.start(lifetime, operation: {
+            guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return false }
+            session.beginConfiguration()
+            session.addInput(input)
+            video.alwaysDiscardsLateVideoFrames = true
+            video.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            guard session.canAddOutput(video) else { session.commitConfiguration(); return false }
+            video.setSampleBufferDelegate(frames, queue: frameQueue)
+            session.addOutput(video)
+            if withAudio, session.canAddOutput(audio) { session.addOutput(audio) }
+            session.commitConfiguration()
             session.startRunning() // blocks until the stream is up
+            return session.isRunning
+        }, completion: { [weak self] ok in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard !self.stopped else { return }
+                    guard let self, !self.stopped else { return }
                     self.reportSize(device)
-                    done(session.isRunning)
+                    self.finish(ok)
                 }
             }
-        }
+        })
+    }
+
+    private func observe(_ name: Notification.Name, object: Any?, action: @escaping @MainActor () -> Void) {
+        observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.stopped else { return }
+                action()
+            }
+        })
     }
 
     private func reportSize(_ device: AVCaptureDevice) {

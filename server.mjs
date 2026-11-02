@@ -48,6 +48,33 @@ function readBody(req, signal) {
   });
 }
 
+// The handshake and each idle read are bounded independently. A permanent
+// timeout on fetch's signal would also kill healthy long-running video.
+export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 5000 } = {}) {
+  return Effect.gen(function*() {
+    const controller = new AbortController();
+    const upstream = yield* Effect.tryPromise(async signal => {
+      const timeout = setTimeout(() => controller.abort(apiError("Video connection timed out", 504, "timeout")), connectTimeoutMs);
+      timeout.unref?.();
+      try {
+        const response = await fetch(url, { signal: AbortSignal.any([signal, controller.signal]), headers: { connection: "close" } });
+        if (!response.ok || !response.body) throw apiError("Video stream unavailable", 502, "video unavailable");
+        return response;
+      } catch (error) {
+        controller.abort();
+        throw error;
+      } finally { clearTimeout(timeout); }
+    });
+    return {
+      contentType: upstream.headers.get("content-type") ?? "multipart/x-mixed-replace",
+      stream: Stream.fromReadableStream({ evaluate: () => upstream.body, onError: e => e }).pipe(
+        Stream.timeout(idleTimeoutMs),
+        Stream.ensuring(Effect.sync(() => controller.abort())),
+      ),
+    };
+  });
+}
+
 export function startServer({ port, instanceId, html, mjpeg, dispatch, onListening }) {
   const headers = { "cache-control": "no-store", "x-mirror-instance": instanceId, "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin", "referrer-policy": "no-referrer" };
   const json = response => HttpServerResponse.jsonUnsafe(response.body, { status: response.status, headers });
@@ -57,11 +84,14 @@ export function startServer({ port, instanceId, html, mjpeg, dispatch, onListeni
     if (request.method === "GET" && url.pathname === "/") {
       return HttpServerResponse.text(html.replace("<head>", `<head><meta name="mirror-instance" content="${instanceId}">`), { contentType: "text/html", headers });
     }
+    if (request.method === "GET" && url.pathname === "/api/health") {
+      // Process liveness must not depend on USB, XCTest, lock state or a session.
+      return json({ status: 200, body: { service: "iphone-mirror", apiVersion: 2, instanceId, ok: true } });
+    }
     if (request.method === "GET" && url.pathname === "/stream") {
-      const upstream = yield* Effect.tryPromise(signal => fetch(mjpeg, { signal, headers: { connection: "close" } }));
-      if (!upstream.ok || !upstream.body) return json({ status: 502, body: { ok: false, error: "Video stream unavailable" } });
-      return HttpServerResponse.stream(Stream.fromReadableStream({ evaluate: () => upstream.body, onError: e => e }), {
-        headers: { ...headers, "content-type": upstream.headers.get("content-type") ?? "multipart/x-mixed-replace" },
+      const video = yield* openVideoStream(mjpeg);
+      return HttpServerResponse.stream(video.stream, {
+        headers: { ...headers, "content-type": video.contentType },
       });
     }
     const name = url.pathname.match(/^\/api\/([\w-]+)$/)?.[1];

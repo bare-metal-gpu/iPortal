@@ -41,7 +41,7 @@ Prefer the browser? Run `npm start` and open http://localhost:7100.
 
 ## Good to know
 
-- Keep the iPhone unlocked and connected by USB. Setting Auto-Lock to Never helps.
+- Connect the iPhone by USB. Locking blurs the last frame; unlocking automatically restores control after a fresh frame arrives.
 - With a free Apple ID, run `npm run setup` again every 7 days.
 - The iPhone's sound plays on your Mac while mirroring.
 

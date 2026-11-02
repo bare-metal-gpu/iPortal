@@ -5,11 +5,11 @@
  objectVersion = 60;
  objects = {
   A00000000000000000000001 = {isa = PBXProject; attributes = {LastUpgradeCheck = 2720;}; buildConfigurationList = A00000000000000000000010; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A00000000000000000000002; productRefGroup = A00000000000000000000003; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000004); packageReferences = (A00000000000000000000020); };
-  A00000000000000000000002 = {isa = PBXGroup; children = (A00000000000000000000030, A00000000000000000000031, A00000000000000000000032, A00000000000000000000033, A00000000000000000000034, A00000000000000000000003); sourceTree = "<group>"; };
+  A00000000000000000000002 = {isa = PBXGroup; children = (A00000000000000000000030, A00000000000000000000031, A00000000000000000000032, A00000000000000000000033, A00000000000000000000034, A00000000000000000000035, A00000000000000000000003); sourceTree = "<group>"; };
   A00000000000000000000003 = {isa = PBXGroup; children = (A00000000000000000000005); name = Products; sourceTree = "<group>"; };
   A00000000000000000000004 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000011; buildPhases = (A00000000000000000000006, A00000000000000000000007, A00000000000000000000008, A00000000000000000000009); buildRules = (); dependencies = (); name = iPhonePortal; productName = "iPhone Portal"; productReference = A00000000000000000000005; productType = "com.apple.product-type.application"; packageProductDependencies = (A00000000000000000000021, A00000000000000000000022); };
   A00000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "iPhone Portal.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-  A00000000000000000000006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000040, A00000000000000000000041, A00000000000000000000042); runOnlyForDeploymentPostprocessing = 0; };
+  A00000000000000000000006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000040, A00000000000000000000041, A00000000000000000000042, A00000000000000000000046); runOnlyForDeploymentPostprocessing = 0; };
   A00000000000000000000007 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000043, A00000000000000000000044); runOnlyForDeploymentPostprocessing = 0; };
   A00000000000000000000008 = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; files = (); inputPaths = ("$(SRCROOT)/icon.png", "$(SRCROOT)/tools/make-icon.swift", "$(SRCROOT)/tools/build-icon.sh"); outputPaths = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppIcon.icns"); name = "Build app icon"; runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/bash; shellScript = "bash \"$SRCROOT/tools/build-icon.sh\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/AppIcon.icns\""; };
   A00000000000000000000009 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000045); runOnlyForDeploymentPostprocessing = 0; };
@@ -27,12 +27,14 @@
   A00000000000000000000032 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingBorder.swift; sourceTree = "<group>"; };
   A00000000000000000000033 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
   A00000000000000000000034 = {isa = PBXFileReference; lastKnownFileType = folder; path = Fonts; sourceTree = "<group>"; };
+  A00000000000000000000035 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lifecycle.swift; sourceTree = "<group>"; };
   A00000000000000000000040 = {isa = PBXBuildFile; fileRef = A00000000000000000000030; };
   A00000000000000000000041 = {isa = PBXBuildFile; fileRef = A00000000000000000000031; };
   A00000000000000000000042 = {isa = PBXBuildFile; fileRef = A00000000000000000000032; };
   A00000000000000000000043 = {isa = PBXBuildFile; productRef = A00000000000000000000021; };
   A00000000000000000000044 = {isa = PBXBuildFile; productRef = A00000000000000000000022; };
   A00000000000000000000045 = {isa = PBXBuildFile; fileRef = A00000000000000000000034; };
+  A00000000000000000000046 = {isa = PBXBuildFile; fileRef = A00000000000000000000035; };
  };
  rootObject = A00000000000000000000001;
 }

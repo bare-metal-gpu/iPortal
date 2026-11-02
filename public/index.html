@@ -49,12 +49,13 @@
   /* Native video (?video=native): the Mac app draws the screen underneath, the page only handles input. */
   body.native-video #phone { background: transparent; }
   body.native-video #screen { opacity: 0; }
+  body.native-video.preserve-stream-frame #screen { opacity: 1; }
 </style>
 </head>
 <body>
 <main>
   <div id="phone">
-    <img id="screen" alt="" draggable="false" />
+    <canvas id="screen" aria-label="iPhone screen"></canvas>
     <div id="overlay"><b>Connecting…</b><span id="overlayText"></span></div>
   </div>
 </main>
@@ -131,15 +132,23 @@
 const $ = (id) => document.getElementById(id);
 const screen = $("screen");
 const phone = $("phone");
+const bridgeId = crypto.randomUUID();
 let connected = false;
 let lifecycle = "connecting";
 let inputEpoch = 0;
 let nativeReady = false;
+let videoEpoch = 0;
+let statusRevision = 0;
+let deviceUdid = "";
+let singleUsbDevice = false;
+let serverInstance = document.querySelector('meta[name="mirror-instance"]').content;
 const controlOnly = new Set(["ensure", "quality", "lock", "unlock"]);
 function canInteract() { return lifecycle === "ready" && connected && (nativeVideo ? nativeReady : streamReady); }
-function setNativeVideoReady(ready) {
+function setNativeVideoReady(ready, epoch, documentId) {
+  if (epoch !== videoEpoch || documentId !== bridgeId) return;
   if (nativeReady && !ready) invalidateInput();
   nativeReady = ready && lifecycle === "ready";
+  if (nativeReady) document.body.classList.remove("preserve-stream-frame");
   reportLoading();
 }
 function invalidateInput() {
@@ -147,11 +156,23 @@ function invalidateInput() {
   touch = null; wheel = null; typed = "";
   clearTimeout(wheelTimer); wheelTimer = null;
 }
-function setLifecycle(next) {
-  if (next === lifecycle) return;
+function setLifecycle(next, identity = deviceUdid, instance = serverInstance) {
+  if (!["ready", "locked", "connecting", "disconnected"].includes(next)) next = "connecting";
+  identity = typeof identity === "string" ? identity : "";
+  const changedIdentity = identity !== deviceUdid || instance !== serverInstance;
+  if (next === lifecycle && !changedIdentity) return;
   lifecycle = next;
+  deviceUdid = identity;
+  serverInstance = instance;
+  videoEpoch++;
   nativeReady = false;
+  stopStream();
   invalidateInput();
+  if (changedIdentity) {
+    screen.getContext("2d").clearRect(0, 0, screen.width, screen.height);
+    hasStreamFrame = false;
+    document.body.classList.remove("preserve-stream-frame");
+  }
 }
 
 let streamReady = false;
@@ -160,9 +181,11 @@ let loadingDetail = "";
 function reportLoading() {
   const waitingForVideo = lifecycle !== "ready" || !connected || (nativeVideo ? !nativeReady : !streamReady);
   document.body.classList.toggle("loading", waitingForVideo);
+  document.body.classList.toggle("unavailable", waitingForVideo);
   window.webkit?.messageHandlers?.native?.postMessage({
     loading: waitingForVideo || pendingActions > 0, waitingForVideo,
-    loadingDetail: waitingForVideo ? loadingDetail : "", lifecycle
+    loadingDetail: waitingForVideo ? loadingDetail : "", lifecycle,
+    deviceUdid, singleUsbDevice, serverInstance, videoEpoch, statusRevision, bridgeId, videoMode: nativeVideo ? "native" : "stream"
   });
 }
 const params = new URLSearchParams(location.search);
@@ -171,21 +194,164 @@ if (params.has("app") && window.webkit?.messageHandlers?.native) document.body.c
 let nativeVideo = params.get("video") === "native";
 document.body.classList.toggle("native-video", nativeVideo);
 
-function useNativeVideo() {
+function useNativeVideo(epoch, documentId) {
+  if (epoch !== undefined && (epoch !== videoEpoch || documentId !== bridgeId)) return;
+  stopStream();
+  if (!nativeVideo) {
+    invalidateInput();
+    document.body.classList.toggle("preserve-stream-frame", hasStreamFrame);
+  }
   nativeVideo = true;
   nativeReady = false;
   document.body.classList.add("native-video");
-  screen.removeAttribute("src");
   reportLoading();
 }
 
-// Called by the Mac app if it can't capture the iPhone's screen itself.
-function startStream() {
-  nativeVideo = false;
+// Decode complete MJPEG parts ourselves: <img>.load cannot report frame
+// freshness, and a live <img> cannot preserve a fixed last frame on lock.
+const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+class MjpegFrames {
+  buffer = new Uint8Array(0);
+  needed = null;
+  push(chunk) {
+    if (this.buffer.length + chunk.length > MAX_FRAME_BYTES + 65536) throw new Error("Oversized video frame");
+    const joined = new Uint8Array(this.buffer.length + chunk.length);
+    joined.set(this.buffer); joined.set(chunk, this.buffer.length); this.buffer = joined;
+    const frames = [];
+    while (true) {
+      if (this.needed === null) {
+        let end = -1;
+        for (let i = 0; i + 3 < this.buffer.length; i++) {
+          if (this.buffer[i] === 13 && this.buffer[i+1] === 10 && this.buffer[i+2] === 13 && this.buffer[i+3] === 10) { end = i; break; }
+        }
+        if (end < 0) {
+          if (this.buffer.length > 16384) throw new Error("Invalid video header");
+          break;
+        }
+        const header = new TextDecoder().decode(this.buffer.subarray(0, end));
+        const length = Number(header.match(/(?:^|\r\n)Content-Length:\s*(\d+)\s*(?:\r\n|$)/i)?.[1]);
+        if (!Number.isSafeInteger(length) || length <= 0 || length > MAX_FRAME_BYTES) throw new Error("Invalid video frame size");
+        this.needed = length;
+        this.buffer = this.buffer.subarray(end + 4);
+      }
+      if (this.buffer.length < this.needed) break;
+      frames.push(this.buffer.slice(0, this.needed));
+      this.buffer = this.buffer.slice(this.needed);
+      this.needed = null;
+    }
+    return frames;
+  }
+}
+let hasStreamFrame = false;
+let streamController = null;
+let streamGeneration = 0;
+let streamWatchdog = null;
+let streamRetryAt = 0;
+let streamFailures = 0;
+let streamStableSince = 0;
+function stopStream() {
+  streamGeneration++;
+  streamController?.abort();
+  streamController = null;
+  clearTimeout(streamWatchdog); streamWatchdog = null;
   streamReady = false;
+}
+function presentStreamFrame(frame, generation) {
+  if (generation !== streamGeneration || nativeVideo || lifecycle !== "ready" || !connected) return false;
+  const firstFrame = !streamReady;
+  const resized = screen.width !== frame.width || screen.height !== frame.height;
+  if (resized) {
+    screen.width = frame.width; screen.height = frame.height;
+  }
+  screen.getContext("2d").drawImage(frame, 0, 0);
+  streamReady = true;
+  hasStreamFrame = true;
+  $("overlay").hidden = true;
+  if (firstFrame) reportLoading();
+  if (firstFrame || resized) window.webkit?.messageHandlers?.native?.postMessage({ w: frame.width, h: frame.height, videoEpoch, bridgeId });
+  return true;
+}
+async function connectStream() {
+  if (streamController || nativeVideo || lifecycle !== "ready" || !connected || performance.now() < streamRetryAt) return;
+  const controller = new AbortController();
+  streamController = controller;
+  const generation = ++streamGeneration;
+  const parser = new MjpegFrames();
+  let decoding = false, pending = null;
+  streamStableSince = 0;
+  const armWatchdog = () => {
+    clearTimeout(streamWatchdog);
+    streamWatchdog = setTimeout(() => controller.abort(), 3000);
+  };
+  const decodePending = async () => {
+    if (decoding || !pending) return;
+    decoding = true;
+    try {
+      while (pending && generation === streamGeneration && !controller.signal.aborted) {
+        const bytes = pending; pending = null;
+        const frame = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+        try {
+          if (!controller.signal.aborted && presentStreamFrame(frame, generation)) {
+            armWatchdog();
+            streamStableSince ||= performance.now();
+            if (performance.now() - streamStableSince >= 10000) streamFailures = 0;
+          }
+        } finally { frame.close(); }
+      }
+    } catch { controller.abort(); }
+    finally { decoding = false; }
+  };
+  armWatchdog();
+  try {
+    const response = await fetch(`/stream?${Date.now()}`, { signal: controller.signal });
+    if (!response.ok || !response.body || !/multipart\/x-mixed-replace/i.test(response.headers.get("content-type") ?? "")) throw new Error("Video stream unavailable");
+    const reader = response.body.getReader();
+    try {
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const frames = parser.push(value);
+        if (frames.length) { pending = frames.at(-1); void decodePending(); }
+      }
+    } finally { await reader.cancel().catch(() => {}); }
+  } catch { /* The next status tick retries; input stays disabled until a frame arrives. */ }
+  finally {
+    if (generation === streamGeneration) {
+      controller.abort();
+      streamController = null;
+      clearTimeout(streamWatchdog); streamWatchdog = null;
+      streamReady = false;
+      invalidateInput();
+      streamRetryAt = performance.now() + Math.min(5000, 500 * 2 ** Math.min(streamFailures++, 4));
+      $("overlay").hidden = false;
+      $("overlay").querySelector("b").textContent = "Connecting…";
+      reportLoading();
+    }
+  }
+}
+
+// Called by the Mac app when direct USB capture is unavailable.
+function startStream(epoch, documentId) {
+  if (epoch !== undefined && (epoch !== videoEpoch || documentId !== bridgeId)) return;
+  stopStream();
+  nativeVideo = false;
+  nativeReady = false;
+  invalidateInput();
+  document.body.classList.remove("native-video", "preserve-stream-frame");
+  streamRetryAt = 0;
   reportLoading();
-  document.body.classList.remove("native-video");
-  if (connected) screen.src = `/stream?${Date.now()}`;
+  void connectStream();
+}
+
+async function requestJSON(url, options = {}, timeoutMs = 18000) {
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error("Request timed out")); }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fetch(url, { ...options, signal: controller.signal }).then(response => response.json()), timeout]);
+  } finally { clearTimeout(timer); }
 }
 
 function toast(msg) {
@@ -207,13 +373,12 @@ function api(name, body = {}, fromWheel = false) {
   const task = outbound.then(async () => {
   try {
     if (!controlOnly.has(name) && (epoch !== inputEpoch || !canInteract())) return;
-    const res = await fetch(`/api/${name}`, { method: "POST", headers: { "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content }, body: JSON.stringify({ ...body, requestId }) });
-    const json = await res.json();
+    const json = await requestJSON(`/api/${name}`, { method: "POST", headers: { "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content }, body: JSON.stringify({ ...body, requestId }) });
     if (!json.ok) toast(json.error || "Something went wrong");
   } catch {
     // Recover the receipt rather than sending the action again after a lost reply.
     try {
-      const receipt = await (await fetch(`/api/commands/${requestId}`)).json();
+      const receipt = await requestJSON(`/api/commands/${requestId}`, {}, 3000);
       if (receipt.value?.response?.body?.ok) return;
     } catch {}
     toast("Connection interrupted. Check the phone before repeating the action.");
@@ -233,18 +398,26 @@ async function poll() {
     const s = await (await fetch("/api/status", { signal: AbortSignal.timeout(3000) })).json();
     if (s.service !== "iphone-mirror" || s.apiVersion !== 2) throw new Error("Unexpected server");
     const fingerprint = document.querySelector('meta[name="mirror-instance"]');
-    if (fingerprint.content !== s.instanceId) { location.reload(); return; }
+    if (fingerprint.content !== s.instanceId) {
+      connected = false;
+      setLifecycle("connecting", "", s.instanceId);
+      statusRevision++;
+      reportLoading();
+      location.reload();
+      return;
+    }
     $("dot").classList.toggle("on", s.ok);
     $("device").textContent = s.device ? `${s.device.udid} · ${s.device.connection}` : s.ok ? "Connected over WiFi" : "No iPhone connected";
     $("quality").value = s.quality;
-    setLifecycle(s.lifecycle ?? (s.ok ? "ready" : "connecting"));
-    window.webkit?.messageHandlers?.native?.postMessage({ lifecycle, deviceUdid: s.device?.udid ?? "", singleUsbDevice: s.captureIdentity?.singleUsbDevice === true });
+    singleUsbDevice = s.captureIdentity?.singleUsbDevice === true;
+    setLifecycle(s.lifecycle, s.device?.udid ?? s.pinnedUdid ?? "", s.instanceId);
     loadingDetail = !s.ok && !s.error?.startsWith("Starting WebDriverAgent") ? (s.error ?? "") : "";
     if (lifecycle === "ready" && !connected) {
       connected = true;
       if (nativeVideo) $("overlay").hidden = true;
-      else screen.src = `/stream?${Date.now()}`;
+      else void connectStream();
     }
+    if (!nativeVideo && lifecycle === "ready") void connectStream();
     if (lifecycle !== "ready") {
       connected = false;
       streamReady = false;
@@ -263,26 +436,11 @@ async function poll() {
     $("overlayText").textContent = "Mirror server is not running.";
     loadingDetail = "Reconnecting to the mirror server…";
   }
+  statusRevision++;
   reportLoading();
   setTimeout(poll, 1000);
 }
 
-screen.addEventListener("load", () => {
-  if (lifecycle !== "ready") return;
-  streamReady = true;
-  document.body.classList.remove("unavailable");
-  $("overlay").hidden = true;
-  reportLoading();
-  // Tell the native Mac app the screen's aspect ratio so it can size the window.
-  window.webkit?.messageHandlers?.native?.postMessage({ w: screen.naturalWidth, h: screen.naturalHeight });
-});
-screen.addEventListener("error", () => {
-  invalidateInput();
-  connected = false;
-  streamReady = false;
-  $("overlay").hidden = false;
-  reportLoading();
-});
 poll();
 queueMicrotask(() => api("ensure")); // wait for keyboard buffers to initialize
 
@@ -433,7 +591,7 @@ $("launchBtn").addEventListener("click", () => {
 
 $("quality").addEventListener("change", async (e) => {
   await api("quality", { level: e.target.value });
-  if (!nativeVideo) screen.src = `/stream?${Date.now()}`; // reconnect so the new scale applies right away
+  if (!nativeVideo) startStream(); // reconnect so the new scale applies right away
 });
 
 // Buttons shouldn't keep focus, otherwise Space/Enter would re-trigger them instead of typing.

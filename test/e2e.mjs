@@ -27,6 +27,26 @@ try {
   assert.equal(status.device.udid, "00008110-FAKEFAKEFAKE");
   assert.equal(status.captureIdentity.singleUsbDevice, true);
 
+  // Startup probes must answer while XCTest is slow or wedged. They must not
+  // multiply device requests, nor claim that a healthy process means unlocked.
+  fake.ui.delayMs = 1100;
+  const slowStatus = fetch(`${base}/api/status`).then(r => r.json());
+  await new Promise(r => setTimeout(r, 30));
+  const deviceCallsBeforeHealth = fake.log.length;
+  const healthStarted = performance.now();
+  const health = await (await fetch(`${base}/api/health`)).json();
+  assert.deepEqual(health, { service: "iphone-mirror", apiVersion: 2, instanceId: status.instanceId, ok: true });
+  assert.ok(performance.now() - healthStarted < 500, "health must not wait for device I/O");
+  assert.equal(fake.log.length, deviceCallsBeforeHealth, "health performs no WDA calls");
+  assert.equal((await fetch(`${base}/api/health`, { headers: { origin: "https://foreign.example" } })).status, 403);
+  fake.ui.delayMs = 0;
+  assert.equal((await slowStatus).lifecycle, "ready");
+  fake.ui.error = "unknown error";
+  const failedLock = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(failedLock.locked, null);
+  assert.equal(failedLock.lifecycle, "connecting", "a failed lock read is not unlocked");
+  fake.ui.error = null;
+
   const res = await fetch(`${base}/stream`);
   assert.match(res.headers.get("content-type"), /multipart\/x-mixed-replace/);
   const reader = res.body.getReader();

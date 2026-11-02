@@ -115,21 +115,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var pageLoading = true
     var captureLoading = true
     var waitingForVideo = true
-    var deviceLifecycle = "connecting"
-    var captureUdid: String?
+    var videoGate = VideoReadinessGate()
+    var deviceLifecycle: String { videoGate.lifecycle }
+    var captureUdid: String? { videoGate.deviceID }
+    var activeCaptureUdid: String?
     var singleUsbDevice = false
     var lifecycleTimer: Timer?
     var lastStatusAt = ProcessInfo.processInfo.systemUptime
-    var requiredFrameAfter: TimeInterval = 0
     var captureStartedAt: TimeInterval = 0
-    var captureRetries = 0
+    var captureBudget = CaptureRetryBudget()
+    var nextNativeAttemptAt: TimeInterval = 0
+    var audioVolume: Float = 1
+    var videoMode = "native"
+    var serviceProbeInFlight = false
+    var nextServiceProbeAt: TimeInterval = 0
+    var serverInstance: String?
+    var serverFailures = 0
+    var serverStartedAt: TimeInterval = 0
+    var serverRetryAt: TimeInterval = 0
+    var serverBackoff: TimeInterval = 1
+    var webNeedsReload = true
+    var webRetryAt: TimeInterval = 0
+    var webBackoff: TimeInterval = 1
+    var webHealthySince: TimeInterval = 0
+    var terminating = false
+    var wakeObserver: NSObjectProtocol?
+    var retiredBridgeIDs: Set<String> = []
 
     func updateLoadingBorder() {
         let phase: String
         if deviceLifecycle == "locked" || deviceLifecycle == "disconnected" { phase = deviceLifecycle }
         else if deviceLifecycle != "ready" || captureLoading || waitingForVideo { phase = "connecting" }
         else { phase = "live" }
-        if phase != "live", loadingBorderState.phase == "live" {
+        if videoMode == "native", phase != "live", loadingBorderState.phase == "live" {
             loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
         }
         loadingBorderState.phase = phase
@@ -140,68 +158,128 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         capture?.layer.isHidden = phase != "live"
     }
 
-    func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool) {
-        lastStatusAt = ProcessInfo.processInfo.systemUptime
-        self.singleUsbDevice = singleUsbDevice
-        if let udid, !udid.isEmpty { captureUdid = udid }
-        guard next != deviceLifecycle else { return }
-        // Freeze before a capture teardown, so disconnects retain a blurred frame too.
-        if deviceLifecycle == "ready" {
+    func nativeCall(_ function: String, ready: Bool? = nil) {
+        guard !videoGate.bridgeID.isEmpty else { return }
+        var arguments: [Any] = []
+        if let ready { arguments.append(ready) }
+        arguments += [videoGate.epoch, videoGate.bridgeID]
+        guard let data = try? JSONSerialization.data(withJSONObject: arguments),
+              let json = String(data: data, encoding: .utf8) else { return }
+        js("\(function)(...\(json))")
+    }
+
+    func freezeVideo() {
+        if videoMode == "native" {
             loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
         }
-        deviceLifecycle = next
-        if next != "ready" {
-            js("setNativeVideoReady(false)")
-            captureLoading = true
-            if next == "disconnected" {
-                capture?.stop()
-                capture?.layer.removeFromSuperlayer()
-                capture = nil
-                captureFailed = false
-            }
-        } else {
-            requiredFrameAfter = ProcessInfo.processInfo.systemUptime
-            captureStartedAt = requiredFrameAfter
-            captureRetries = 0
-            captureLoading = capture != nil || !captureFailed
-            loadingBorderState.detail = ""
-            if capture == nil, let captureUdid {
-                captureFailed = false
-                startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
-            } else if capture == nil { captureLoading = false }
+        captureLoading = true
+        waitingForVideo = true
+        nativeCall("setNativeVideoReady", ready: false)
+    }
+
+    func stopCapture() {
+        capture?.stop()
+        capture?.layer.removeFromSuperlayer()
+        capture = nil
+        activeCaptureUdid = nil
+    }
+
+    func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool,
+                        epoch: Int, bridgeID: String, instance: String, statusRevision: Int) -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        self.singleUsbDevice = singleUsbDevice
+        let change = videoGate.observe(next, deviceID: udid, epoch: epoch,
+                                       bridgeID: bridgeID, serverInstance: instance, statusRevision: statusRevision, now: now)
+        guard change.accepted else { return false }
+        if change.newStatus { lastStatusAt = now }
+        guard change.invalidated else { return true }
+        captureBudget.failed()
+        freezeVideo()
+        if change.deviceChanged {
+            // Never show the old device's pixels while control targets a new one.
+            stopCapture()
+            loadingBorderState.snapshot = nil
+            captureFailed = false
+            captureBudget = CaptureRetryBudget()
+            nextNativeAttemptAt = 0
         }
+        if deviceLifecycle != "ready" {
+            if deviceLifecycle == "disconnected" { stopCapture() }
+        } else {
+            captureStartedAt = now
+            loadingBorderState.detail = ""
+            if capture == nil {
+                if let captureUdid, now >= nextNativeAttemptAt {
+                    startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+                } else {
+                    captureLoading = false
+                    captureFailed = true
+                    nativeCall("startStream")
+                }
+            } else {
+                captureLoading = true
+                nativeCall("useNativeVideo")
+            }
+        }
+        updateLoadingBorder()
+        return true
+    }
+
+    func suspendLifecycle() {
+        captureBudget.failed()
+        freezeVideo()
+        videoGate.suspend(at: ProcessInfo.processInfo.systemUptime)
         updateLoadingBorder()
     }
 
     func checkVideoLifecycle() {
+        guard !terminating else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        if now - lastStatusAt > 5, deviceLifecycle == "ready" || deviceLifecycle == "locked" {
-            applyLifecycle("connecting", udid: nil, singleUsbDevice: singleUsbDevice)
+        if now >= nextServiceProbeAt {
+            nextServiceProbeAt = now + 2
+            ensureServer()
         }
-        guard deviceLifecycle == "ready", let capture else { return }
-        let fresh = capture.lastFrameAt > requiredFrameAfter && now - capture.lastFrameAt < 3
+        if now - lastStatusAt > 5, deviceLifecycle == "ready" || deviceLifecycle == "locked" {
+            suspendLifecycle()
+        }
+        guard deviceLifecycle == "ready" else { return }
+        guard let capture else {
+            // Prefer native capture again after a bounded cooldown. Keep the
+            // working fallback while the retry budget is exhausted.
+            if captureFailed, let captureUdid, now >= nextNativeAttemptAt {
+                startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+            }
+            return
+        }
+        let frameAt = capture.lastFrameAt
+        let fresh = videoGate.acceptsFrame(at: frameAt, now: ProcessInfo.processInfo.systemUptime)
         if fresh {
+            captureBudget.healthy(at: now)
             if captureLoading {
                 captureLoading = false
-                captureRetries = 0
-                js("setNativeVideoReady(true)")
+                nativeCall("setNativeVideoReady", ready: true)
                 updateLoadingBorder()
             }
         } else {
+            captureBudget.failed()
             if !captureLoading {
-                loadingBorderState.snapshot = capture.snapshot() ?? loadingBorderState.snapshot
-                captureLoading = true
+                freezeVideo()
+                videoGate.requireFreshFrame(at: now)
                 captureStartedAt = now
-                js("setNativeVideoReady(false)")
                 updateLoadingBorder()
             }
-            if now - captureStartedAt > 10 {
-                if captureRetries < 1, let captureUdid {
-                    captureRetries += 1
-                    startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
-                } else { fallbackToStream() }
-            }
+            if let startupTimeoutAt = capture.startupTimeoutAt,
+               now > max(captureStartedAt + 10, startupTimeoutAt) { recoverCapture() }
         }
+    }
+
+    func recoverCapture() {
+        freezeVideo()
+        captureBudget.failed()
+        stopCapture()
+        if deviceLifecycle == "ready", let captureUdid {
+            startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+        } else { updateLoadingBorder() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -211,8 +289,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         buildMenu()
         buildWindow()
         ensureServer()
-        lifecycleTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        lifecycleTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkVideoLifecycle() }
+        }
+        if let lifecycleTimer { RunLoop.main.add(lifecycleTimer, forMode: .common) }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.suspendLifecycle()
+                self.stopCapture()
+                self.webNeedsReload = true
+                self.webRetryAt = 0
+                self.ensureServer()
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -220,7 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
+        terminating = true
         lifecycleTimer?.invalidate()
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         capture?.stop()
         guard let p = server, p.isRunning else { return }
         p.terminate()
@@ -436,9 +527,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // In MJPEG mode the page reports the stream's real size once the first frame arrives.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
-        if let lifecycle = d["lifecycle"] as? String, let udid = d["deviceUdid"] as? String {
-            applyLifecycle(lifecycle, udid: udid, singleUsbDevice: d["singleUsbDevice"] as? Bool ?? false)
+        if let lifecycle = d["lifecycle"] as? String, let udid = d["deviceUdid"] as? String,
+           let epoch = d["videoEpoch"] as? Int, let bridgeID = d["bridgeId"] as? String,
+           let instance = d["serverInstance"] as? String, let revision = d["statusRevision"] as? Int {
+            guard !retiredBridgeIDs.contains(bridgeID), serverInstance == nil || serverInstance == instance else { return }
+            videoMode = d["videoMode"] as? String ?? "native"
+            if videoMode == "stream" { loadingBorderState.snapshot = nil }
+            guard applyLifecycle(lifecycle, udid: udid, singleUsbDevice: d["singleUsbDevice"] as? Bool ?? false,
+                                 epoch: epoch, bridgeID: bridgeID, instance: instance, statusRevision: revision) else { return }
         }
+        guard d["bridgeId"] as? String == videoGate.bridgeID,
+              d["videoEpoch"] as? Int == videoGate.epoch else { return }
         if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
         if let detail = d["loadingDetail"] as? String { loadingBorderState.detail = detail }
         if let loading = d["loading"] as? Bool {
@@ -453,124 +552,177 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: Video
 
     func startCapture(udid: String, singleUsbDevice: Bool) {
-        capture?.stop()
-        capture?.layer.removeFromSuperlayer()
-        captureUdid = udid
-        self.singleUsbDevice = singleUsbDevice
+        let now = ProcessInfo.processInfo.systemUptime
+        guard captureBudget.beginAttempt(at: now) else {
+            nextNativeAttemptAt = now + 30
+            if capture != nil || videoMode != "stream" || captureLoading { fallbackToStream() }
+            return
+        }
+        freezeVideo()
+        stopCapture()
         captureLoading = true
         captureFailed = false
-        captureStartedAt = ProcessInfo.processInfo.systemUptime
-        requiredFrameAfter = captureStartedAt
-        let c = PhoneCapture()
+        captureStartedAt = now
+        videoGate.requireFreshFrame(at: now)
+        let c = PhoneCapture(audioVolume: audioVolume)
+        activeCaptureUdid = udid
         c.onSize = { [weak self, weak c] size in
             guard let self, self.capture === c else { return }
             self.setAspect(width: size.width, height: size.height)
         }
+        c.onFailure = { [weak self, weak c] in
+            guard let self, self.capture === c else { return }
+            self.recoverCapture()
+        }
         videoHost.layer?.addSublayer(c.layer)
         c.layer.frame = videoHost.bounds
         capture = c
-        js("useNativeVideo()")
+        nativeCall("useNativeVideo")
         updateLoadingBorder()
         c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self, weak c] ok in
             guard let self, self.capture === c else { return }
-            if !ok { self.fallbackToStream() }
+            if !ok { self.recoverCapture() }
             // A running session is not proof of video. The frame watchdog marks ready.
         }
     }
 
     func fallbackToStream() {
-        loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
-        capture?.stop()
-        capture?.layer.removeFromSuperlayer()
-        capture = nil
+        stopCapture()
         captureFailed = true
         captureLoading = false
         waitingForVideo = true
-        js("startStream()")
+        nextNativeAttemptAt = ProcessInfo.processInfo.systemUptime + 30
+        loadingBorderState.snapshot = nil
+        nativeCall("startStream")
         updateLoadingBorder()
     }
 
-    // If the capture failed while the page was still loading, switch it to the stream once it's there.
+    // A new document must establish its own observation epoch before input can
+    // resume. Old evaluateJavaScript calls cannot bless the replacement page.
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if !videoGate.bridgeID.isEmpty { retiredBridgeIDs.insert(videoGate.bridgeID) }
+        suspendLifecycle()
         pageLoading = true
         updateLoadingBorder()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        pageLoading = false
-        waitingForVideo = false
-        updateLoadingBorder()
+        navigationFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        pageLoading = false
-        waitingForVideo = false
-        updateLoadingBorder()
+        navigationFailed(error)
+    }
+
+    func navigationFailed(_ error: Error) {
+        guard (error as NSError).code != NSURLErrorCancelled, !terminating else { return }
+        suspendLifecycle()
+        webNeedsReload = true
+        webRetryAt = ProcessInfo.processInfo.systemUptime + webBackoff
+        webBackoff = min(30, webBackoff * 2)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        suspendLifecycle()
+        webNeedsReload = true
+        webRetryAt = ProcessInfo.processInfo.systemUptime + webBackoff
+        webBackoff = min(30, webBackoff * 2)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if captureFailed { js("startStream()") }
-        else if capture != nil { js("useNativeVideo(); setNativeVideoReady(\(!captureLoading))") }
-        if webView.url?.host == nil {
-            pageLoading = false
-            waitingForVideo = false
-            updateLoadingBorder()
-        }
+        webHealthySince = ProcessInfo.processInfo.systemUptime
+        // poll() reports the document token and either starts capture or requests
+        // a fresh frame from the existing session. Do not bypass that handshake.
     }
 
     // MARK: Server
 
     func ensureServer() {
-        probe { up, _, _ in
-            if !up { self.startServer() }
-            self.waitForServer(tries: up ? 1 : 60)
+        guard !terminating, !serviceProbeInFlight else { return }
+        serviceProbeInFlight = true
+        probe { [weak self] up, instance in
+            guard let self else { return }
+            self.serviceProbeInFlight = false
+            guard !self.terminating else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            if up {
+                self.serverFailures = 0
+                self.serverBackoff = 1
+                let newInstance = self.serverInstance != instance
+                self.serverInstance = instance
+                if self.webHealthySince > 0, now - self.webHealthySince > 30 { self.webBackoff = 1 }
+                if (newInstance || self.webNeedsReload), now >= self.webRetryAt {
+                    self.suspendLifecycle()
+                    self.webNeedsReload = false
+                    self.web.load(URLRequest(url: URL(string: "http://localhost:\(port)/?app=1&video=native")!))
+                }
+            } else {
+                self.serverFailures += 1
+                self.suspendLifecycle()
+                self.webNeedsReload = true
+                if let process = self.server, process.isRunning {
+                    // Only terminate a process this app owns, after repeated
+                    // failed lightweight health checks and a startup grace period.
+                    if self.serverFailures >= 3, now - self.serverStartedAt > 8 {
+                        process.terminate()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                        }
+                    }
+                } else if now >= self.serverRetryAt { self.startServer() }
+            }
         }
     }
 
-    func probe(_ done: @escaping @MainActor (Bool, String?, Bool) -> Void) {
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/status")!)
+    func probe(_ done: @escaping @MainActor (Bool, String?) -> Void) {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/health")!)
         req.timeoutInterval = 1
         URLSession.shared.dataTask(with: req) { data, resp, _ in
-            let status = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-            let up = (resp as? HTTPURLResponse)?.statusCode == 200 && status?["service"] as? String == "iphone-mirror" && status?["apiVersion"] as? Int == 2
-            let udid = (status?["device"] as? [String: Any])?["udid"] as? String
-            let singleUsbDevice = (status?["captureIdentity"] as? [String: Any])?["singleUsbDevice"] as? Bool ?? false
-            DispatchQueue.main.async { done(up, udid, singleUsbDevice) }
+            let health = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let up = (resp as? HTTPURLResponse)?.statusCode == 200 && health?["service"] as? String == "iphone-mirror" && health?["apiVersion"] as? Int == 2
+            let instance = health?["instanceId"] as? String
+            DispatchQueue.main.async { done(up && instance != nil, instance) }
         }.resume()
     }
 
-    func waitForServer(tries: Int) {
-        probe { up, udid, singleUsbDevice in
-            if up {
-                if let udid { self.startCapture(udid: udid, singleUsbDevice: singleUsbDevice) } else { self.captureFailed = true; self.captureLoading = false }
-                let video = self.captureFailed ? "" : "&video=native"
-                self.web.load(URLRequest(url: URL(string: "http://localhost:\(port)/?app=1\(video)")!))
-                return
-            }
-            if tries <= 1 {
-                self.captureLoading = false
-                self.web.loadHTMLString("""
-                <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box;background:transparent;color:#aaa;font:13px -apple-system">
-                Couldn't start the mirror server.<br><br>Log: ~/Library/Logs/iPhoneMirror.log</body>
-                """, baseURL: nil)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.waitForServer(tries: tries - 1) }
-        }
-    }
-
     func startServer() {
+        guard !terminating, server?.isRunning != true else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: nodePath)
-        p.arguments = ["mirror.mjs", "--no-open", "--port", "\(port)"]
+        var arguments = ["mirror.mjs", "--no-open", "--port", "\(port)"]
+        if let captureUdid { arguments += ["--udid", captureUdid] }
+        p.arguments = arguments
         p.currentDirectoryURL = URL(fileURLWithPath: repoPath)
         var env = ProcessInfo.processInfo.environment
-        // Apps launched from Finder get a minimal PATH; WDA's launcher needs node and xcodebuild.
         env["PATH"] = "\((nodePath as NSString).deletingLastPathComponent):/usr/bin:/bin:/usr/sbin:/sbin:\(env["PATH"] ?? "")"
         p.environment = env
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        if let log = try? FileHandle(forWritingTo: logURL) { p.standardOutput = log; p.standardError = log }
-        do { try p.run(); server = p } catch { NSLog("iPhone Portal: couldn't start node: \(error)") }
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        if let log = try? FileHandle(forWritingTo: logURL) {
+            _ = try? log.seekToEnd()
+            p.standardOutput = log
+            p.standardError = log
+        }
+        p.terminationHandler = { [weak self] process in
+            DispatchQueue.main.async {
+                guard let self, self.server === process, !self.terminating else { return }
+                self.server = nil
+                self.serverRetryAt = ProcessInfo.processInfo.systemUptime + self.serverBackoff
+                self.serverBackoff = min(30, self.serverBackoff * 2)
+                self.suspendLifecycle()
+                self.webNeedsReload = true
+            }
+        }
+        do {
+            try p.run()
+            server = p
+            serverStartedAt = ProcessInfo.processInfo.systemUptime
+        } catch {
+            serverRetryAt = ProcessInfo.processInfo.systemUptime + serverBackoff
+            serverBackoff = min(30, serverBackoff * 2)
+            NSLog("iPhone Portal: couldn't start node: \(error)")
+        }
     }
 
     // MARK: Actions
@@ -595,9 +747,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     @objc func toggleAudio(_ item: NSMenuItem) {
-        guard let audio = capture?.audio else { return }
-        audio.volume = audio.volume > 0 ? 0 : 1
-        item.state = audio.volume > 0 ? .on : .off
+        audioVolume = audioVolume > 0 ? 0 : 1
+        capture?.audio.volume = audioVolume
+        item.state = audioVolume > 0 ? .on : .off
     }
 
     @objc func toggleOnTop(_ item: NSMenuItem) {
