@@ -99,6 +99,7 @@ final class HoverView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
     var window: MirrorWindow!
     var phone: NSVisualEffectView!
+    var videoHost: NSView!
     var web: WKWebView!
     var bar: DragBar!
     var barButtons: [NSView] = []
@@ -174,6 +175,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         phone.layer?.masksToBounds = true
         phone.layer?.cornerCurve = .continuous
         root.addSubview(phone)
+
+        // NSVisualEffectView owns internal backdrop layers. Keep video in a
+        // regular subview above those layers so the blur cannot cover it.
+        videoHost = NSView()
+        videoHost.wantsLayer = true
+        phone.addSubview(videoHost)
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "native")
@@ -258,7 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        capture?.layer.frame = phone.bounds
+        videoHost.frame = phone.bounds
+        capture?.layer.frame = videoHost.bounds
         CATransaction.commit()
         bar.frame = NSRect(x: 0, y: phoneHeight + barGap, width: w, height: barHeight)
         // Traffic lights on the left, Home and App Switcher on the right.
@@ -358,8 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func startCapture(udid: String, singleUsbDevice: Bool) {
         let c = PhoneCapture()
         c.onSize = { [weak self] size in self?.setAspect(width: size.width, height: size.height) }
-        phone.layer?.insertSublayer(c.layer, at: 0) // underneath the transparent web view
-        c.layer.frame = phone.bounds
+        videoHost.layer?.addSublayer(c.layer) // above the blur, underneath web input
+        c.layer.frame = videoHost.bounds
         capture = c
         c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self] ok in
             guard let self else { return }
