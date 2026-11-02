@@ -49,6 +49,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var hideBar: DispatchWorkItem?
     var capture: PhoneCapture?
     var captureFailed = false
+    let loadingBorderState = LoadingBorderState()
+    var loadingBorder: LoadingBorderHost!
+    var pageLoading = true
+    var captureLoading = true
+
+    func updateLoadingBorder() {
+        loadingBorderState.active = pageLoading || captureLoading
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
@@ -100,6 +108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         web.setValue(false, forKey: "drawsBackground")
         web.navigationDelegate = self
         phone.addSubview(web)
+        loadingBorder = LoadingBorderHost(rootView: LoadingBorder(state: loadingBorderState))
+        phone.addSubview(loadingBorder)
 
         bar = DragBar()
         bar.material = .hudWindow
@@ -152,6 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         phone.frame = NSRect(x: 0, y: 0, width: w, height: phoneHeight)
         phone.layer?.cornerRadius = w * 0.14 // iPhone screen corner radius relative to its width
         web.frame = phone.bounds
+        loadingBorder.frame = phone.bounds
+        loadingBorderState.radius = max(0, w * 0.14 - 2)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         capture?.layer.frame = phone.bounds
@@ -207,8 +219,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     // In MJPEG mode the page reports the stream's real size once the first frame arrives.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let d = message.body as? [String: Any], let w = d["w"] as? Double, let h = d["h"] as? Double else { return }
-        setAspect(width: w, height: h)
+        guard message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
+        if let loading = d["loading"] as? Bool {
+            pageLoading = loading
+            updateLoadingBorder()
+        }
+        if let w = d["w"] as? Double, let h = d["h"] as? Double {
+            setAspect(width: w, height: h)
+        }
     }
 
     // MARK: Video
@@ -220,7 +238,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         c.layer.frame = phone.bounds
         capture = c
         c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self] ok in
-            guard let self, !ok else { return }
+            guard let self else { return }
+            self.captureLoading = false
+            self.updateLoadingBorder()
+            guard !ok else { return }
             NSLog("iPhone Portal: no direct screen capture, falling back to the MJPEG stream")
             self.capture?.layer.removeFromSuperlayer()
             self.capture = nil
@@ -230,8 +251,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     // If the capture failed while the page was still loading, switch it to the stream once it's there.
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        pageLoading = true
+        updateLoadingBorder()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        pageLoading = false
+        updateLoadingBorder()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        pageLoading = false
+        updateLoadingBorder()
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if captureFailed { js("startStream()") }
+        if webView.url?.host == nil {
+            pageLoading = false
+            updateLoadingBorder()
+        }
     }
 
     // MARK: Server
@@ -258,12 +298,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func waitForServer(tries: Int) {
         probe { up, udid, singleUsbDevice in
             if up {
-                if let udid { self.startCapture(udid: udid, singleUsbDevice: singleUsbDevice) } else { self.captureFailed = true }
+                if let udid { self.startCapture(udid: udid, singleUsbDevice: singleUsbDevice) } else { self.captureFailed = true; self.captureLoading = false }
                 let video = self.captureFailed ? "" : "&video=native"
                 self.web.load(URLRequest(url: URL(string: "http://localhost:\(port)/?app=1\(video)")!))
                 return
             }
             if tries <= 1 {
+                self.captureLoading = false
                 self.web.loadHTMLString("""
                 <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box;background:#000;color:#999;font:13px -apple-system">
                 Couldn't start the mirror server.<br><br>Log: ~/Library/Logs/iPhoneMirror.log</body>

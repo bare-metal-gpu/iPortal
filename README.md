@@ -10,7 +10,7 @@ Apple doesn't offer iPhone Mirroring in the EU. This app is the fix: it lets you
 
 ## Install
 
-You need a Mac with Xcode, Node 22.19+ and an Apple ID (a free one is fine).
+You need macOS 14+, full Xcode, Node 22.19+ and an Apple ID (a free one is fine).
 
 1. Xcode → Settings → Accounts: add your Apple ID.
 2. Plug in your iPhone, unlock it, tap **Trust**.
@@ -44,6 +44,8 @@ Prefer the browser? Run `npm start` and open http://localhost:7100.
 - Keep the iPhone unlocked and connected by USB. Setting Auto-Lock to Never helps.
 - With a free Apple ID, run `npm run setup` again every 7 days.
 - The iPhone's sound plays on your Mac while mirroring.
+
+The Mac app builds through `macos/iPhonePortal.xcodeproj` so Xcode compiles BorderBeamKit’s Metal shader and embeds its resources. The dependency tracks Libraries.dev’s `main` branch, with the resolved commit checked in. A border beam indicates startup, reconnecting, video loading, and pending input; it fades away when ready. Reduce Motion uses a static border. If Xcode reports a missing Metal Toolchain, install it once with `xcodebuild -downloadComponent MetalToolchain`.
 
 ## Automation API
 

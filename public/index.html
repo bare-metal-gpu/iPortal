@@ -14,8 +14,6 @@
   #overlay { position: absolute; inset: 10px; border-radius: 32px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 30px; text-align: center; background: #0b0b0de8; color: var(--muted); }
   #overlay[hidden] { display: none; }
   #overlay b { color: #e7e7ea; font-size: 15px; }
-  .spinner { width: 22px; height: 22px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
   .ripple { position: absolute; width: 34px; height: 34px; margin: -17px; border-radius: 50%; background: #ffffff55; pointer-events: none; animation: ripple 0.4s ease-out forwards; }
   @keyframes ripple { from { transform: scale(0.4); opacity: 1; } to { transform: scale(1.4); opacity: 0; } }
   aside { width: 300px; border-left: 1px solid var(--line); background: var(--panel); padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
@@ -52,7 +50,7 @@
 <main>
   <div id="phone">
     <img id="screen" alt="" draggable="false" />
-    <div id="overlay"><div class="spinner"></div><b>Connecting…</b><span id="overlayText"></span></div>
+    <div id="overlay"><b>Connecting…</b><span id="overlayText"></span></div>
   </div>
 </main>
 
@@ -129,6 +127,13 @@ const $ = (id) => document.getElementById(id);
 const screen = $("screen");
 const phone = $("phone");
 let connected = false;
+let streamReady = false;
+let pendingActions = 0;
+function reportLoading() {
+  window.webkit?.messageHandlers?.native?.postMessage({
+    loading: !connected || (!nativeVideo && !streamReady) || pendingActions > 0
+  });
+}
 const params = new URLSearchParams(location.search);
 if (params.has("app")) document.body.classList.add("app");
 let nativeVideo = params.get("video") === "native";
@@ -137,6 +142,8 @@ document.body.classList.toggle("native-video", nativeVideo);
 // Called by the Mac app if it can't capture the iPhone's screen itself.
 function startStream() {
   nativeVideo = false;
+  streamReady = false;
+  reportLoading();
   document.body.classList.remove("native-video");
   if (connected) screen.src = `/stream?${Date.now()}`;
 }
@@ -153,6 +160,8 @@ function api(name, body = {}, fromWheel = false) {
   if (!fromWheel) flushWheel(true); // Earlier wheel movement stays ahead of later input.
   if (name !== "type") flush(true); // keep typed text in order with other actions
   const requestId = crypto.randomUUID();
+  pendingActions++;
+  reportLoading();
   const task = outbound.then(async () => {
   try {
     const res = await fetch(`/api/${name}`, { method: "POST", headers: { "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content }, body: JSON.stringify({ ...body, requestId }) });
@@ -165,6 +174,9 @@ function api(name, body = {}, fromWheel = false) {
       if (receipt.value?.response?.body?.ok) return;
     } catch {}
     toast("Connection interrupted. Check the phone before repeating the action.");
+  } finally {
+    pendingActions--;
+    reportLoading();
   }
   });
   outbound = task.catch(() => {});
@@ -189,24 +201,36 @@ async function poll() {
     }
     if (!s.ok) {
       connected = false;
+      streamReady = false;
       screen.removeAttribute("src");
       $("overlay").hidden = false;
       $("overlay").querySelector("b").textContent = "Not connected";
       $("overlayText").textContent = s.error ?? "";
     }
   } catch {
+    connected = false;
+    streamReady = false;
+    $("overlay").hidden = false;
     $("dot").classList.remove("on");
     $("overlayText").textContent = "Mirror server is not running.";
   }
+  reportLoading();
   setTimeout(poll, connected ? 4000 : 1500);
 }
 
 screen.addEventListener("load", () => {
+  streamReady = true;
   $("overlay").hidden = true;
+  reportLoading();
   // Tell the native Mac app the screen's aspect ratio so it can size the window.
   window.webkit?.messageHandlers?.native?.postMessage({ w: screen.naturalWidth, h: screen.naturalHeight });
 });
-screen.addEventListener("error", () => (connected = false));
+screen.addEventListener("error", () => {
+  connected = false;
+  streamReady = false;
+  $("overlay").hidden = false;
+  reportLoading();
+});
 poll();
 queueMicrotask(() => api("ensure")); // wait for keyboard buffers to initialize
 

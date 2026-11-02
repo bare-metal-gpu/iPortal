@@ -1,59 +1,25 @@
 #!/usr/bin/env bash
-# Builds the native Mac app ("iPhone Portal.app") into dist/. With --install it's copied to ~/Applications.
-# The app runs mirror.mjs from this checkout, so build it again if you move the repo.
+# Xcode compiles BorderBeamKit's Metal shaders and embeds its resource bundle.
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/iPhone Portal.app"
+BUILD="$ROOT/vendor/mac-build"
 NODE="$(command -v node)" || { echo "Node 22.19+ is required."; exit 1; }
-
+mkdir -p "$ROOT/vendor" "$ROOT/dist"
+echo "→ Building iPhone Portal with Xcode"
+if ! xcodebuild -project "$ROOT/macos/iPhonePortal.xcodeproj" -scheme iPhonePortal \
+  -configuration Release -destination 'platform=macOS' -derivedDataPath "$BUILD" \
+  IM_REPO_PATH="$ROOT" IM_NODE_PATH="$NODE" build >"$ROOT/vendor/mac-build.log" 2>&1; then
+  tail -80 "$ROOT/vendor/mac-build.log"
+  exit 1
+fi
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-
-echo "→ Compiling"
-swiftc -O -swift-version 5 -parse-as-library -framework Cocoa -framework WebKit -framework AVFoundation -framework CoreMediaIO \
-  "$ROOT"/macos/*.swift -o "$APP/Contents/MacOS/iPhoneMirror"
-
-echo "→ Making the icon"
-ICONSET="$(mktemp -d)/AppIcon.iconset"
-mkdir -p "$ICONSET"
-swift "$ROOT/macos/tools/make-icon.swift" "$ROOT/macos/icon.png" "$ICONSET/icon_512x512@2x.png"
-for s in 16 32 128 256 512; do
-  sips -z $s $s "$ICONSET/icon_512x512@2x.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) "$ICONSET/icon_512x512@2x.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-
-cat > "$APP/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>iPhone Portal</string>
-  <key>CFBundleDisplayName</key><string>iPhone Portal</string>
-  <key>CFBundleIdentifier</key><string>com.yachty66.iphonemirror</string>
-  <key>CFBundleExecutable</key><string>iPhoneMirror</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>NSCameraUsageDescription</key><string>iPhone Portal shows your iPhone's screen by capturing it over USB, like QuickTime does.</string>
-  <key>NSMicrophoneUsageDescription</key><string>iPhone Portal plays your iPhone's sound on your Mac.</string>
-  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
-  <key>IMRepoPath</key><string>$ROOT</string>
-  <key>IMNodePath</key><string>$NODE</string>
-</dict>
-</plist>
-PLIST
-
-codesign --force --sign - "$APP" >/dev/null
+ditto "$BUILD/Build/Products/Release/iPhone Portal.app" "$APP"
+codesign --verify --strict "$APP"
 echo "✓ Built $APP"
-
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"
   rm -rf "$HOME/Applications/iPhone Portal.app"
-  cp -R "$APP" "$HOME/Applications/"
+  ditto "$APP" "$HOME/Applications/iPhone Portal.app"
   echo "✓ Installed to ~/Applications/iPhone Portal.app"
 fi

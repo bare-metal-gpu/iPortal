@@ -38,6 +38,44 @@ test("browser bootstrap supplies instance binding and request ID without prompts
   assert.ok(JSON.parse(ensure[1].body).requestId);
 });
 
+test("native loading tracks queued input, reconnects and the first fallback frame", async () => {
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const messages = [], releases = [], nodes = new Map();
+  let offline = false;
+  function element(key) {
+    if (!nodes.has(key)) nodes.set(key, { content: "instance", listeners: {},
+      classList: { add() {}, remove() {}, toggle() {} },
+      addEventListener(name, fn) { this.listeners[name] = fn; }, removeAttribute() {},
+      querySelector: () => element("child"), style: {}, dataset: {}, value: "" });
+    return nodes.get(key);
+  }
+  const context = vm.createContext({ console, URLSearchParams, location: { search: "?app=1&video=native", reload() {} },
+    crypto, queueMicrotask, performance, setTimeout: () => 1, clearTimeout() {},
+    document: { body: element("body"), getElementById: element, querySelector: element, querySelectorAll: () => [], activeElement: null },
+    window: { addEventListener() {}, webkit: { messageHandlers: { native: { postMessage: message => messages.push(message) } } } },
+    fetch: async url => {
+      if (url === "/api/status" && offline) throw new Error("offline");
+      if (url === "/api/home") await new Promise(resolve => releases.push(resolve));
+      return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true } : { ok: true } };
+    },
+  });
+  vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const loading = () => messages.filter(m => "loading" in m).at(-1).loading;
+  await settle(); assert.equal(loading(), false);
+  const first = vm.runInContext("api('home')", context);
+  const second = vm.runInContext("api('home')", context);
+  await settle(); assert.equal(loading(), true);
+  releases.shift()(); await first; await settle(); assert.equal(loading(), true);
+  releases.shift()(); await second; assert.equal(loading(), false);
+  offline = true; await vm.runInContext("poll()", context); assert.equal(loading(), true);
+  assert.equal(element("overlay").hidden, false);
+  offline = false; await vm.runInContext("poll()", context); assert.equal(loading(), false);
+  vm.runInContext("startStream()", context); assert.equal(loading(), true);
+  element("screen").listeners.load(); assert.equal(loading(), false);
+  element("screen").listeners.error(); assert.equal(loading(), true);
+});
+
 test("Effect schemas reject malformed actions before device dispatch", async () => {
   for (const [name, body] of [
     ["type", {}], ["type", { text: 123 }], ["quality", { level: "constructor" }], ["shortcut", { name: "invalid" }],
