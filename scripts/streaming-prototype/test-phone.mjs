@@ -46,6 +46,6 @@ try{
  report.watchdogPassed=true;report.watchdogEvents=state.events;token=null;report.passed=true;
 }catch(error){report.error=error.message;process.exitCode=1;}
 finally{
- try{const status=await post('/wda/mirror/stream',{phase:'status'});if(status.active)await post('/wda/mirror/stream',{phase:'cancel',token:status.token});report.finalProbe=await post('/wda/mirror/probe');}catch(error){report.cleanupError=error.message;}
+ try{const status=await post('/wda/mirror/stream',{phase:'status'});if(status.active)await post('/wda/mirror/stream',{phase:'cancel',token:status.token});report.finalProbe=await post('/wda/mirror/probe');if(!report.finalProbe.activeCount)report.hiddenProbe=await post('/wda/mirror/probe',{action:'hide'});}catch(error){report.cleanupError=error.message;}
  await fs.writeFile(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({passed:report.passed,error:report.error,calibration:report.calibrationPassed,continuous:report.continuousContactPassed,watchdog:report.watchdogPassed,activeContacts:report.finalProbe?.activeCount},null,2));
 }

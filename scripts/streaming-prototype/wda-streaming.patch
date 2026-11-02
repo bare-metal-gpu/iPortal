@@ -29,7 +29,7 @@
  }
  
  #pragma mark - Commands
-@@ -275,4 +281,20 @@
+@@ -275,4 +281,24 @@
    return FBResponseWithObject(@{@"completed":@YES, @"method":@"hid-event-stream", @"elapsedMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000)});
  }
  
@@ -37,6 +37,10 @@
 +{
 +  NSString *action=request.arguments[@"action"] ?: @"state";
 +  if([action isEqual:@"show"])return FBResponseWithObject([FBMirrorTouchProbe show]);
++  if([action isEqual:@"hide"]){
++    if(FBMirrorTouchProbe.shared.active.count || FBMirrorStreamingExperiment.shared.active)return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Release contacts before hiding probe" traceback:nil]);
++    return FBResponseWithObject([FBMirrorTouchProbe hide]);
++  }
 +  if([action isEqual:@"reset"]){
 +    if(FBMirrorTouchProbe.shared.active.count || FBMirrorStreamingExperiment.shared.active)return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Release contacts before resetting probe" traceback:nil]);
 +    [FBMirrorTouchProbe.shared reset];
