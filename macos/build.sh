@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Builds the native Mac app ("iPhone Mirroring EU.app") into dist/. With --install it's copied to ~/Applications.
+# Builds the native Mac app ("iPhone Portal.app") into dist/. With --install it's copied to ~/Applications.
 # The app runs mirror.mjs from this checkout, so build it again if you move the repo.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/dist/iPhone Mirroring EU.app"
+APP="$ROOT/dist/iPhone Portal.app"
 NODE="$(command -v node)" || { echo "Node 22.19+ is required."; exit 1; }
 
 rm -rf "$APP"
@@ -29,8 +29,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>iPhone Mirroring EU</string>
-  <key>CFBundleDisplayName</key><string>iPhone Mirroring EU</string>
+  <key>CFBundleName</key><string>iPhone Portal</string>
+  <key>CFBundleDisplayName</key><string>iPhone Portal</string>
   <key>CFBundleIdentifier</key><string>com.yachty66.iphonemirror</string>
   <key>CFBundleExecutable</key><string>iPhoneMirror</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -39,8 +39,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSCameraUsageDescription</key><string>iPhone Mirroring EU shows your iPhone's screen by capturing it over USB, like QuickTime does.</string>
-  <key>NSMicrophoneUsageDescription</key><string>iPhone Mirroring EU plays your iPhone's sound on your Mac.</string>
+  <key>NSCameraUsageDescription</key><string>iPhone Portal shows your iPhone's screen by capturing it over USB, like QuickTime does.</string>
+  <key>NSMicrophoneUsageDescription</key><string>iPhone Portal plays your iPhone's sound on your Mac.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
   <key>IMRepoPath</key><string>$ROOT</string>
   <key>IMNodePath</key><string>$NODE</string>
@@ -53,7 +53,7 @@ echo "✓ Built $APP"
 
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"
-  rm -rf "$HOME/Applications/iPhone Mirroring EU.app"
+  rm -rf "$HOME/Applications/iPhone Portal.app"
   cp -R "$APP" "$HOME/Applications/"
-  echo "✓ Installed to ~/Applications/iPhone Mirroring EU.app"
+  echo "✓ Installed to ~/Applications/iPhone Portal.app"
 fi

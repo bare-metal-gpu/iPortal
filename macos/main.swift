@@ -1,4 +1,4 @@
-// Native Mac window for iPhone Mirroring EU, styled after Apple's iPhone Mirroring:
+// Native Mac window for iPhone Portal, styled after Apple's iPhone Mirroring:
 // a phone-shaped window with no chrome, and a slim bar above it that appears on hover.
 // It starts mirror.mjs if it isn't already running. The screen comes from a direct USB capture of the iPhone
 // (Capture.swift), with a transparent WKWebView on top that turns clicks and keys into touches. If the capture
@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let vis = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         window = MirrorWindow(contentRect: NSRect(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2, width: size.width, height: size.height),
                               styleMask: [.borderless, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "iPhone Mirroring EU"
+        window.title = "iPhone Portal"
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
@@ -221,7 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         capture = c
         c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self] ok in
             guard let self, !ok else { return }
-            NSLog("iPhone Mirroring EU: no direct screen capture, falling back to the MJPEG stream")
+            NSLog("iPhone Portal: no direct screen capture, falling back to the MJPEG stream")
             self.capture?.layer.removeFromSuperlayer()
             self.capture = nil
             self.captureFailed = true
@@ -285,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         p.environment = env
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         if let log = try? FileHandle(forWritingTo: logURL) { p.standardOutput = log; p.standardError = log }
-        do { try p.run(); server = p } catch { NSLog("iPhone Mirroring EU: couldn't start node: \(error)") }
+        do { try p.run(); server = p } catch { NSLog("iPhone Portal: couldn't start node: \(error)") }
     }
 
     // MARK: Actions
@@ -336,11 +336,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             i.target = target ?? self
             return i
         }
-        menu("iPhone Mirroring EU", [
-            NSMenuItem(title: "About iPhone Mirroring EU", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        menu("iPhone Portal", [
+            NSMenuItem(title: "About iPhone Portal", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
             .separator(),
-            NSMenuItem(title: "Hide iPhone Mirroring EU", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
-            NSMenuItem(title: "Quit iPhone Mirroring EU", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
+            NSMenuItem(title: "Hide iPhone Portal", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
+            NSMenuItem(title: "Quit iPhone Portal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ])
         menu("Edit", [item("Paste to iPhone", #selector(pasteToPhone), "v")])
         menu("View", [

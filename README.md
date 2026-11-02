@@ -1,4 +1,4 @@
-# iPhone Mirroring EU
+# iPhone Portal
 
 <img src="macos/icon.png" width="128" align="right" />
 
@@ -21,10 +21,10 @@ You need a Mac with Xcode, Node 22.19+ and an Apple ID (a free one is fine).
 git clone https://github.com/bare-metal-gpu/iphone-mirror && cd iphone-mirror
 npm ci
 npm run setup   # builds the helper app for your iPhone
-npm run app     # installs "iPhone Mirroring EU" to ~/Applications
+npm run app     # installs "iPhone Portal" to ~/Applications
 ```
 
-5. Open **iPhone Mirroring EU** and allow Camera and Microphone access when asked.
+5. Open **iPhone Portal** and allow Camera and Microphone access when asked.
 6. First launch only: on the iPhone, go to Settings → General → VPN & Device Management → trust your Apple ID.
 
 ## Use
