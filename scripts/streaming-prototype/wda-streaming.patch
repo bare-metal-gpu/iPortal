@@ -1,0 +1,52 @@
+--- a/WebDriverAgentLib/Commands/FBTouchActionCommands.m
++++ b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+@@ -101,19 +101,25 @@
+ + (id)touchScreenDigitizerSender;
+ @end
+ 
++#import "FBMirrorStreamingExperiment.h"
++
+ @implementation FBTouchActionCommands
+ 
+ #pragma mark - <FBCommandHandler>
+ 
+ + (NSArray *)routes
+ {
+-  return
+-  @[
++  NSMutableArray *routes = [NSMutableArray arrayWithArray:@[
+     [[FBRoute POST:@"/actions"] respondWithTarget:self action:@selector(handlePerformW3CTouchActions:)],
+     [[FBRoute POST:@"/wda/mirror/touch"].withoutSession respondWithTarget:self action:@selector(handleMirrorTouch:)],
+     [[FBRoute POST:@"/wda/mirror/keepalive"].withoutSession respondWithTarget:self action:@selector(handleMirrorKeepalive:)],
+     [[FBRoute GET:@"/wda/mirror/capabilities"].withoutSession respondWithTarget:self action:@selector(handleMirrorCapabilities:)],
+-  ];
++  ]];
++  if ([NSProcessInfo.processInfo.environment[@"MIRROR_STREAMING_PROTOTYPE"] isEqual:@"1"]) {
++    [routes addObject:[[FBRoute POST:@"/wda/mirror/probe"].withoutSession respondWithTarget:self action:@selector(handleMirrorProbe:)]];
++    [routes addObject:[[FBRoute POST:@"/wda/mirror/stream"].withoutSession respondWithTarget:self action:@selector(handleMirrorStream:)]];
++  }
++  return routes;
+ }
+ 
+ #pragma mark - Commands
+@@ -275,4 +281,20 @@
+   return FBResponseWithObject(@{@"completed":@YES, @"method":@"hid-event-stream", @"elapsedMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000)});
+ }
+ 
+++ (id<FBResponsePayload>)handleMirrorProbe:(FBRouteRequest *)request
++{
++  NSString *action=request.arguments[@"action"] ?: @"state";
++  if([action isEqual:@"show"])return FBResponseWithObject([FBMirrorTouchProbe show]);
++  if([action isEqual:@"reset"]){
++    if(FBMirrorTouchProbe.shared.active.count || FBMirrorStreamingExperiment.shared.active)return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Release contacts before resetting probe" traceback:nil]);
++    [FBMirrorTouchProbe.shared reset];
++  } else if(![action isEqual:@"state"])return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"Unknown probe action" traceback:nil]);
++  return FBResponseWithObject(FBMirrorTouchProbe.shared.snapshot);
++}
+++ (id<FBResponsePayload>)handleMirrorStream:(FBRouteRequest *)request
++{
++  NSError *error=nil; NSDictionary *result=[FBMirrorStreamingExperiment.shared command:request.arguments error:&error];
++  return result ? FBResponseWithObject(result) : FBResponseWithUnknownError(error);
++}
++
+ @end
