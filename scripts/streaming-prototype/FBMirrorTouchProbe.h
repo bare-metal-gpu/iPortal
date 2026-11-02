@@ -77,7 +77,7 @@ static BOOL FBMirrorProbePriorIdleTimer;
 + (NSDictionary *)hide {
   [self.shared releaseIdleTimer];
   FBMirrorProbeWindow.hidden=YES;
-  return self.shared.snapshot;
+  return [self.shared snapshot];
 }
 - (void)dealloc {
   [NSNotificationCenter.defaultCenter removeObserver:self];

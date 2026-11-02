@@ -31,9 +31,16 @@ try{
  assert.equal(state.activeCount,1,'Down-only chunk must preserve one active UIKit touch');
  const identity=state.events.find(e=>e.phase==='began')?.id;assert.ok(identity);
  for(const [x,y] of [[.5,.55],[.65,.6]]){
+  const previous=state.events.at(-1);
+  const priorMoved=state.events.filter(e=>e.phase==='moved').length;
   await post('/wda/mirror/stream',{phase:'move',token,x,y});await sleep(150);
   state=await post('/wda/mirror/probe');assert.equal(state.activeCount,1);assert.equal(state.events.filter(e=>e.phase==='began').length,1);
-  assert.ok(state.events.filter(e=>e.phase==='moved').some(e=>e.id===identity),'Move must reach same touch');
+  const moves=state.events.filter(e=>e.phase==='moved');
+  assert.ok(moves.length>priorMoved,'Each move chunk must produce new UIKit movement');
+  const fresh=moves.slice(priorMoved),last=fresh.at(-1);
+  assert.ok(fresh.every(e=>e.id===identity),'Each new move must use the original touch');
+  assert.ok(last.timestamp>previous.timestamp && last.receivedUptime>previous.receivedUptime,'Movement timestamps must advance for each chunk');
+  assert.ok(last.x>previous.x+2 && last.y>previous.y+2,'Each chunk must move right/down toward its new target');
  }
  await post('/wda/mirror/stream',{phase:'end',token});token=null;
  state=await post('/wda/mirror/probe');assert.equal(state.activeCount,0);assert.equal(state.events.filter(e=>e.phase==='ended').length,1);
