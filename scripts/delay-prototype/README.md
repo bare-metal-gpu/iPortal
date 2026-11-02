@@ -29,7 +29,7 @@ The route is disabled without the environment flag. It is not wired into the pub
 
 ## Status and offline evidence
 
-The signed iPhone helper builds successfully. Installer repeatability and JavaScript syntax checks pass. **No phone input has been dispatched by this experiment yet**: its exclusive phone slot is pending while another task finishes.
+The signed iPhone helper builds successfully. Installer repeatability and JavaScript syntax checks pass. Physical tests completed in an exclusive phone slot on 3 November 2026. Eighteen daemon taps delivered matching UIKit began/ended events. The raw runner-local path did not get past prewarm. Production remains unchanged.
 
 `empty-playback-macos.m` runs a zero-event smoke test on macOS. The recorded five-sample medians were **200.319 ms** with the completion delay enabled and **0.025 ms** with it disabled. The stream contains no HID events. This confirms the callback/selector contract and the delay in macOS Recap; it is not proof that iOS permits runner-local touch delivery. The raw results are in `macos-empty-playback-results.json`.
 
@@ -37,3 +37,22 @@ The signed iPhone helper builds successfully. Installer repeatability and JavaSc
 xcrun clang -fobjc-arc -framework Foundation scripts/delay-prototype/empty-playback-macos.m -o vendor/empty-playback-macos
 vendor/empty-playback-macos
 ```
+
+## Physical results
+
+The actual iPhone runtime confirms the completion-delay switch: five empty-stream samples had median **202.02 ms** with delay enabled versus **1.18 ms** with it disabled (the harness polls at 1 ms). Empty streams contain zero input events.
+
+Real daemon taps retained the completion tail at all three implicit-confirmation intervals:
+
+| Requested tap | Confirmation 0 ms | Confirmation 50 ms | Confirmation 300 ms |
+| --- | ---: | ---: | ---: |
+| 60 ms | 280.31 ms | 280.00 ms | 282.60 ms |
+| 250 ms | 470.96 ms | 464.05 ms | 462.92 ms |
+
+These are native callback medians, three samples per cell. UIKit observed touch onset 23–39 ms after the daemon invocation; the callback arrived roughly 175–196 ms **after** UIKit touch end. This is principally a completion/throughput tail, not an equivalent delay before touch-down. HTTP, host preflight, browser recording and display capture are excluded from those native onset numbers.
+
+The direct runner-local candidate used logical 402×874 geometry and scale 1, matching the streaming experiment's successful raw delivery calibration. Its virtual-HID-service prewarm did not complete. A 3-second bound returned unsupported operation with no events dispatched; the recorder remained empty and activeCount zero. A second call was rejected while prewarm remained pending. The log identifies virtual service creation, but does not prove the precise cause. No privilege changes or daemon modifications were attempted.
+
+**Conclusion:** the 200 ms delay is verified on iOS and removable for a player we own, but no working mechanism was found to remove it from real daemon-mediated touches under the current signing/permission boundary. Lowering confirmation to zero does not solve it. A fast local callback without UIKit delivery would not count as a fix.
+
+`phone-results.json` preserves the grouped timings and local failure evidence. The parent owns restoring the production runner after the exclusive test slot.

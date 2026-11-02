@@ -1,0 +1,280 @@
+{
+  "testedAt": "2026-11-02T23:16:10.241055+00:00",
+  "device": "iPhone 16 Pro / iOS 26.7.1",
+  "sampleCounts": {
+    "empty": 10,
+    "daemon": 18,
+    "localAttempts": 2
+  },
+  "empty": {
+    "false": {
+      "medianElapsedMs": 202.01970834750682,
+      "samples": [
+        202.23804167471826,
+        202.01970834750682,
+        201.7740833107382,
+        202.22720835590735,
+        200.9010833571665
+      ],
+      "allZeroEvents": true
+    },
+    "true": {
+      "medianElapsedMs": 1.1826666886918247,
+      "samples": [
+        1.1826666886918247,
+        1.1837499914690852,
+        1.180666673462838,
+        1.1887916480191052,
+        1.178583304863423
+      ],
+      "allZeroEvents": true
+    }
+  },
+  "daemon": [
+    {
+      "confirmationMs": 0,
+      "durationMs": 60,
+      "medianElapsedMs": 280.3149583633058,
+      "medianInputDeliveryMs": 33.30287500284612,
+      "medianCallbackAfterEndMs": 181.46958336001262,
+      "allDeliveryVerified": true,
+      "samples": [
+        {
+          "inputDeliveryMs": 33.30287500284612,
+          "touchDurationMs": 66.66666670935228,
+          "callbackAfterEndMs": 187.57612496847287,
+          "elapsedMs": 284.01266667060554
+        },
+        {
+          "inputDeliveryMs": 38.50420837989077,
+          "touchDurationMs": 66.49454165017232,
+          "callbackAfterEndMs": 175.74554169550538,
+          "elapsedMs": 279.5372500550002
+        },
+        {
+          "inputDeliveryMs": 32.718125032261014,
+          "touchDurationMs": 66.66666665114462,
+          "callbackAfterEndMs": 181.46958336001262,
+          "elapsedMs": 280.3149583633058
+        }
+      ]
+    },
+    {
+      "confirmationMs": 0,
+      "durationMs": 250,
+      "medianElapsedMs": 470.9622499649413,
+      "medianInputDeliveryMs": 26.293916685972363,
+      "medianCallbackAfterEndMs": 194.1634166869335,
+      "allDeliveryVerified": true,
+      "samples": [
+        {
+          "inputDeliveryMs": 25.848374993074685,
+          "touchDurationMs": 250,
+          "callbackAfterEndMs": 195.8648333675228,
+          "elapsedMs": 471.75420832354575
+        },
+        {
+          "inputDeliveryMs": 27.159666642546654,
+          "touchDurationMs": 250,
+          "callbackAfterEndMs": 194.1634166869335,
+          "elapsedMs": 470.9622499649413
+        },
+        {
+          "inputDeliveryMs": 26.293916685972363,
+          "touchDurationMs": 250,
+          "callbackAfterEndMs": 188.46699997084215,
+          "elapsedMs": 464.9386249948293
+        }
+      ]
+    },
+    {
+      "confirmationMs": 50,
+      "durationMs": 60,
+      "medianElapsedMs": 279.99791665934026,
+      "medianInputDeliveryMs": 26.81612502783537,
+      "medianCallbackAfterEndMs": 186.37549999402836,
+      "allDeliveryVerified": true,
+      "samples": [
+        {
+          "inputDeliveryMs": 24.871999979950488,
+          "touchDurationMs": 66.66666665114462,
+          "callbackAfterEndMs": 189.4647916778922,
+          "elapsedMs": 281.0549582936801
+        },
+        {
+          "inputDeliveryMs": 26.81612502783537,
+          "touchDurationMs": 66.52708334149793,
+          "callbackAfterEndMs": 186.37549999402836,
+          "elapsedMs": 279.99791665934026
+        },
+        {
+          "inputDeliveryMs": 34.2654999694787,
+          "touchDurationMs": 66.14616664592177,
+          "callbackAfterEndMs": 178.06629167171195,
+          "elapsedMs": 279.19845830183476
+        }
+      ]
+    },
+    {
+      "confirmationMs": 50,
+      "durationMs": 250,
+      "medianElapsedMs": 464.054791664239,
+      "medianInputDeliveryMs": 24.206875008530915,
+      "medianCallbackAfterEndMs": 189.61745832348242,
+      "allDeliveryVerified": true,
+      "samples": [
+        {
+          "inputDeliveryMs": 24.155083345249295,
+          "touchDurationMs": 249.80962497647852,
+          "callbackAfterEndMs": 189.61745832348242,
+          "elapsedMs": 463.9104999951087
+        },
+        {
+          "inputDeliveryMs": 31.920499983243644,
+          "touchDurationMs": 250,
+          "callbackAfterEndMs": 183.46658331574872,
+          "elapsedMs": 464.28474999265745
+        },
+        {
+          "inputDeliveryMs": 24.206875008530915,
+          "touchDurationMs": 250,
+          "callbackAfterEndMs": 190.9829166252166,
+          "elapsedMs": 464.054791664239
+        }
+      ]
+    },
+    {
+      "confirmationMs": 300,
+      "durationMs": 60,
+      "medianElapsedMs": 282.60204166872427,
+      "medianInputDeliveryMs": 30.544625013135374,
+      "medianCallbackAfterEndMs": 186.62287498591468,
+      "allDeliveryVerified": true,
+      "samples": [
+        {
+          "inputDeliveryMs": 32.39012503763661,
+          "touchDurationMs": 66.66666665114462,
+          "callbackAfterEndMs": 184.376249962952,
+          "elapsedMs": 283.3853750489652
+        },
+        {
+          "inputDeliveryMs": 24.45024996995926,
+          "touchDurationMs": 66.66666665114462,
+          "callbackAfterEndMs": 191.08337495708838,
+          "elapsedMs": 281.1717083095573
+        },
+        {
+          "inputDeliveryMs": 30.544625013135374,
+          "touchDurationMs": 66.17004168219864,
+          "callbackAfterEndMs": 186.62287498591468,
+          "elapsedMs": 282.60204166872427
+        }
+      ]
+    },
+    {
+      "confirmationMs": 300,
+      "durationMs": 250,
+      "medianElapsedMs": 462.923375016544,
+      "medianInputDeliveryMs": 31.212375033646822,
+      "medianCallbackAfterEndMs": 183.37199999950826,
+      "allDeliveryVerified": true,
+      "samples": [
+        {
+          "inputDeliveryMs": 37.60387498186901,
+          "touchDurationMs": 249.89858333719894,
+          "callbackAfterEndMs": 177.02079162700102,
+          "elapsedMs": 462.923375016544
+        },
+        {
+          "inputDeliveryMs": 31.212375033646822,
+          "touchDurationMs": 250,
+          "callbackAfterEndMs": 183.37199999950826,
+          "elapsedMs": 463.85020832531154
+        },
+        {
+          "inputDeliveryMs": 23.306916642468423,
+          "touchDurationMs": 249.41608333028853,
+          "callbackAfterEndMs": 189.16691665071994,
+          "elapsedMs": 462.22045831382275
+        }
+      ]
+    }
+  ],
+  "local": [
+    {
+      "response": {
+        "request": {
+          "mode": "local",
+          "ignoreDelay": false
+        },
+        "httpMs": 3049.058625,
+        "status": 500,
+        "value": {
+          "error": "unsupported operation",
+          "message": "Local prewarm timed out; no events dispatched",
+          "traceback": ""
+        },
+        "sessionId": null
+      },
+      "probe": {
+        "request": {
+          "mode": "state"
+        },
+        "httpMs": 6.611667000000125,
+        "status": 200,
+        "value": {
+          "height": 480,
+          "applicationState": 0,
+          "idleTimerHeld": true,
+          "idleTimerDisabled": true,
+          "visible": 1,
+          "width": 320,
+          "activeCount": 0,
+          "bundleId": "com.testteam01.iphonemirror.WebDriverAgentRunner.xctrunner",
+          "events": []
+        },
+        "sessionId": null
+      }
+    },
+    {
+      "response": {
+        "request": {
+          "mode": "local",
+          "ignoreDelay": true
+        },
+        "httpMs": 35.47954200000004,
+        "status": 500,
+        "value": {
+          "error": "unsupported operation",
+          "message": "Previous local prewarm pending; restart experiment runner",
+          "traceback": ""
+        },
+        "sessionId": null
+      },
+      "probe": {
+        "request": {
+          "mode": "state"
+        },
+        "httpMs": 2.300999999999931,
+        "status": 200,
+        "value": {
+          "height": 480,
+          "applicationState": 0,
+          "idleTimerHeld": true,
+          "idleTimerDisabled": true,
+          "visible": 1,
+          "width": 320,
+          "activeCount": 0,
+          "bundleId": "com.testteam01.iphonemirror.WebDriverAgentRunner.xctrunner",
+          "events": []
+        },
+        "sessionId": null
+      }
+    }
+  ],
+  "limits": [
+    "Native inputDeliveryMs starts immediately before the daemon RPC, after validation/app/orientation guards. It does not include host/browser time.",
+    "Empty-stream callback speedup proves the iOS Recap delay switch, not delivery of any input.",
+    "Local prewarm timed out before playback; logs show virtual HID service creation, but the precise reason is not proven. No entitlement or sandbox protection was changed."
+  ]
+}

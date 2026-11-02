@@ -3,6 +3,7 @@
 @protocol FBDelayComposer <NSObject>
 - (void)composeWithSender:(id)sender actionBlock:(void (^)(id<FBDelayComposer>))block;
 - (void)setGsScreenPointSize:(CGSize)size;
+- (void)setGsScreenScaleFactor:(double)scale;
 - (void)touchDown:(CGPoint)point;
 - (void)advanceTime:(double)duration;
 - (void)moveToPoint:(CGPoint)point duration:(double)duration;
@@ -100,6 +101,7 @@ static id<FBResponsePayload> FBMirrorDelayRun(NSDictionary *arguments)
       if ([mode isEqual:@"empty"]) return;
       [composer composeWithSender:[senderClass touchScreenDigitizerSender] actionBlock:^(id<FBDelayComposer> touch) {
         [touch setGsScreenPointSize:size];
+        [touch setGsScreenScaleFactor:1];
         [touch touchDown:point];
         [touch advanceTime:durationMs.doubleValue/1000];
         [touch liftUp:point];
@@ -110,9 +112,27 @@ static id<FBResponsePayload> FBMirrorDelayRun(NSDictionary *arguments)
     [localPlayer setIgnoresCompletionDelay:ignoreDelay.boolValue];
     if (![mode isEqual:@"empty"]) {
       id<FBDelayPlayer> player = [localPlayer underlyingPlayer];
-      if (![player respondsToSelector:@selector(prewarmForEventStream:withError:)]
-          || ![player prewarmForEventStream:stream withError:&error])
-        return FBResponseWithStatus([FBCommandStatus unsupportedOperationErrorWithMessage:error.localizedDescription ?: @"Local event delivery cannot prewarm" traceback:nil]);
+      if (![player respondsToSelector:@selector(prewarmForEventStream:withError:)])
+        return FBResponseWithStatus([FBCommandStatus unsupportedOperationErrorWithMessage:@"Local prewarm selector unavailable" traceback:nil]);
+      // Virtual-service creation can wait for callbacks delivered on the main
+      // run loop. Keep that loop live and bound the experiment; never dispatch
+      // events from this worker, including after a timeout.
+      static atomic_bool warming = false;
+      bool expected = false;
+      if (!atomic_compare_exchange_strong(&warming, &expected, true))
+        return FBResponseWithStatus([FBCommandStatus unsupportedOperationErrorWithMessage:@"Previous local prewarm pending; restart experiment runner" traceback:nil]);
+      __block atomic_bool warmComplete = false;
+      __block BOOL warmSuccess = NO;
+      __block NSError *warmError = nil;
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        warmSuccess = [player prewarmForEventStream:stream withError:&warmError];
+        atomic_store_explicit(&warmComplete, true, memory_order_release);
+        atomic_store(&warming, false);
+      });
+      BOOL warmReplied = [[[[[FBRunLoopSpinner new] interval:0.001] timeout:3] timeoutErrorMessage:@"Local prewarm timed out; no events dispatched"]
+                         spinUntilTrue:^BOOL { return atomic_load_explicit(&warmComplete, memory_order_acquire); } error:&error];
+      if (!warmReplied || !warmSuccess)
+        return FBResponseWithStatus([FBCommandStatus unsupportedOperationErrorWithMessage:(warmError ?: error).localizedDescription ?: @"Local event delivery cannot prewarm" traceback:nil]);
     }
     started = NSProcessInfo.processInfo.systemUptime;
     [localPlayer playEventStream:stream options:[optionsClass new] completion:^{
