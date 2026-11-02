@@ -237,17 +237,28 @@ const enqueue = scheduler.enqueue;
 const clamp = (v) => Math.min(1, Math.max(0, v));
 
 let fastTouch = true; // false once we learn this WDA build lacks /wda/mirror/touch (see scripts/wda-fast-touch.patch)
+let guardedTouch;
+async function supportsGuardedTouch() {
+  if (guardedTouch !== undefined) return guardedTouch;
+  try { guardedTouch = (await wda("GET", "/wda/mirror/capabilities")).value?.guardedTouch === true; }
+  catch (e) { if (e.code !== "unknown command") throw e; guardedTouch = false; }
+  return guardedTouch;
+}
 
 // points: [[x, y, ms], ...] with x/y as 0..1 fractions of the screen; end: ms when the finger lifts.
 async function gesture(points, end, guards = {}) {
   if (fastTouch) {
     try {
       // Skips WDA's per-action app lookup and snapshots, so the touch lands ~150 ms sooner than /actions.
-      await wda("POST", "/wda/mirror/touch", { points, end, ...guards });
-      return;
+      return (await wda("POST", "/wda/mirror/touch", { points, end, ...guards })).value;
     } catch (e) {
       if (e.code !== "unknown command") throw e;
-      fastTouch = false;
+      fastTouch = false; guardedTouch = false;
+      // A helper replacement may have removed the guarded route. The fallback
+      // must perform its own checks before dispatch rather than trust cached capability.
+      if ((await wda("GET", "/wda/locked")).value) throw apiError("Unlock your iPhone", 409, "device locked");
+      if (guards.expectedBundleId && (await wda("GET", "/wda/activeAppInfo")).value.bundleId !== guards.expectedBundleId) throw apiError("Foreground app changed", 409, "app changed");
+      if (guards.expectedOrientation && (await withSession(s => wda("GET", `/session/${s}/orientation`))).value !== guards.expectedOrientation) throw apiError("Screen orientation changed", 409, "orientation changed");
       console.log("  WDA has no fast touch endpoint; rerun npm run setup for lower latency");
     }
   }
@@ -321,6 +332,7 @@ function maybeStartWda(udid) {
   wdaProcess.on("exit", () => {
     wdaProcess = null;
     sid = null;
+    guardedTouch = undefined; fastTouch = true;
     const output = fs.readFileSync(logPath).subarray(from).toString();
     wdaProblem = WDA_PROBLEMS.find(([re]) => re.test(output))?.[1] ?? null;
     wdaRetryAt = Date.now() + (wdaProblem ? 30000 : 3000);
@@ -398,11 +410,12 @@ if (positionals[0] === "devices") {
 
 
 const inspection = createInspection({ wda, withSession, enqueue });
-const keepAwake = createKeepAwake({ wda, withSession, enqueue: fn => enqueue(fn, { priority: 10 }) });
+const keepAwake = createKeepAwake({ wda, withSession, enqueue: fn => scheduler.maintenance(fn) });
 let commands;
 const commandLedger = () => commands ??= createCommands({ file: process.env.MIRROR_COMMANDS_FILE ?? path.join(ROOT, "vendor", opts.port === "7100" ? "commands.json" : `commands-${opts.port}.json`) });
 
 async function dispatch(name, body, signal) {
+  const started = performance.now();
   if (name === "status") return { status: 200, body: await status() };
   if (name === "command-status") {
     const value = commandLedger().get(body.requestId);
@@ -418,26 +431,35 @@ async function dispatch(name, body, signal) {
   return commandLedger().execute(requestId, { name, body }, async mark => {
     if (name === "lock") keepAwake.stop("lock requested");
     let dispatched = false, executed = false;
+    const timing = {};
     const onDispatch = () => { if (!dispatched) { dispatched = true; mark("running"); inspection.invalidateObservations(); } };
     try {
-      await commandContext.run({ signal, deadline, onDispatch, operationTimeoutMs: Math.max(8000, (body.end ?? 0) + 2000) }, async () => {
+      await commandContext.run({ signal, deadline, onDispatch, priority: 5, operationTimeoutMs: Math.max(8000, (body.end ?? 0) + 2000) }, async () => {
         await enqueue(async () => {
-          if (!["unlock", "lock", "ensure", "quality"].includes(name)) {
+          timing.queueMs = Math.round(performance.now() - started);
+          const nativeGuards = ["gesture", "shortcut"].includes(name) && await supportsGuardedTouch();
+          if (!nativeGuards && !["unlock", "lock", "ensure", "quality"].includes(name)) {
             if ((await wda("GET", "/wda/locked")).value) throw apiError("Unlock your iPhone", 409, "device locked");
           }
-          if (body.expectedApp) {
+          if (!nativeGuards && body.expectedApp) {
             const active = (await wda("GET", "/wda/activeAppInfo")).value;
             if (active.bundleId !== body.expectedApp) throw apiError("Foreground app changed", 409, "app changed");
           }
-          if (body.expectedOrientation && (await withSession(s => wda("GET", `/session/${s}/orientation`))).value !== body.expectedOrientation) throw apiError("Screen orientation changed", 409, "orientation changed");
+          if (!nativeGuards && body.expectedOrientation && (await withSession(s => wda("GET", `/session/${s}/orientation`))).value !== body.expectedOrientation) throw apiError("Screen orientation changed", 409, "orientation changed");
           if (body.observationId) await inspection.verifyObservation(body.observationId, signal);
           signal?.throwIfAborted();
-          await actions[name](body);
+          const actionStarted = performance.now();
+          timing.preflightMs = Math.round(actionStarted - started - timing.queueMs);
+          const result = await actions[name](body);
+          timing.actionMs = Math.round(performance.now() - actionStarted);
+          if (result?.timing) timing.native = result.timing;
           executed = true;
+          if (["gesture", "shortcut", "tap", "type", "home", "button"].includes(name)) keepAwake.activity();
         });
         if (body.waitFor) await inspection.wait(body.waitFor, signal);
       });
-      return { status: 200, body: { ok: true, requestId, outcome: body.waitFor ? "verified" : "executed", verified: Boolean(body.waitFor) } };
+      timing.totalMs = Math.round(performance.now() - started);
+      return { status: 200, body: { ok: true, requestId, outcome: body.waitFor ? "verified" : "executed", verified: Boolean(body.waitFor), timing } };
     } catch (e) {
       const result = errorResponse(e);
       result.body = { ...result.body, requestId, outcome: executed ? "executed" : dispatched ? "unknown" : "not executed", verified: false };

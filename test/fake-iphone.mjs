@@ -10,7 +10,7 @@ const TINY_JPEG = Buffer.from(
   "base64",
 );
 
-export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = {}) {
+export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, guardedTouch = false } = {}) {
   const log = [];
   const jpeg = frame ? fs.readFileSync(frame) : TINY_JPEG;
   const ui = {
@@ -24,6 +24,8 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = 
     app: "com.apple.Preferences",
     orientation: "PORTRAIT",
     settings: {},
+    guardedTouch,
+    removeTouch: false,
     devices: [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }],
   };
   let sessionId = "S1";
@@ -45,7 +47,12 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = 
       const fail = (error, message = error) => reply({ error, message }, {}, 404);
       if (req.url === "/status") return reply({ ready: true });
       if (req.url === "/session") return reply({ sessionId, capabilities: {} });
-      if (req.url === "/wda/mirror/touch") return fail("unknown command");
+      if (req.url === "/wda/mirror/capabilities") return reply({ version: ui.guardedTouch ? 3 : 1, guardedTouch: ui.guardedTouch });
+      if (req.url === "/wda/mirror/touch") {
+        if (!ui.guardedTouch || ui.removeTouch) return fail("unknown command");
+        if (ui.locked || (json.expectedBundleId && json.expectedBundleId !== ui.app) || (json.expectedOrientation && json.expectedOrientation !== ui.orientation)) return fail("invalid element state");
+        return reply({ completed: true, timing: { guardMs: 2, playbackMs: 70, confirmationMs: 50 } });
+      }
       if (ui.expireSession && req.url.startsWith("/session/")) {
         ui.expireSession = false;
         sessionId = `S${++generation}`;

@@ -119,3 +119,33 @@ test("invalid options do not replace an active lease; status is read-only", asyn
   await f.advance(30000);
   assert.equal(f.calls.length, count);
 });
+
+test("successful input defers maintenance, drops obsolete queued pulses and preserves expiry", async () => {
+  const f = fixture();
+  await f.api.configure({ enabled: true, durationMs: 40000 });
+  await f.advance(14000);
+  f.api.activity();
+  await f.advance(1000);
+  assert.equal(f.api.status().pulses, 1);
+  await f.advance(14000);
+  assert.equal(f.api.status().pulses, 2);
+  f.api.activity();
+  await f.advance(11000);
+  assert.equal(f.api.status().reason, "expired");
+  assert.equal(f.timers.size, 0);
+
+  const queued = fixture();
+  await queued.api.configure({ enabled: true });
+  queued.device.blocked = true;
+  const due = queued.advance(15000);
+  queued.api.activity();
+  const count = queued.calls.length;
+  await queued.pending.shift()();
+  await due;
+  assert.equal(queued.calls.length, count);
+  queued.device.blocked = false;
+  await queued.advance(14999);
+  assert.equal(queued.calls.length, count);
+  await queued.advance(1);
+  assert.equal(queued.api.status().pulses, 2);
+});

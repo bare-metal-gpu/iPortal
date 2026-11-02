@@ -141,22 +141,27 @@ export function createInspection({ wda, withSession, enqueue }) {
       const settleMs = body.settleMs ?? 0;
       let lastHash, stableSince = performance.now(), result;
       do {
-        result = await run(async call => {
+        const before = await run(async call => {
           const startedAt = new Date().toISOString();
-          const beforeApp = await call("GET", "/wda/activeAppInfo");
+          const app = await call("GET", "/wda/activeAppInfo");
           const orientation = await call("GET", "/orientation");
           const source = await call("GET", "/source?format=json");
-          const beforeSourceAt = new Date().toISOString();
-          const screenshot = body.screenshot === false ? undefined : await api.screenshot({}, signal);
-          const screenshotAt = screenshot ? new Date().toISOString() : undefined;
-          const afterSource = await call("GET", "/source?format=json");
+          return { app, orientation, source, startedAt, sourceAt: new Date().toISOString() };
+        }, signal, deadline);
+        // Yield queue ownership between samples so pending input can run. Any
+        // intervening UI change is handled by the same before/after consistency check.
+        const screenshot = body.screenshot === false ? undefined : await api.screenshot({}, signal);
+        const screenshotAt = screenshot ? new Date().toISOString() : undefined;
+        result = await run(async call => {
+          const source = await call("GET", "/source?format=json");
           const sourceAt = new Date().toISOString();
-          const afterApp = await call("GET", "/wda/activeAppInfo");
-          const afterOrientation = await call("GET", "/orientation");
-          const hash = fingerprint(afterSource);
-          return { id: randomUUID(), startedAt, beforeSourceAt, sourceAt, screenshotAt, finishedAt: new Date().toISOString(),
-            app: afterApp, orientation: afterOrientation, source: afterSource, ...(screenshot ? { screenshot } : {}),
-            stable: beforeApp.bundleId === afterApp.bundleId && orientation === afterOrientation && fingerprint(source) === hash, hash };
+          const app = await call("GET", "/wda/activeAppInfo");
+          const orientation = await call("GET", "/orientation");
+          const hash = fingerprint(source);
+          return { id: randomUUID(), startedAt: before.startedAt, beforeSourceAt: before.sourceAt,
+            sourceAt, screenshotAt, finishedAt: new Date().toISOString(), app, orientation, source,
+            ...(screenshot ? { screenshot } : {}),
+            stable: before.app.bundleId === app.bundleId && before.orientation === orientation && fingerprint(before.source) === hash, hash };
         }, signal, deadline);
         if (!result.stable || lastHash !== result.hash) stableSince = performance.now();
         lastHash = result.hash;

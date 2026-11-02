@@ -6,7 +6,7 @@ import { apiError } from "./inspection.mjs";
 import { decodeRequest, RequestSchemas } from "./schemas.mjs";
 
 export function errorResponse(e) {
-  const status = e.status ?? ({ "no such element": 404, "stale element reference": 409, "invalid argument": 400, "invalid selector": 400 }[e.code])
+  const status = e.status ?? ({ "no such element": 404, "stale element reference": 409, "invalid element state": 409, "invalid argument": 400, "invalid selector": 400 }[e.code])
     ?? (e._tag === "SchemaError" ? 400 : e.name === "TimeoutError" ? 408 : e.name === "AbortError" ? 499 : 502);
   return { status, body: { ok: false, error: e.message ?? String(e), code: e.code ?? (status === 400 ? "invalid argument" : status === 408 ? "timeout" : "upstream error"), ...(e.details ? { details: e.details } : {}) } };
 }

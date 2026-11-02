@@ -74,6 +74,11 @@ int main(void) { @autoreleasepool {
     assert.equal(await readFile(source, 'utf8'), installed);
     await writeFile(source, upstream);
     execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts/wda-fast-touch.patch')]);
+    execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts/wda-mirror-safety.patch')]);
+    execFileSync(installer, [checkout]);
+    assert.equal(await readFile(source, 'utf8'), installed);
+    await writeFile(source, upstream);
+    execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts/wda-fast-touch.patch')]);
     execFileSync(installer, [checkout]);
     assert.equal(await readFile(source, 'utf8'), installed);
     await writeFile(source, 'incompatible upstream');

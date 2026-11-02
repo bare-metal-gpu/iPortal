@@ -1,0 +1,45 @@
+--- a/WebDriverAgentLib/Commands/FBTouchActionCommands.m
++++ b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+@@ -132,6 +132,7 @@
+ // Coordinates are fractions of the current, oriented full screen. Never reuse portrait dimensions.
+ + (id<FBResponsePayload>)handleMirrorTouch:(FBRouteRequest *)request
+ {
++  NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+   NSArray *points = request.arguments[@"points"];
+   NSNumber *end = request.arguments[@"end"];
+   if (!FBMirrorValidPoints(points, end)) {
+@@ -186,15 +187,31 @@
+   if (XCUIDevice.sharedDevice.fb_isScreenLocked) {
+     return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Device is locked" traceback:nil]);
+   }
+-  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error]) return FBResponseWithUnknownError(error);
+-  return FBResponseWithObject(@{@"completed":@YES, @"orientation":orientationName, @"width":@(size.width), @"height":@(size.height)});
++  // Keep guard checks and dispatch on the device. Await daemon completion, but avoid
++  // the high-level wrapper's 100ms poll and conservative confirmation interval.
++  NSTimeInterval dispatched = NSProcessInfo.processInfo.systemUptime;
++  __block volatile atomic_bool completed = false;
++  __block NSError *playbackError = nil;
++  [XCTRunnerDaemonSession.sharedSession.daemonProxy _XCT_synthesizeEvent:event
++                                         implicitConfirmationInterval:0.05
++                                                           completion:^(NSError *innerError) {
++    playbackError = innerError;
++    atomic_store_explicit(&completed, true, memory_order_release);
++  }];
++  BOOL replied = [[[[[FBRunLoopSpinner new] interval:0.01] timeout:end.doubleValue / 1000 + 2]
++                  timeoutErrorMessage:@"Touch outcome unknown: daemon did not acknowledge"]
++                 spinUntilTrue:^BOOL{ return atomic_load_explicit(&completed, memory_order_acquire); } error:&error];
++  if (!replied || playbackError) return FBResponseWithUnknownError(playbackError ?: error);
++  NSTimeInterval finished = NSProcessInfo.processInfo.systemUptime;
++  return FBResponseWithObject(@{@"completed":@YES, @"orientation":orientationName, @"width":@(size.width), @"height":@(size.height),
++    @"timing":@{@"guardMs":@((dispatched-started)*1000), @"playbackMs":@((finished-dispatched)*1000), @"confirmationMs":@50}});
+ }
+ 
+ + (id<FBResponsePayload>)handleMirrorCapabilities:(FBRouteRequest *)request
+ {
+   // Describes implemented routes, not a guarantee that a particular iOS runtime
+   // accepts their private APIs. Keepalive must return completed:true before use.
+-  return FBResponseWithObject(@{@"version":@2, @"orientedTouch":@YES, @"validatedTouch":@YES, @"keepaliveEventStream":@YES});
++  return FBResponseWithObject(@{@"version":@3, @"guardedTouch":@YES, @"orientedTouch":@YES, @"validatedTouch":@YES, @"keepaliveEventStream":@YES});
+ }
+ 
+ + (id<FBResponsePayload>)handleMirrorKeepalive:(FBRouteRequest *)request

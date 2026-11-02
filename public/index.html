@@ -149,7 +149,8 @@ function toast(msg) {
 }
 
 let outbound = Promise.resolve();
-function api(name, body = {}) {
+function api(name, body = {}, fromWheel = false) {
+  if (!fromWheel) flushWheel(true); // Earlier wheel movement stays ahead of later input.
   if (name !== "type") flush(true); // keep typed text in order with other actions
   const requestId = crypto.randomUUID();
   const task = outbound.then(async () => {
@@ -256,7 +257,7 @@ screen.addEventListener("pointerup", (e) => {
     points = Array.from({ length: 40 }, (_, i) => points[Math.round(i * step)]);
   }
   touch = null;
-  api("gesture", { points, end: moved ? points.at(-1)[2] : end });
+  api("gesture", { points, end: moved ? points.at(-1)[2] : end < 250 ? 40 : end });
 });
 
 screen.addEventListener("pointercancel", () => (touch = null));
@@ -265,22 +266,32 @@ screen.addEventListener("contextmenu", (e) => e.preventDefault());
 // ---------- Scrolling: wheel deltas become short controlled swipes ----------
 
 let wheel = null;
+let wheelTimer = null;
+let wheelInFlight = 0;
+function flushWheel(force = false) {
+  clearTimeout(wheelTimer);
+  wheelTimer = null;
+  if (!wheel || (wheelInFlight && !force)) return;
+  const pending = wheel;
+  wheel = null;
+  const lim = (v) => Math.max(-0.5, Math.min(0.5, -v));
+  const dx = lim(pending.dx), dy = lim(pending.dy);
+  const fit = (v, d) => Math.max(0.05 - Math.min(0, d), Math.min(0.95 - Math.max(0, d), v));
+  const x = fit(pending.x, dx), y = fit(pending.y, dy);
+  if (Math.abs(dx) + Math.abs(dy) < 0.01) return;
+  wheelInFlight++;
+  api("gesture", { points: [[x, y, 0], [x + dx * 0.5, y + dy * 0.5, 60], [x + dx, y + dy, 120]], end: 120 }, true)
+    .finally(() => { wheelInFlight--; if (!wheelInFlight && wheel) flushWheel(); });
+}
 screen.addEventListener("wheel", (e) => {
   e.preventDefault();
   const r = screen.getBoundingClientRect();
   wheel ??= { x: rel(e)[0], y: rel(e)[1], dx: 0, dy: 0 };
   wheel.dx += e.deltaX / r.width;
   wheel.dy += e.deltaY / r.height;
-  clearTimeout(wheel.t);
-  wheel.t = setTimeout(() => {
-    const lim = (v) => Math.max(-0.5, Math.min(0.5, -v));
-    const dx = lim(wheel.dx), dy = lim(wheel.dy);
-    const fit = (v, d) => Math.max(0.05 - Math.min(0, d), Math.min(0.95 - Math.max(0, d), v));
-    const x = fit(wheel.x, dx), y = fit(wheel.y, dy);
-    wheel = null;
-    if (Math.abs(dx) + Math.abs(dy) < 0.01) return;
-    api("gesture", { points: [[x, y, 0], [x + dx * 0.5, y + dy * 0.5, 60], [x + dx, y + dy, 150]], end: 250 });
-  }, 90);
+  // Fixed first-frame deadline, never postponed by subsequent wheel events.
+  // During playback accumulate one pending movement instead of building a backlog.
+  if (!wheelInFlight && wheelTimer === null) wheelTimer = setTimeout(() => flushWheel(), 16);
 }, { passive: false });
 
 // ---------- Keyboard ----------

@@ -6,7 +6,7 @@ import path from "node:path";
 import vm from "node:vm";
 import crypto from "node:crypto";
 import { Effect } from "effect";
-import { createScheduler } from "../scheduler.mjs";
+import { createScheduler, commandContext } from "../scheduler.mjs";
 import { createCommands } from "../commands.mjs";
 import { decodeRequest } from "../schemas.mjs";
 import { checkRequest } from "../server.mjs";
@@ -50,6 +50,56 @@ test("Effect schemas reject malformed actions before device dispatch", async () 
   assert.equal((await Effect.runPromise(decodeRequest("gesture", { points: [[0, 0, 0], [1, 1, 42.5]], end: 43.75 }))).end, 43.75);
 });
 
+test("continuous wheel input dispatches promptly, coalesces under load and preserves holds", async () => {
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const calls = [], nodes = new Map(), timers = new Map(), releases = [];
+  let now = 0, serial = 0;
+  function element(key) {
+    if (!nodes.has(key)) nodes.set(key, { content: "instance", listeners: {}, classList: { add() {}, remove() {}, toggle() {} },
+      addEventListener(name, fn) { this.listeners[name] = fn; }, removeAttribute() {}, querySelector: () => element("child"),
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 800 }), setPointerCapture() {},
+      append() {}, remove() {}, style: {}, dataset: {}, value: "" });
+    return nodes.get(key);
+  }
+  const context = vm.createContext({ console, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask,
+    performance: { now: () => now }, document: { body: element("body"), getElementById: element, querySelector: element,
+      createElement: () => element("ripple"), querySelectorAll: () => [], activeElement: null }, window: { addEventListener() {} },
+    setTimeout: (fn, ms) => { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
+    clearTimeout: id => timers.delete(id),
+    fetch: async (url, options) => {
+      calls.push([url, options]);
+      if (url === "/api/gesture") await new Promise(resolve => releases.push(resolve));
+      return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: false } : { ok: true } };
+    },
+  });
+  vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  async function advance(ms) {
+    now += ms;
+    for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn();
+    await settle();
+  }
+  await settle();
+  const screen = vm.runInContext("screen", context);
+  const wheel = () => screen.listeners.wheel({ clientX: 200, clientY: 400, deltaX: 0, deltaY: 40, preventDefault() {} });
+  const gestures = () => calls.filter(([url]) => url === "/api/gesture").map(([, opts]) => JSON.parse(opts.body));
+  wheel(); await advance(8); wheel(); await advance(8);
+  assert.equal(gestures().length, 1, "continuous movement must not postpone first dispatch");
+  assert.equal(gestures()[0].end, 120);
+  for (let i = 0; i < 20; i++) { wheel(); await advance(10); }
+  assert.equal(gestures().length, 1, "one in-flight scroll with coalesced pending movement");
+  releases.shift()(); await settle();
+  assert.equal(gestures().length, 2);
+  releases.shift()(); await settle();
+  const event = { button: 0, pointerId: 1, clientX: 200, clientY: 400, preventDefault() {} };
+  screen.listeners.pointerdown(event); await advance(120); screen.listeners.pointerup(event); await settle();
+  assert.equal(gestures().at(-1).end, 40, "ordinary click does not replay mouse hold time");
+  releases.shift()(); await settle();
+  screen.listeners.pointerdown(event); await advance(600); screen.listeners.pointerup(event); await settle();
+  assert.equal(gestures().at(-1).end, 600, "long press duration is preserved");
+  releases.shift()(); await settle();
+});
+
 test("automatic browser binding blocks foreign origins and rebinding without CLI credentials", () => {
   const request = headers => ({ method: "POST", headers: { host: "localhost:7100", "content-type": "application/json", ...headers } });
   checkRequest(request({}), 7100, "instance");
@@ -85,6 +135,22 @@ test("queue deadlines expire before dispatch, and capacity bounds backlog", asyn
   await Promise.all([assert.rejects(queued, { code: "timeout" }), sleep(30)]);
   release(); await busy;
   assert.equal(executed, false);
+});
+
+test("maintenance gets its own deadline after the originating input is cancelled", async () => {
+  const scheduler = createScheduler();
+  const controller = new AbortController();
+  controller.abort();
+  let dispatched = false;
+  await commandContext.run({ signal: controller.signal, deadline: performance.now() - 100, insideQueue: true, onDispatch() { throw Error("inherited input receipt"); } }, () =>
+    scheduler.maintenance(() => {
+      const context = commandContext.getStore();
+      context.signal.throwIfAborted();
+      assert.ok(context.deadline > performance.now());
+      assert.equal(context.onDispatch, undefined);
+      dispatched = true;
+    }));
+  assert.equal(dispatched, true);
 });
 
 test("receipts deduplicate concurrent/retried commands, survive restart and reject conflicting IDs", async () => {

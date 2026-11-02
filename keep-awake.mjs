@@ -25,9 +25,12 @@ export function createKeepAwake({ wda, withSession, enqueue, intervalMs = 15000,
     if (now() >= item.deadline) { stop("expired"); return false; }
     return true;
   }
-  async function pulse(item) {
+  async function pulse(item, scheduled = false) {
     return enqueue(async () => {
       if (!current(item)) return;
+      // Successful foreground input already provides activity. Drop an obsolete
+      // queued maintenance pulse, without extending the lease's absolute expiry.
+      if (scheduled && now() - item.lastActivityAt < intervalMs) return;
       const locked = (await wda("GET", "/wda/locked", null, 5000)).value;
       if (typeof locked !== "boolean") throw apiError("Invalid lock state from WDA", 502, "invalid response");
       if (!current(item)) return;
@@ -66,16 +69,24 @@ export function createKeepAwake({ wda, withSession, enqueue, intervalMs = 15000,
         item.pulses++;
         item.lastPulseAt = new Date().toISOString();
         item.lastPulseMs = Math.round(now() - pulseStarted);
+        item.nextPulseAt = now() + intervalMs;
       }
     });
   }
   function schedule(item) {
     if (!current(item)) return;
+    cancel(item.tick);
     item.tick = later(async () => {
-      try { await pulse(item); schedule(item); }
+      try { await pulse(item, true); schedule(item); }
       catch (e) { if (lease === item) stop("upstream error", e.message); }
-    }, intervalMs);
+    }, Math.max(1, item.nextPulseAt - now()));
     item.tick?.unref?.();
+  }
+  function activity() {
+    if (!lease || !current(lease)) return;
+    lease.lastActivityAt = now();
+    lease.nextPulseAt = now() + intervalMs;
+    schedule(lease);
   }
   async function configure(body = {}) {
     const keys = Object.keys(body);
@@ -98,5 +109,5 @@ export function createKeepAwake({ wda, withSession, enqueue, intervalMs = 15000,
     catch (e) { if (lease === item) stop("upstream error", e.message); throw e; }
     return status();
   }
-  return { configure, status, stop };
+  return { configure, status, stop, activity };
 }

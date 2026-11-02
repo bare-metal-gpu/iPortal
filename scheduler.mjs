@@ -51,5 +51,8 @@ export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}
       if (signal.aborted) abort(); else drain();
     });
   }
-  return { enqueue, stats: () => ({ active, queued: pending.length, completed }) };
+  // Timers created during an input inherit its AsyncLocalStorage context. A lease
+  // outlives that request: maintenance must get a new deadline and cancellation scope.
+  const maintenance = fn => commandContext.run({}, () => enqueue(fn, { priority: 10 }));
+  return { enqueue, maintenance, stats: () => ({ active, queued: pending.length, completed }) };
 }

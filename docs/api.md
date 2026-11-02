@@ -83,9 +83,17 @@ Send this to `/api/tap`. A visible label is not necessarily an accessibility ide
 
 Gesture points use normalized coordinates in the **current interface orientation**. They must be 1–256 triples `[x,y,ms]`, x/y within 0–1, initial time zero, nondecreasing timestamps, and `end` at least the last timestamp and no more than 10000 ms. Both Effect and the patched native route validate these constraints. Native touch independently checks lock state and optional app/orientation guards. Screen dimensions are read for each native gesture instead of caching portrait dimensions.
 
+Helpers advertising `guardedTouch` perform gesture lock/app/orientation checks together on the phone, avoiding duplicate host round trips. Older helpers retain host checks. Touch playback uses the daemon's completion callback with a 50 ms maximum implicit confirmation wait and 10 ms polling. This does not prove the app has finished reacting; use `waitFor` when the next action depends on a transition.
+
+Successful input replies also include diagnostic `timing`: `queueMs` (admission and queue), `preflightMs`, `actionMs`, and `totalMs`, plus `native.guardMs`, `native.playbackMs` and `native.confirmationMs` when supplied by the helper. These use monotonic elapsed time. They are not input-to-display measurements and are not retained in receipts across a server restart.
+
+The UI and controls are unchanged. Ordinary mouse clicks shorter than 250 ms play a 40 ms tap; longer holds and drag paths retain their recorded durations. When idle, wheel input coalesces for 16 ms before its first dispatch, then accumulates one pending movement while playback runs. Each wheel segment lasts 120 ms. Continuous scrolling no longer resets a 90 ms silence timer or creates an unbounded command backlog. Drags still submit a complete path after mouse-up; true streaming touches are not enabled.
+
 ## Observations
 
 `observe` captures app/orientation, source, an optional screenshot, then source/app/orientation again. It returns component capture timestamps and an opaque `id`. `stable: true` means the two sampled trees and app/orientation agreed; this is a bounded consistency check, **not an atomic snapshot or a guarantee of pixel stability**. If `settleMs` is supplied, that agreement must persist across samples; `timeoutMs` defaults to 8000, maximum 10000. Omit screenshot with `{"screenshot":false}` when a tree is enough.
+
+Input takes priority over pending inspection. Observations release the queue between their before/screenshot/after samples, allowing input to run; the before/after consistency check detects resulting changes. An in-flight WDA request still runs to completion or timeout.
 
 An input's optional `observationId` must refer to a stable observation no older than 15 seconds, and the current app, orientation and tree must still match. Mutations invalidate saved observations. Guards reduce stale-input errors but cannot eliminate a UI change between checking and executing. Only the last 32 observations are retained in memory.
 
@@ -121,7 +129,7 @@ curl -s http://127.0.0.1:7100/api/keep-awake \
 
 Opt-in only: the server starts with keep-awake disabled. `durationMs` defaults to 30 minutes and accepts 1000–7200000 ms (up to two hours). Enabling again replaces the previous lease and immediately sends a pulse. The lease belongs to the server and survives completion/disconnection of the HTTP request; it ends on expiration, explicit disable, server exit, an API lock request, or detection of a locked phone or upstream failure. It never unlocks a phone or restarts itself after a failure. GET and POST `{}` return status without querying the device.
 
-Pulses run immediately and then 15 seconds after completion, with priority over queued input/inspection. Long in-flight device operations can still delay a pulse; timeout does not undo already-dispatched device work. Each pulse first checks the lock state. Status includes `enabled`, `method`, `remainingMs`, `pulses`, `lastPulseAt`, `backend` and `lastPulseMs` while active; after stopping it includes `reason` and any upstream `error`. A successful pulse means WDA accepted the event, not proof that every iOS version honors it. Normal Auto-Lock resumes when pulses stop; no phone settings are changed. An already-dispatched event can finish after disabling; a volume pair attempts to finish both presses.
+Pulses run immediately and then 15 seconds after completion, with priority over queued input/inspection. Successful touch, typing, Home and button input postpones the next pulse by 15 seconds because it already provides activity; obsolete queued maintenance pulses are skipped. Activity never extends the lease’s absolute expiry. Maintenance has its own deadline and cancellation scope, independent of the HTTP input that scheduled it. Long in-flight device operations can still delay a pulse; timeout does not undo already-dispatched device work. Each pulse first checks the lock state. Status includes `enabled`, `method`, `remainingMs`, `pulses`, `lastPulseAt`, `backend` and `lastPulseMs` while active; after stopping it includes `reason` and any upstream `error`. A successful pulse means WDA accepted the event, not proof that every iOS version honors it. Normal Auto-Lock resumes when pulses stop; no phone settings are changed. An already-dispatched event can finish after disabling; a volume pair attempts to finish both presses.
 
 Methods:
 
@@ -141,3 +149,9 @@ node scripts/test-phone.mjs http://127.0.0.1:7100 /absolute/path/to/local-test-o
 ```
 
 This opens Settings, briefly goes Home, returns to Settings, and changes no settings. It checks lookup, attributes, hierarchy, full/element screenshots, and waits for appearance, disappearance, attribute equality and timeout. The optional output directory receives screenshots and a report. Keep that output out of Git.
+
+## Reproducing touch latency measurements
+
+`scripts/benchmark-touch.py` is an explicitly opted-in real-phone test requiring Python and Pillow. With the phone unlocked and connected, run `python scripts/benchmark-touch.py /absolute/path/report.json`. It opens Settings, navigates to Display & Brightness and back, and performs small alternating scrolls. It changes no settings and enables keep-awake for 30 minutes.
+
+The report separates HTTP completion from the first changed central-region MJPEG frame, using the host monotonic clock. It waits for quiet video before each sample to avoid counting residual scroll inertia. Video timing includes capture and transport delay; it is not a direct panel measurement or a measurement of the native USB preview. Mouse recording time is excluded. Raw drag duration remains part of playback. Frame samples and screenshots are not saved by this benchmark.
