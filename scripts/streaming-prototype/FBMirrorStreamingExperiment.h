@@ -3,12 +3,16 @@
 @protocol FBMirrorDeltaStream <NSObject>
 + (id)eventStreamWithEventActions:(void(^)(id))block;
 + (id)touchScreenDigitizerSender;
++ (id)touchScreenDigitizerSenderForDisplayUUID:(id)uuid;
++ (id)mainDisplay;
+- (id)uniqueId;
 - (void)composeWithSender:(id)sender actionBlock:(void(^)(id))block;
 - (void)setGsScreenPointSize:(CGSize)size;
 - (void)setGsScreenScaleFactor:(double)scale;
 - (void)touchDown:(CGPoint)point;
 - (void)moveToPoint:(CGPoint)point duration:(double)duration;
 - (void)liftUp:(CGPoint)point;
+- (void)advanceTime:(double)seconds;
 - (NSArray *)events;
 - (void)setEvents:(NSArray *)events;
 - (NSData *)dataRepresentation;
@@ -27,6 +31,10 @@
 @property(nonatomic) NSTimeInterval leaseUntil;
 @property(nonatomic) CGSize size;
 @property(nonatomic) CGFloat scale;
+@property(nonatomic) CGFloat pointScale;
+@property(nonatomic) unsigned long long displayID;
+@property(nonatomic,strong) NSString *displayUUID;
+@property(nonatomic) CGRect targetFrame;
 @property(nonatomic,strong) NSString *lastRelease;
 + (instancetype)shared;
 - (NSDictionary *)command:(NSDictionary *)body error:(NSError **)error;
@@ -50,7 +58,7 @@
       [scoped setGsScreenPointSize:size]; [scoped setGsScreenScaleFactor:scale];
       [scoped touchDown:points[0].CGPointValue];
       for(NSUInteger i=1;i<points.count;i++) [scoped moveToPoint:points[i].CGPointValue duration:0.01];
-      if(end) [scoped liftUp:points.lastObject.CGPointValue];
+      if(end) { if(points.count==1)[scoped advanceTime:0.06]; [scoped liftUp:points.lastObject.CGPointValue]; }
     }];
   }];
   NSArray *all=stream.events;
@@ -59,8 +67,8 @@
   NSUInteger fullCount=all.count;
   [stream setEvents:delta]; NSData *data=stream.dataRepresentation;
   if(!data.length) return [self fail:@"Recap delta serialization failed" error:error];
-  XCPointerEventPath *path=[[XCPointerEventPath alloc] initForEventStream:data frame:CGRectMake(0,0,size.width,size.height) speed:1];
-  XCSynthesizedEventRecord *record=[[XCSynthesizedEventRecord alloc] initWithName:@"mirror-streaming-prototype" interfaceOrientation:UIInterfaceOrientationPortrait];
+  XCPointerEventPath *path=[[XCPointerEventPath alloc] initForEventStream:data frame:self.targetFrame speed:1];
+  XCSynthesizedEventRecord *record=[[XCSynthesizedEventRecord alloc] initWithName:@"mirror-streaming-prototype" displayID:self.displayID interfaceOrientation:UIInterfaceOrientationPortrait];
   [record addPointerEventPath:path];
   __block volatile atomic_bool completed=false; __block NSError *playbackError=nil;
   NSTimeInterval start=NSProcessInfo.processInfo.systemUptime;
@@ -70,7 +78,7 @@
   self.busy=NO;
   if(!replied || playbackError) { self.uncertain=YES; if(playbackError && error)*error=playbackError; return nil; }
   self.priorCount=fullCount;
-  return @{@"completed":@YES,@"deltaEvents":@(delta.count),@"prefixEvents":@(fullCount),@"bytes":@(data.length),@"elapsedMs":@((NSProcessInfo.processInfo.systemUptime-start)*1000)};
+  return @{@"targetFrame":NSStringFromCGRect(self.targetFrame),@"screenSize":NSStringFromCGSize(self.size),@"screenScale":@(self.scale),@"pointScale":@(self.pointScale),@"displayID":@(self.displayID),@"displayUUID":self.displayUUID ?: @"",@"completed":@YES,@"deltaEvents":@(delta.count),@"prefixEvents":@(fullCount),@"bytes":@(data.length),@"elapsedMs":@((NSProcessInfo.processInfo.systemUptime-start)*1000)};
 }
 - (void)watchdog:(NSString *)expectedToken {
   if(!self.active || ![self.token isEqual:expectedToken])return;
@@ -92,14 +100,15 @@
 - (NSDictionary *)command:(NSDictionary *)body error:(NSError **)error {
   if(self.busy)return [self fail:@"Another delta is still playing" error:error];
   NSString *phase=body[@"phase"];
-  if(![@[@"begin",@"move",@"end",@"cancel",@"status"] containsObject:phase])return [self fail:@"Invalid phase" error:error];
+  if(![@[@"begin",@"move",@"end",@"cancel",@"status",@"tap"] containsObject:phase])return [self fail:@"Invalid phase" error:error];
   if([phase isEqual:@"status"])return @{@"active":@(self.active),@"uncertain":@(self.uncertain),@"releaseAttempts":@(self.releaseAttempts),@"token":self.token ?: @"",@"lastRelease":self.lastRelease ?: @"",@"probe":FBMirrorTouchProbe.shared.snapshot};
-  BOOL begin=[phase isEqual:@"begin"],end=[phase isEqual:@"end"] || [phase isEqual:@"cancel"];
+  BOOL calibration=[phase isEqual:@"tap"];
+  BOOL begin=[phase isEqual:@"begin"] || calibration,end=[phase isEqual:@"end"] || [phase isEqual:@"cancel"] || calibration;
   if(begin && (self.active || self.uncertain || FBMirrorTouchProbe.shared.active.count))return [self fail:@"Previous contact active or uncertain; release/restart before beginning" error:error];
   if(begin && (!FBMirrorTouchProbe.shared.window.isKeyWindow || FBMirrorTouchProbe.shared.window.hidden))return [self fail:@"Show the recorder window first" error:error];
   if(!begin && (!self.active || ![body[@"token"] isEqual:self.token]))return [self fail:@"No matching active contact" error:error];
-  for(NSString *key in body)if(![@[@"phase",@"token",@"x",@"y"] containsObject:key])return [self fail:@"Unknown argument" error:error];
-  if(!end) {
+  for(NSString *key in body)if(![@[@"phase",@"token",@"x",@"y",@"frameMode",@"pointMode",@"screenScale",@"senderMode"] containsObject:key])return [self fail:@"Unknown argument" error:error];
+  if(!end || calibration) {
     if(!FBMirrorFiniteNumber(body[@"x"]) || !FBMirrorFiniteNumber(body[@"y"]))return [self fail:@"Coordinates must be finite" error:error];
     double x=[body[@"x"] doubleValue],y=[body[@"y"] doubleValue];
     if(x<0.15 || x>0.85 || y<0.25 || y>0.85)return [self fail:@"Coordinates outside safe probe area" error:error];
@@ -112,16 +121,29 @@
       Class<FBMirrorDeltaStream> senderClass=(Class<FBMirrorDeltaStream>)NSClassFromString(@"RCPEventSenderProperties");
       if(![streamClass respondsToSelector:@selector(eventStreamWithEventActions:)] || ![senderClass respondsToSelector:@selector(touchScreenDigitizerSender)])return [self fail:@"Recap runtime unavailable" error:error];
       XCUIScreen *screen=[FBScreen currentScreenWithError:error]; if(!screen)return nil;
-      self.size=CGSizeMake(screen.bounds.size.width/screen.scale,screen.bounds.size.height/screen.scale); self.scale=screen.scale;
-      self.sender=[senderClass touchScreenDigitizerSender]; self.token=NSUUID.UUID.UUIDString;
+      self.size=CGSizeMake(screen.bounds.size.width/screen.scale,screen.bounds.size.height/screen.scale); self.scale=screen.scale; self.displayID=screen.displayID;
+      NSString *pointMode=body[@"pointMode"] ?: @"logical", *senderMode=body[@"senderMode"] ?: @"generic";
+      if(![@[@"logical",@"physical"] containsObject:pointMode] || ![@[@"generic",@"display"] containsObject:senderMode])return [self fail:@"Unknown point/sender mode" error:error];
+      if(body[@"screenScale"] && (!FBMirrorFiniteNumber(body[@"screenScale"]) || ![@[@1,@3] containsObject:body[@"screenScale"]]))return [self fail:@"screenScale must be 1 or 3" error:error];
+      self.scale=body[@"screenScale"] ? [body[@"screenScale"] doubleValue] : 1;
+      self.pointScale=[pointMode isEqual:@"physical"] ? screen.scale : 1;
+      Class<FBMirrorDeltaStream> displayClass=(Class<FBMirrorDeltaStream>)NSClassFromString(@"CADisplay");
+      id<FBMirrorDeltaStream> display=[displayClass respondsToSelector:@selector(mainDisplay)] ? [displayClass mainDisplay] : nil;
+      id uuid=[display respondsToSelector:@selector(uniqueId)] ? [display uniqueId] : nil;
+      self.displayUUID=[uuid description];
+      if([senderMode isEqual:@"display"] && (!uuid || ![senderClass respondsToSelector:@selector(touchScreenDigitizerSenderForDisplayUUID:)]))return [self fail:@"Display-specific sender unavailable" error:error];
+      NSString *frameMode=body[@"frameMode"] ?: @"logical";
+      if(![@[@"physical",@"logical",@"unit"] containsObject:frameMode])return [self fail:@"Unknown frameMode" error:error];
+      self.targetFrame=[frameMode isEqual:@"unit"] ? CGRectMake(0,0,1,1) : CGRectMake(0,0,self.size.width*([frameMode isEqual:@"physical"]?screen.scale:1),self.size.height*([frameMode isEqual:@"physical"]?screen.scale:1));
+      self.sender=[senderMode isEqual:@"display"] ? [senderClass touchScreenDigitizerSenderForDisplayUUID:uuid] : [senderClass touchScreenDigitizerSender]; self.token=NSUUID.UUID.UUIDString;
       [self.points removeAllObjects]; self.priorCount=0; self.active=YES; self.beganAt=NSProcessInfo.processInfo.systemUptime;
       self.leaseUntil=self.beganAt+3; self.lastRelease=nil; self.releaseAttempts=0; self.uncertain=NO;
       [self watchdog:self.token];
     }
     if(self.points.count>=64)return [self fail:@"Contact point limit reached; end contact" error:error];
-    [self.points addObject:[NSValue valueWithCGPoint:CGPointMake(x*self.size.width,y*self.size.height)]];
+    [self.points addObject:[NSValue valueWithCGPoint:CGPointMake(x*self.size.width*self.pointScale,y*self.size.height*self.pointScale)]];
   }
-  NSDictionary *result=[self playEnd:end releaseOnly:end error:error];
+  NSDictionary *result=[self playEnd:end releaseOnly:end && !calibration error:error];
   if(end) {
     if(result && FBMirrorTouchProbe.shared.active.count==0) { self.active=NO; self.uncertain=NO; self.lastRelease=@"explicit end acknowledged; recorder has no active contact"; }
     else { self.uncertain=YES; self.lastRelease=@"explicit end uncertain; watchdog will attempt release"; self.leaseUntil=NSProcessInfo.processInfo.systemUptime+0.5; }

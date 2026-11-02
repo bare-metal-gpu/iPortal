@@ -24,7 +24,7 @@ int main(void){@autoreleasepool{
   NSUInteger previous=0;
   for(int phase=0;phase<4;phase++){
     id<Delta> stream=[cls eventStreamWithEventActions:^(id<Delta>c){[c composeWithSender:sender actionBlock:^(id<Delta>s){
-      [s setGsScreenPointSize:CGSizeMake(402,874)];[s setGsScreenScaleFactor:3];[s touchDown:CGPointMake(150,350)];
+      [s setGsScreenPointSize:CGSizeMake(402,874)];[s setGsScreenScaleFactor:1];[s touchDown:CGPointMake(150,350)];
       for(int i=1;i<=MIN(phase,2);i++)[s moveToPoint:CGPointMake(150+i*50,350) duration:0.01];
       if(phase==3)[s liftUp:CGPointMake(250,350)];
     }];}];
