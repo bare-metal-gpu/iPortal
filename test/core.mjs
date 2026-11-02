@@ -23,7 +23,7 @@ test("browser bootstrap supplies instance binding and request ID without prompts
     return nodes.get(key);
   }
   vm.runInNewContext(script, {
-    console, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask, performance,
+    console, AbortSignal, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask, performance,
     document: { body: element("body"), getElementById: element, querySelector: element, querySelectorAll: () => [], activeElement: null },
     window: { addEventListener() {} }, setTimeout: () => 1, clearTimeout() {},
     fetch: async (url, options) => {
@@ -42,6 +42,8 @@ test("native loading tracks queued input, reconnects and the first fallback fram
   const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const messages = [], releases = [], nodes = new Map();
   let offline = false;
+  let remoteLifecycle = "ready";
+  let dispatchedHomes = 0;
   function element(key) {
     if (!nodes.has(key)) nodes.set(key, { content: "instance", listeners: {},
       classList: { add() {}, remove() {}, toggle() {} },
@@ -49,20 +51,21 @@ test("native loading tracks queued input, reconnects and the first fallback fram
       querySelector: () => element("child"), style: {}, dataset: {}, value: "" });
     return nodes.get(key);
   }
-  const context = vm.createContext({ console, URLSearchParams, location: { search: "?app=1&video=native", reload() {} },
+  const context = vm.createContext({ console, AbortSignal, URLSearchParams, location: { search: "?app=1&video=native", reload() {} },
     crypto, queueMicrotask, performance, setTimeout: () => 1, clearTimeout() {},
     document: { body: element("body"), getElementById: element, querySelector: element, querySelectorAll: () => [], activeElement: null },
     window: { addEventListener() {}, webkit: { messageHandlers: { native: { postMessage: message => messages.push(message) } } } },
     fetch: async url => {
       if (url === "/api/status" && offline) throw new Error("offline");
-      if (url === "/api/home") await new Promise(resolve => releases.push(resolve));
-      return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true } : { ok: true } };
+      if (url === "/api/home") { dispatchedHomes++; await new Promise(resolve => releases.push(resolve)); }
+      return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true, lifecycle: remoteLifecycle } : { ok: true } };
     },
   });
   vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   const settle = () => new Promise(resolve => setImmediate(resolve));
   const loading = () => messages.filter(m => "loading" in m).at(-1).loading;
-  await settle(); assert.equal(loading(), false);
+  await settle(); assert.equal(loading(), true);
+  vm.runInContext("setNativeVideoReady(true)", context); assert.equal(loading(), false);
   const first = vm.runInContext("api('home')", context);
   const second = vm.runInContext("api('home')", context);
   await settle(); assert.equal(loading(), true);
@@ -72,10 +75,39 @@ test("native loading tracks queued input, reconnects and the first fallback fram
   offline = true; await vm.runInContext("poll()", context); assert.equal(loading(), true);
   assert.equal(element("overlay").hidden, false);
   assert.equal(messages.at(-1).waitingForVideo, true, "lost connection reveals the native blur");
-  offline = false; await vm.runInContext("poll()", context); assert.equal(loading(), false);
+  offline = false; await vm.runInContext("poll()", context); assert.equal(loading(), true);
+  vm.runInContext("setNativeVideoReady(true)", context); assert.equal(loading(), false);
   vm.runInContext("startStream()", context); assert.equal(loading(), true);
   element("screen").listeners.load(); assert.equal(loading(), false);
   element("screen").listeners.error(); assert.equal(loading(), true);
+  await vm.runInContext("poll()", context);
+  vm.runInContext("useNativeVideo(); setNativeVideoReady(true)", context);
+  const running = vm.runInContext("api('home')", context);
+  const queued = vm.runInContext("api('home')", context);
+  await settle();
+  remoteLifecycle = "locked";
+  await vm.runInContext("poll()", context);
+  assert.equal(messages.at(-1).lifecycle, "locked");
+  assert.equal(vm.runInContext("canInteract()", context), false);
+  await vm.runInContext("api('home')", context);
+  releases.shift()(); await running; await queued;
+  assert.equal(dispatchedHomes, 3, "lock drops queued and newly attempted input");
+  remoteLifecycle = "ready";
+  await vm.runInContext("poll()", context);
+  assert.equal(vm.runInContext("canInteract()", context), false, "unlock waits for a fresh native frame");
+  vm.runInContext("setNativeVideoReady(true)", context);
+  assert.equal(vm.runInContext("canInteract()", context), true);
+  vm.runInContext("typed = 'stale'; setNativeVideoReady(false)", context);
+  assert.equal(vm.runInContext("typed", context), "", "stalled video clears buffered typing");
+  remoteLifecycle = "disconnected";
+  await vm.runInContext("poll()", context);
+  assert.equal(messages.at(-1).lifecycle, "disconnected");
+  remoteLifecycle = "ready";
+  await vm.runInContext("poll()", context);
+  assert.equal(vm.runInContext("canInteract()", context), false);
+  vm.runInContext("setNativeVideoReady(true)", context);
+  assert.equal(vm.runInContext("canInteract()", context), true);
+
 });
 
 test("Effect schemas reject malformed actions before device dispatch", async () => {
@@ -101,7 +133,7 @@ test("continuous wheel input dispatches promptly, coalesces under load and prese
       append() {}, remove() {}, style: {}, dataset: {}, value: "" });
     return nodes.get(key);
   }
-  const context = vm.createContext({ console, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask,
+  const context = vm.createContext({ console, AbortSignal, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask,
     performance: { now: () => now }, document: { body: element("body"), getElementById: element, querySelector: element,
       createElement: () => element("ripple"), querySelectorAll: () => [], activeElement: null }, window: { addEventListener() {} },
     setTimeout: (fn, ms) => { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
@@ -109,7 +141,7 @@ test("continuous wheel input dispatches promptly, coalesces under load and prese
     fetch: async (url, options) => {
       calls.push([url, options]);
       if (url === "/api/gesture") await new Promise(resolve => releases.push(resolve));
-      return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: false } : { ok: true } };
+      return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true, lifecycle: "ready" } : { ok: true } };
     },
   });
   vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
@@ -121,6 +153,7 @@ test("continuous wheel input dispatches promptly, coalesces under load and prese
   }
   await settle();
   const screen = vm.runInContext("screen", context);
+  screen.listeners.load();
   const wheel = () => screen.listeners.wheel({ clientX: 200, clientY: 400, deltaX: 0, deltaY: 40, preventDefault() {} });
   const gestures = () => calls.filter(([url]) => url === "/api/gesture").map(([, opts]) => JSON.parse(opts.body));
   wheel(); await advance(8); wheel(); await advance(8);

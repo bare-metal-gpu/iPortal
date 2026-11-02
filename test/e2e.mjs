@@ -58,9 +58,19 @@ try {
   assert.equal((await (await fetch(`${base}/api/keep-awake`)).json()).value.enabled, true);
   assert.equal((await post("keep-awake", { enabled: true, durationMs: -1 })).code, "invalid argument");
   await post("lock");
+  const lockedStatus = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(lockedStatus.ok, true, "reachable WDA does not imply unlocked");
+  assert.equal(lockedStatus.locked, true);
+  assert.equal(lockedStatus.lifecycle, "locked");
   assert.equal((await post("keep-awake")).value.reason, "lock requested");
   assert.equal((await post("keep-awake", { enabled: false })).value.enabled, false);
   await post("unlock");
+  assert.equal((await (await fetch(`${base}/api/status`)).json()).lifecycle, "ready");
+  fake.ui.locked = null;
+  const unknownLock = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(unknownLock.locked, null);
+  assert.equal(unknownLock.lifecycle, "connecting", "unknown state must not be reported as unlocked");
+  fake.ui.locked = false;
 
   const selector = { using: "accessibility id", value: "Continue" };
   const absent = { using: "accessibility id", value: "Missing" };
@@ -186,10 +196,13 @@ try {
   fake.ui.devices = [{ id: 8, udid: "OTHER-PHONE", connection: "USB" }];
   const disconnected = await (await fetch(`${base}/api/status`)).json();
   assert.equal(disconnected.device, null);
+  assert.equal(disconnected.lifecycle, "disconnected");
+  assert.equal(disconnected.locked, null);
   assert.equal(disconnected.pinnedUdid, "00008110-FAKEFAKEFAKE");
   assert.equal(disconnected.captureIdentity.singleUsbDevice, false);
   fake.ui.devices.push({ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" });
   const multiple = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(multiple.lifecycle, "ready");
   assert.equal(multiple.device.udid, "00008110-FAKEFAKEFAKE");
   assert.equal(multiple.captureIdentity.singleUsbDevice, false);
   fake.ui.devices = [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }];

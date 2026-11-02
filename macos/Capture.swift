@@ -3,6 +3,34 @@
 // That's much smoother and lower-latency than WebDriverAgent's JPEG screenshots.
 @preconcurrency import AVFoundation
 import CoreMediaIO
+import Cocoa
+import CoreImage
+
+// Retain one pixel buffer, not a history of frames. The capture queue never
+// performs image conversion; snapshots are made only on lifecycle transitions.
+private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pixel: CVPixelBuffer?
+    private var timestamp: TimeInterval = 0
+    func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
+        lock.lock()
+        self.pixel = pixel
+        timestamp = ProcessInfo.processInfo.systemUptime
+        lock.unlock()
+    }
+    var lastFrameAt: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return timestamp
+    }
+    func snapshot() -> NSImage? {
+        lock.lock(); let pixel = self.pixel; lock.unlock()
+        guard let pixel else { return nil }
+        let image = CIImage(cvPixelBuffer: pixel)
+        guard let cg = CIContext().createCGImage(image, from: image.extent) else { return nil }
+        return NSImage(cgImage: cg, size: .zero)
+    }
+}
 
 @MainActor
 final class PhoneCapture {
@@ -11,6 +39,13 @@ final class PhoneCapture {
     let audio = AVCaptureAudioPreviewOutput()
     var onSize: ((CGSize) -> Void)?
     private var observer: NSObjectProtocol?
+    private let frames = FrameStore()
+    private let video = AVCaptureVideoDataOutput()
+    private let sessionQueue = DispatchQueue(label: "iphone-portal.capture-session", qos: .userInitiated)
+    private let frameQueue = DispatchQueue(label: "iphone-portal.capture-frames", qos: .userInitiated)
+    private var stopped = false
+    var lastFrameAt: TimeInterval { frames.lastFrameAt }
+    func snapshot() -> NSImage? { frames.snapshot() }
     private var deviceUDID = ""
     private var allowSingleDeviceFallback = false
 
@@ -35,6 +70,7 @@ final class PhoneCapture {
             AVCaptureDevice.requestAccess(for: .audio) { audio in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
+                        guard !self.stopped else { return }
                         guard video else { return done(false) }
                         self.waitForDevice(until: Date().addingTimeInterval(timeout), withAudio: audio, done)
                     }
@@ -43,7 +79,13 @@ final class PhoneCapture {
         }
     }
 
-    func stop() { session.stopRunning() }
+    func stop() {
+        stopped = true
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+        let session = self.session
+        sessionQueue.async { session.stopRunning() }
+    }
 
     private func findDevice() -> AVCaptureDevice? {
         let type: AVCaptureDevice.DeviceType
@@ -60,6 +102,7 @@ final class PhoneCapture {
 
     // The device appears a second or two after screen capture devices are allowed.
     private func waitForDevice(until deadline: Date, withAudio: Bool, _ done: @escaping @MainActor (Bool) -> Void) {
+        guard !stopped else { return }
         if let device = findDevice() { return run(device, withAudio: withAudio, done) }
         if Date() > deadline { return done(false) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -71,6 +114,11 @@ final class PhoneCapture {
         guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return done(false) }
         session.beginConfiguration()
         session.addInput(input)
+        video.alwaysDiscardsLateVideoFrames = true
+        video.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        guard session.canAddOutput(video) else { session.commitConfiguration(); return done(false) }
+        video.setSampleBufferDelegate(frames, queue: frameQueue)
+        session.addOutput(video)
         // Capturing reroutes the iPhone's sound to the Mac, so play it here (like Apple's mirroring does).
         if withAudio, session.canAddOutput(audio) { session.addOutput(audio) }
         session.commitConfiguration()
@@ -78,10 +126,11 @@ final class PhoneCapture {
             MainActor.assumeIsolated { self?.reportSize(device) }
         }
         let session = self.session
-        DispatchQueue.global(qos: .userInitiated).async {
+        sessionQueue.async {
             session.startRunning() // blocks until the stream is up
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
+                    guard !self.stopped else { return }
                     self.reportSize(device)
                     done(session.isRunning)
                 }

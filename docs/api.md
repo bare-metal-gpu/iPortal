@@ -155,3 +155,9 @@ This opens Settings, briefly goes Home, returns to Settings, and changes no sett
 `scripts/benchmark-touch.py` is an explicitly opted-in real-phone test requiring Python and Pillow. With the phone unlocked and connected, run `python scripts/benchmark-touch.py /absolute/path/report.json`. It opens Settings, navigates to Display & Brightness and back, and performs small alternating scrolls. It changes no settings and enables keep-awake for 30 minutes.
 
 The report separates HTTP completion from the first changed central-region MJPEG frame, using the host monotonic clock. It waits for quiet video before each sample to avoid counting residual scroll inertia. Video timing includes capture and transport delay; it is not a direct panel measurement or a measurement of the native USB preview. Mouse recording time is excluded. Raw drag duration remains part of playback. Frame samples and screenshots are not saved by this benchmark.
+
+### Device lifecycle
+
+`GET /api/status` includes `locked` (`true`, `false`, or `null` when unknown) and `lifecycle` (`ready`, `locked`, `connecting`, or `disconnected`). `ok` still describes WDA reachability; it does not imply that the phone is unlocked. Lock state is read without creating an XCTest session. Unknown or failed observations never count as unlocked.
+
+The app polls once a second, blurs its last captured frame while unavailable, and blocks input until both the phone is ready and a fresh frame arrives. Queued UI input is discarded across lifecycle changes. Native capture is monitored for stalled frames, restarted once, then falls back to MJPEG. Manual locking ends the keep-awake lease; unlocking does not silently start a new lease.

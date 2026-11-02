@@ -115,11 +115,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var pageLoading = true
     var captureLoading = true
     var waitingForVideo = true
+    var deviceLifecycle = "connecting"
+    var captureUdid: String?
+    var singleUsbDevice = false
+    var lifecycleTimer: Timer?
+    var lastStatusAt = ProcessInfo.processInfo.systemUptime
+    var requiredFrameAfter: TimeInterval = 0
+    var captureStartedAt: TimeInterval = 0
+    var captureRetries = 0
 
     func updateLoadingBorder() {
-        loadingBorderState.active = pageLoading || captureLoading
-        loadingBorderState.showMessage = waitingForVideo || captureLoading
-        capture?.layer.isHidden = waitingForVideo || captureLoading
+        let phase: String
+        if deviceLifecycle == "locked" || deviceLifecycle == "disconnected" { phase = deviceLifecycle }
+        else if deviceLifecycle != "ready" || captureLoading || waitingForVideo { phase = "connecting" }
+        else { phase = "live" }
+        if phase != "live", loadingBorderState.phase == "live" {
+            loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
+        }
+        loadingBorderState.phase = phase
+        loadingBorderState.showMessage = phase != "live"
+        loadingBorderState.active = phase == "connecting" || (phase == "live" && pageLoading)
+        if phase == "locked" { loadingBorderState.detail = "Unlock your iPhone to continue" }
+        if phase == "disconnected" { loadingBorderState.detail = "Connect your iPhone" }
+        capture?.layer.isHidden = phase != "live"
+    }
+
+    func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool) {
+        lastStatusAt = ProcessInfo.processInfo.systemUptime
+        self.singleUsbDevice = singleUsbDevice
+        if let udid, !udid.isEmpty { captureUdid = udid }
+        guard next != deviceLifecycle else { return }
+        // Freeze before a capture teardown, so disconnects retain a blurred frame too.
+        if deviceLifecycle == "ready" {
+            loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
+        }
+        deviceLifecycle = next
+        if next != "ready" {
+            js("setNativeVideoReady(false)")
+            captureLoading = true
+            if next == "disconnected" {
+                capture?.stop()
+                capture?.layer.removeFromSuperlayer()
+                capture = nil
+                captureFailed = false
+            }
+        } else {
+            requiredFrameAfter = ProcessInfo.processInfo.systemUptime
+            captureStartedAt = requiredFrameAfter
+            captureRetries = 0
+            captureLoading = capture != nil || !captureFailed
+            loadingBorderState.detail = ""
+            if capture == nil, let captureUdid {
+                captureFailed = false
+                startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+            } else if capture == nil { captureLoading = false }
+        }
+        updateLoadingBorder()
+    }
+
+    func checkVideoLifecycle() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastStatusAt > 5, deviceLifecycle == "ready" || deviceLifecycle == "locked" {
+            applyLifecycle("connecting", udid: nil, singleUsbDevice: singleUsbDevice)
+        }
+        guard deviceLifecycle == "ready", let capture else { return }
+        let fresh = capture.lastFrameAt > requiredFrameAfter && now - capture.lastFrameAt < 3
+        if fresh {
+            if captureLoading {
+                captureLoading = false
+                captureRetries = 0
+                js("setNativeVideoReady(true)")
+                updateLoadingBorder()
+            }
+        } else {
+            if !captureLoading {
+                loadingBorderState.snapshot = capture.snapshot() ?? loadingBorderState.snapshot
+                captureLoading = true
+                captureStartedAt = now
+                js("setNativeVideoReady(false)")
+                updateLoadingBorder()
+            }
+            if now - captureStartedAt > 10 {
+                if captureRetries < 1, let captureUdid {
+                    captureRetries += 1
+                    startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+                } else { fallbackToStream() }
+            }
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -129,12 +211,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         buildMenu()
         buildWindow()
         ensureServer()
+        lifecycleTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkVideoLifecycle() }
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
+        lifecycleTimer?.invalidate()
         capture?.stop()
         guard let p = server, p.isRunning else { return }
         p.terminate()
@@ -350,6 +436,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // In MJPEG mode the page reports the stream's real size once the first frame arrives.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
+        if let lifecycle = d["lifecycle"] as? String, let udid = d["deviceUdid"] as? String {
+            applyLifecycle(lifecycle, udid: udid, singleUsbDevice: d["singleUsbDevice"] as? Bool ?? false)
+        }
         if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
         if let detail = d["loadingDetail"] as? String { loadingBorderState.detail = detail }
         if let loading = d["loading"] as? Bool {
@@ -364,22 +453,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: Video
 
     func startCapture(udid: String, singleUsbDevice: Bool) {
+        capture?.stop()
+        capture?.layer.removeFromSuperlayer()
+        captureUdid = udid
+        self.singleUsbDevice = singleUsbDevice
+        captureLoading = true
+        captureFailed = false
+        captureStartedAt = ProcessInfo.processInfo.systemUptime
+        requiredFrameAfter = captureStartedAt
         let c = PhoneCapture()
-        c.onSize = { [weak self] size in self?.setAspect(width: size.width, height: size.height) }
-        videoHost.layer?.addSublayer(c.layer) // above the blur, underneath web input
+        c.onSize = { [weak self, weak c] size in
+            guard let self, self.capture === c else { return }
+            self.setAspect(width: size.width, height: size.height)
+        }
+        videoHost.layer?.addSublayer(c.layer)
         c.layer.frame = videoHost.bounds
         capture = c
-        c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self] ok in
-            guard let self else { return }
-            self.captureLoading = false
-            self.updateLoadingBorder()
-            guard !ok else { return }
-            NSLog("iPhone Portal: no direct screen capture, falling back to the MJPEG stream")
-            self.capture?.layer.removeFromSuperlayer()
-            self.capture = nil
-            self.captureFailed = true
-            self.js("startStream()")
+        js("useNativeVideo()")
+        updateLoadingBorder()
+        c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self, weak c] ok in
+            guard let self, self.capture === c else { return }
+            if !ok { self.fallbackToStream() }
+            // A running session is not proof of video. The frame watchdog marks ready.
         }
+    }
+
+    func fallbackToStream() {
+        loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
+        capture?.stop()
+        capture?.layer.removeFromSuperlayer()
+        capture = nil
+        captureFailed = true
+        captureLoading = false
+        waitingForVideo = true
+        js("startStream()")
+        updateLoadingBorder()
     }
 
     // If the capture failed while the page was still loading, switch it to the stream once it's there.
@@ -402,6 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if captureFailed { js("startStream()") }
+        else if capture != nil { js("useNativeVideo(); setNativeVideoReady(\(!captureLoading))") }
         if webView.url?.host == nil {
             pageLoading = false
             waitingForVideo = false

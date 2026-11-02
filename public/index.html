@@ -40,7 +40,8 @@
   body.app main { padding: 0; }
   body.app #phone { width: 100vw; height: 100vh; padding: 0; border-radius: 0; box-shadow: none; background: transparent; }
   body.app #screen { width: 100%; height: 100%; max-width: none; max-height: none; min-width: 0; min-height: 0; border-radius: 0; object-fit: fill; background: transparent; }
-  body.app.loading #screen { visibility: hidden; }
+  body.app.loading:not(.unavailable) #screen { visibility: hidden; }
+  body.unavailable #screen { filter: blur(18px) brightness(0.65); pointer-events: none; }
   body.app #overlay { inset: 0; border-radius: 0; background: transparent; }
   body.app #overlay b { color: #fff; text-shadow: 0 1px 3px #0008; }
   body.native-loading-ui #overlay { display: none; }
@@ -131,15 +132,37 @@ const $ = (id) => document.getElementById(id);
 const screen = $("screen");
 const phone = $("phone");
 let connected = false;
+let lifecycle = "connecting";
+let inputEpoch = 0;
+let nativeReady = false;
+const controlOnly = new Set(["ensure", "quality", "lock", "unlock"]);
+function canInteract() { return lifecycle === "ready" && connected && (nativeVideo ? nativeReady : streamReady); }
+function setNativeVideoReady(ready) {
+  if (nativeReady && !ready) invalidateInput();
+  nativeReady = ready && lifecycle === "ready";
+  reportLoading();
+}
+function invalidateInput() {
+  inputEpoch++;
+  touch = null; wheel = null; typed = "";
+  clearTimeout(wheelTimer); wheelTimer = null;
+}
+function setLifecycle(next) {
+  if (next === lifecycle) return;
+  lifecycle = next;
+  nativeReady = false;
+  invalidateInput();
+}
+
 let streamReady = false;
 let pendingActions = 0;
 let loadingDetail = "";
 function reportLoading() {
-  const waitingForVideo = !connected || (!nativeVideo && !streamReady);
+  const waitingForVideo = lifecycle !== "ready" || !connected || (nativeVideo ? !nativeReady : !streamReady);
   document.body.classList.toggle("loading", waitingForVideo);
   window.webkit?.messageHandlers?.native?.postMessage({
     loading: waitingForVideo || pendingActions > 0, waitingForVideo,
-    loadingDetail: waitingForVideo ? loadingDetail : ""
+    loadingDetail: waitingForVideo ? loadingDetail : "", lifecycle
   });
 }
 const params = new URLSearchParams(location.search);
@@ -147,6 +170,14 @@ if (params.has("app")) document.body.classList.add("app");
 if (params.has("app") && window.webkit?.messageHandlers?.native) document.body.classList.add("native-loading-ui");
 let nativeVideo = params.get("video") === "native";
 document.body.classList.toggle("native-video", nativeVideo);
+
+function useNativeVideo() {
+  nativeVideo = true;
+  nativeReady = false;
+  document.body.classList.add("native-video");
+  screen.removeAttribute("src");
+  reportLoading();
+}
 
 // Called by the Mac app if it can't capture the iPhone's screen itself.
 function startStream() {
@@ -166,6 +197,8 @@ function toast(msg) {
 
 let outbound = Promise.resolve();
 function api(name, body = {}, fromWheel = false) {
+  if (!controlOnly.has(name) && !canInteract()) return Promise.resolve();
+  const epoch = inputEpoch;
   if (!fromWheel) flushWheel(true); // Earlier wheel movement stays ahead of later input.
   if (name !== "type") flush(true); // keep typed text in order with other actions
   const requestId = crypto.randomUUID();
@@ -173,6 +206,7 @@ function api(name, body = {}, fromWheel = false) {
   reportLoading();
   const task = outbound.then(async () => {
   try {
+    if (!controlOnly.has(name) && (epoch !== inputEpoch || !canInteract())) return;
     const res = await fetch(`/api/${name}`, { method: "POST", headers: { "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content }, body: JSON.stringify({ ...body, requestId }) });
     const json = await res.json();
     if (!json.ok) toast(json.error || "Something went wrong");
@@ -196,28 +230,32 @@ function api(name, body = {}, fromWheel = false) {
 
 async function poll() {
   try {
-    const s = await (await fetch("/api/status")).json();
+    const s = await (await fetch("/api/status", { signal: AbortSignal.timeout(3000) })).json();
     if (s.service !== "iphone-mirror" || s.apiVersion !== 2) throw new Error("Unexpected server");
     const fingerprint = document.querySelector('meta[name="mirror-instance"]');
     if (fingerprint.content !== s.instanceId) { location.reload(); return; }
     $("dot").classList.toggle("on", s.ok);
     $("device").textContent = s.device ? `${s.device.udid} · ${s.device.connection}` : s.ok ? "Connected over WiFi" : "No iPhone connected";
     $("quality").value = s.quality;
+    setLifecycle(s.lifecycle ?? (s.ok ? "ready" : "connecting"));
+    window.webkit?.messageHandlers?.native?.postMessage({ lifecycle, deviceUdid: s.device?.udid ?? "", singleUsbDevice: s.captureIdentity?.singleUsbDevice === true });
     loadingDetail = !s.ok && !s.error?.startsWith("Starting WebDriverAgent") ? (s.error ?? "") : "";
-    if (s.ok && !connected) {
+    if (lifecycle === "ready" && !connected) {
       connected = true;
       if (nativeVideo) $("overlay").hidden = true;
       else screen.src = `/stream?${Date.now()}`;
     }
-    if (!s.ok) {
+    if (lifecycle !== "ready") {
       connected = false;
       streamReady = false;
-      screen.removeAttribute("src");
+      // Preserve the last frame under the locked/disconnected overlay.
+      document.body.classList.add("unavailable");
       $("overlay").hidden = false;
-      $("overlay").querySelector("b").textContent = "Not connected";
-      $("overlayText").textContent = s.error ?? "";
+      $("overlay").querySelector("b").textContent = lifecycle === "locked" ? "Locked" : lifecycle === "disconnected" ? "Disconnected" : "Connecting…";
+      $("overlayText").textContent = lifecycle === "locked" ? "Unlock your iPhone to continue" : (s.error ?? "");
     }
   } catch {
+    setLifecycle("connecting");
     connected = false;
     streamReady = false;
     $("overlay").hidden = false;
@@ -226,17 +264,20 @@ async function poll() {
     loadingDetail = "Reconnecting to the mirror server…";
   }
   reportLoading();
-  setTimeout(poll, connected ? 4000 : 1500);
+  setTimeout(poll, 1000);
 }
 
 screen.addEventListener("load", () => {
+  if (lifecycle !== "ready") return;
   streamReady = true;
+  document.body.classList.remove("unavailable");
   $("overlay").hidden = true;
   reportLoading();
   // Tell the native Mac app the screen's aspect ratio so it can size the window.
   window.webkit?.messageHandlers?.native?.postMessage({ w: screen.naturalWidth, h: screen.naturalHeight });
 });
 screen.addEventListener("error", () => {
+  invalidateInput();
   connected = false;
   streamReady = false;
   $("overlay").hidden = false;
@@ -265,7 +306,7 @@ function ripple(e) {
 let touch = null;
 
 screen.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || !canInteract()) return;
   e.preventDefault();
   screen.setPointerCapture(e.pointerId);
   touch = { t0: performance.now(), last: 0, points: [[...rel(e), 0]] };
@@ -320,6 +361,7 @@ function flushWheel(force = false) {
 }
 screen.addEventListener("wheel", (e) => {
   e.preventDefault();
+  if (!canInteract()) return;
   const r = screen.getBoundingClientRect();
   wheel ??= { x: rel(e)[0], y: rel(e)[1], dx: 0, dy: 0 };
   wheel.dx += e.deltaX / r.width;
@@ -338,6 +380,7 @@ const inField = () => ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeEl
 let typed = "";
 let typing = false;
 function flush(force = false) {
+  if (!canInteract()) { typed = ""; return; }
   if (!typed || (typing && !force)) return;
   const text = typed;
   typed = "";
@@ -349,7 +392,7 @@ function flush(force = false) {
 }
 
 window.addEventListener("keydown", (e) => {
-  if (inField() || !connected) return;
+  if (inField() || !canInteract()) return;
   if (e.altKey && e.code === "KeyH") return e.preventDefault(), api("home");
   if (e.altKey && e.code === "KeyJ") return e.preventDefault(), api("shortcut", { name: "switcher" });
   if (e.metaKey || e.ctrlKey || e.altKey) return; // let ⌘V through to the paste handler
@@ -362,7 +405,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("paste", (e) => {
-  if (inField() || !connected) return;
+  if (inField() || !canInteract()) return;
   const text = e.clipboardData.getData("text/plain");
   if (text) {
     e.preventDefault();

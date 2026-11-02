@@ -378,6 +378,15 @@ async function status() {
     }
   }
   const up = (MANUAL || device) && (await wdaUp());
+  let locked = null;
+  if (up) {
+    try {
+      const value = (await wda("GET", "/wda/locked", null, 1200)).value;
+      if (typeof value !== "boolean") throw new Error("Invalid lock state");
+      locked = value;
+      if (locked) keepAwake.stop("locked");
+    } catch { error = "Waiting for iPhone state…"; }
+  }
   if (up) wdaProblem = null;
   if (device && !up) {
     maybeStartWda(device.udid);
@@ -387,7 +396,8 @@ async function status() {
       ? "Starting WebDriverAgent on your iPhone… (keep it unlocked)"
       : "WebDriverAgent isn't running on the iPhone. Run scripts/setup-wda.sh once, then restart.";
   } else if (MANUAL && !up) error = `Can't reach WebDriverAgent at ${WDA}`;
-  return { service: "iphone-mirror", apiVersion: 2, instanceId, ok: Boolean(up), device, pinnedUdid,
+  const lifecycle = !MANUAL && !device ? "disconnected" : locked === true ? "locked" : up && locked === false ? "ready" : "connecting";
+  return { service: "iphone-mirror", apiVersion: 2, instanceId, ok: Boolean(up), device, pinnedUdid, locked, lifecycle,
     captureIdentity: { singleUsbDevice: Boolean(pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid) },
     error, quality, queue: scheduler.stats(), keepAwake: keepAwake.status() };
 }

@@ -9,6 +9,8 @@ final class LoadingBorderState: ObservableObject {
     @Published var radius: CGFloat = 42
     @Published var showMessage = true
     @Published var detail = ""
+    @Published var phase = "connecting"
+    @Published var snapshot: NSImage?
 }
 
 struct LoadingBorder: View {
@@ -17,15 +19,35 @@ struct LoadingBorder: View {
 
     var body: some View {
         ZStack {
+            if state.phase != "live", let snapshot = state.snapshot {
+                GeometryReader { geometry in
+                    Image(nsImage: snapshot)
+                        .resizable()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .blur(radius: 18)
+                        .overlay(Color.black.opacity(0.25))
+                }
+                .accessibilityHidden(true)
+            }
             border.accessibilityHidden(true)
             if state.showMessage {
                 GeometryReader { geometry in
                     VStack(spacing: 14) {
                         HStack(spacing: 12) {
-                            ThinkingOrb(state: .connecting, size: .px64, theme: .dark,
+                            if state.phase == "locked" || state.phase == "disconnected" {
+                                Image(systemName: state.phase == "locked" ? "lock.fill" : "cable.connector.slash")
+                                    .font(.system(size: 24, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.85))
+                                    .accessibilityHidden(true)
+                                Text(state.phase == "locked" ? "Locked" : "Disconnected")
+                                    .font(.custom("InterVariable", size: 18).weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.85))
+                            } else {
+                                ThinkingOrb(state: .connecting, size: .px64, theme: .dark,
                                         displaySize: geometry.size.width < 260 ? 40 : 64)
                                 .accessibilityHidden(true)
-                            ConnectingLabel()
+                                ConnectingLabel()
+                            }
                         }
                         .padding(.horizontal, 18)
                         .padding(.vertical, 10)
