@@ -13,6 +13,16 @@ const TINY_JPEG = Buffer.from(
 export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = {}) {
   const log = [];
   const jpeg = frame ? fs.readFileSync(frame) : TINY_JPEG;
+  const ui = {
+    elements: [{ id: "button-1", type: "XCUIElementTypeButton", name: "Continue", label: "Continue", value: null, enabled: true, visible: true, hittable: true, rect: { x: 20, y: 40, width: 100, height: 44 } }],
+    error: null,
+    expireSession: false,
+    staleOnce: false,
+    staleLookupOnce: false,
+    delayMs: 0,
+  };
+  let sessionId = "S1";
+  let generation = 1;
 
   const wda = http.createServer((req, res) => {
     let body = "";
@@ -20,17 +30,46 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = 
     req.on("end", () => {
       const json = body ? JSON.parse(body) : null;
       log.push({ method: req.method, path: req.url, body: json });
-      const reply = (value, extra = {}) => {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ value, sessionId: "S1", ...extra }));
+      const reply = (value, extra = {}, status = 200) => {
+        const send = () => {
+          res.writeHead(status, { "content-type": "application/json" });
+          res.end(JSON.stringify({ value, sessionId, ...extra }));
+        };
+        if (ui.delayMs) setTimeout(send, ui.delayMs); else send();
       };
+      const fail = (error, message = error) => reply({ error, message }, {}, 404);
       if (req.url === "/status") return reply({ ready: true });
-      if (req.url === "/session") return reply({ sessionId: "S1", capabilities: {} });
-      if (req.url.endsWith("/window/size")) return reply({ width: 390, height: 844 });
-      if (req.url.startsWith("/session/") && !req.url.startsWith("/session/S1/")) {
-        res.writeHead(404, { "content-type": "application/json" });
-        return res.end(JSON.stringify({ value: { error: "invalid session id", message: "Session does not exist" } }));
+      if (req.url === "/session") return reply({ sessionId, capabilities: {} });
+      if (req.url === "/wda/mirror/touch") return fail("unknown command");
+      if (ui.expireSession && req.url.startsWith("/session/")) {
+        ui.expireSession = false;
+        sessionId = `S${++generation}`;
+        return fail("invalid session id");
       }
+      if (req.url.startsWith("/session/") && !req.url.startsWith(`/session/${sessionId}/`)) return fail("invalid session id");
+      const route = req.url.replace(/^\/session\/[^/]+/, "");
+      if (ui.error && route !== "/appium/settings") return fail(ui.error);
+      if (route === "/elements") {
+        if (ui.staleLookupOnce) { ui.staleLookupOnce = false; return fail("stale element reference"); }
+        if (json.value === "INVALID") return fail("invalid selector");
+        const found = ui.elements.filter((e) => json.using === "class name" ? e.type === json.value : e.name === json.value);
+        return reply(found.map((e) => ({ "element-6066-11e4-a52e-4f735466cecf": e.id })));
+      }
+      if (route.startsWith("/source?")) return reply(new URL(req.url, "http://x").searchParams.get("format") === "json" ? { type: "Application", children: ui.elements } : "<Application/>");
+      if (route === "/screenshot") return reply(jpeg.toString("base64"));
+      if (route === "/wda/locked") return reply(false);
+      if (route === "/wda/activeAppInfo") return reply({ bundleId: "com.apple.Preferences", pid: 123 });
+      if (route === "/orientation") return reply("PORTRAIT");
+      const elementRoute = route.match(/^\/element\/([^/]+)\/(.+)$/);
+      if (elementRoute) {
+        if (ui.staleOnce) { ui.staleOnce = false; return fail("stale element reference"); }
+        const element = ui.elements.find((e) => e.id === decodeURIComponent(elementRoute[1]));
+        if (!element) return fail("stale element reference");
+        if (elementRoute[2] === "screenshot") return reply(jpeg.toString("base64"));
+        const attr = elementRoute[2].replace(/^attribute\//, "");
+        return reply(element[attr] ?? null);
+      }
+      if (req.url.endsWith("/window/size")) return reply({ width: 390, height: 844 });
       reply(null);
     });
   });
@@ -88,7 +127,7 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = 
   wda.listen(wdaPort, "127.0.0.1");
   mjpeg.listen(mjpegPort, "127.0.0.1");
   mux.listen(SOCKET);
-  return { log, close: () => [wda, mjpeg, mux].forEach((s) => s.close()) };
+  return { log, ui, close: () => [wda, mjpeg, mux].forEach((s) => s.close()) };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

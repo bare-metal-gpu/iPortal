@@ -10,6 +10,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { apiError, createInspection } from "./inspection.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const { values: opts, positionals } = parseArgs({
@@ -147,14 +148,14 @@ function forward(localPort, devicePort) {
 
 // ---------- WebDriverAgent ----------
 
-async function wda(method, p, body, timeout = 30000) {
+async function wda(method, p, body, timeout = 30000, signal) {
   const res = await fetch(WDA + p, {
     method,
     headers: body ? { "content-type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeout),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
   });
-  const json = await res.json().catch(() => ({}));
+  const json = await res.json();
   if (!res.ok || json.value?.error) {
     const err = new Error(json.value?.message || `WDA returned ${res.status}`);
     err.code = json.value?.error;
@@ -175,26 +176,38 @@ let sid = null;
 let size = null;
 let sizeAt = 0;
 
-async function session() {
+async function session({ deadline, signal } = {}) {
   if (sid) return sid;
+  const remaining = () => {
+    const ms = deadline === undefined ? 30000 : Math.ceil(deadline - performance.now());
+    if (ms <= 0) throw apiError("Wait timed out", 408, "timeout");
+    return ms;
+  };
   const res = await wda("POST", "/session", {
     capabilities: { alwaysMatch: { shouldWaitForQuiescence: false, shouldUseCompactResponses: true }, firstMatch: [{}] },
-  });
+  }, remaining(), signal);
   sid = res.sessionId ?? res.value?.sessionId;
-  await wda("POST", `/session/${sid}/appium/settings`, {
-    settings: { ...QUALITY[quality], waitForIdleTimeout: 0, animationCoolOffTimeout: 0, snapshotMaxDepth: 1 },
-  }).catch(() => {});
+  if (!sid) throw apiError("WDA did not return a session ID", 502, "invalid response");
+  try {
+    await wda("POST", `/session/${sid}/appium/settings`, {
+      settings: { ...QUALITY[quality], waitForIdleTimeout: 0, animationCoolOffTimeout: 0, snapshotMaxDepth: 50 },
+    }, remaining(), signal);
+  } catch (e) {
+    sid = null;
+    throw e;
+  }
   return sid;
 }
 
 // Runs fn with a live session, recreating it once if WDA restarted.
-async function withSession(fn) {
+async function withSession(fn, options) {
   try {
-    return await fn(await session());
+    return await fn(await session(options));
   } catch (e) {
-    if (!/session/i.test(`${e.code} ${e.message}`)) throw e;
+    if (e.code !== "invalid session id") throw e;
     sid = null;
-    return fn(await session());
+    size = null;
+    return fn(await session(options));
   }
 }
 
@@ -334,15 +347,33 @@ process.on("SIGTERM", () => process.exit()); // the Mac app stops the server thi
 
 // ---------- HTTP server ----------
 
-const readBody = (req) =>
-  new Promise((resolve) => {
-    let data = "";
-    req.on("data", (c) => (data += c));
-    req.on("end", () => resolve(data ? JSON.parse(data) : {}));
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let length = 0;
+    req.on("data", (chunk) => {
+      length += chunk.length;
+      if (length > 1024 * 1024) {
+        chunks.length = 0;
+        // Drain the request without destroying the socket, so the client receives 413.
+        reject(apiError("Request body exceeds 1 MiB", 413));
+      } else chunks.push(chunk);
+    });
+    req.on("error", reject);
+    req.on("aborted", () => reject(apiError("Request aborted", 400)));
+    req.on("end", () => {
+      if (length > 1024 * 1024) return;
+      let body;
+      try { body = length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}; }
+      catch { return reject(apiError("Invalid JSON body")); }
+      if (!body || typeof body !== "object" || Array.isArray(body)) return reject(apiError("Body must be a JSON object"));
+      resolve(body);
+    });
   });
+}
 
 const send = (res, code, obj) => {
-  res.writeHead(code, { "content-type": "application/json" });
+  res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" });
   res.end(JSON.stringify(obj));
 };
 
@@ -370,6 +401,7 @@ async function status() {
   return { ok: Boolean(up), device, error, quality };
 }
 
+const inspection = createInspection({ wda, withSession, enqueue });
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
 
@@ -391,17 +423,26 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/status") return send(res, 200, await status());
 
   const name = url.pathname.match(/^\/api\/(\w+)$/)?.[1];
-  if (req.method === "POST" && name && actions[name]) {
+  if (req.method === "POST" && name && (Object.hasOwn(inspection, name) || Object.hasOwn(actions, name))) {
+    const controller = new AbortController();
+    res.once("close", () => controller.abort());
     try {
       const body = await readBody(req);
+      if (Object.hasOwn(inspection, name)) {
+        const value = await inspection[name](body, controller.signal);
+        if (!res.destroyed) send(res, 200, { ok: true, value });
+        return;
+      }
       await enqueue(() => actions[name](body));
       return send(res, 200, { ok: true });
     } catch (e) {
+      if (res.destroyed) return;
       if (NOT_AUTHORIZED.test(e.message)) {
         restartWda();
         return send(res, 503, { ok: false, error: "Automation was off on your iPhone. Turning it back on, try again in a few seconds." });
       }
-      return send(res, 500, { ok: false, error: e.message });
+      const status = e.status ?? ({ "no such element": 404, "stale element reference": 409, "invalid argument": 400, "invalid selector": 400 }[e.code]) ?? 502;
+      return send(res, status, { ok: false, error: e.message, code: e.code ?? "upstream error", ...(e.details ? { details: e.details } : {}) });
     }
   }
 
