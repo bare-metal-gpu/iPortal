@@ -25,20 +25,14 @@ struct LoadingBorder: View {
                             ThinkingOrb(state: .connecting, size: .px64, theme: .dark,
                                         displaySize: geometry.size.width < 260 ? 40 : 64)
                                 .accessibilityHidden(true)
-                            Text("Connecting…")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.85))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.75)
+                            ConnectingLabel()
                         }
                         .padding(.horizontal, 18)
                         .padding(.vertical, 10)
                         .frame(maxWidth: min(260, geometry.size.width - 32))
-                        .background(.black.opacity(0.42), in: Capsule())
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 1))
                         if !state.detail.isEmpty {
                             Text(state.detail)
-                                .font(.system(size: 12))
+                                .font(.custom("InterVariable", size: 12))
                                 .foregroundStyle(.white.opacity(0.85))
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, 24)
@@ -69,6 +63,34 @@ struct LoadingBorder: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .padding(2)
+    }
+}
+
+private struct ConnectingLabel: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var label: some View {
+        Text("Connecting…")
+            .font(.custom("InterVariable", size: 18).weight(.medium))
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+    }
+
+    var body: some View {
+        if reduceMotion {
+            label.foregroundStyle(.white.opacity(0.85))
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 2.4) / 2.4
+                let center = phase * 2 - 0.5
+                label.foregroundStyle(LinearGradient(
+                    colors: [.white.opacity(0.6), .white, .white.opacity(0.6)],
+                    startPoint: UnitPoint(x: center - 0.35, y: 0),
+                    endPoint: UnitPoint(x: center + 0.35, y: 0)
+                ))
+            }
+        }
     }
 }
 

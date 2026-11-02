@@ -5,6 +5,7 @@
 // isn't available, the web view shows WebDriverAgent's MJPEG stream instead.
 import Cocoa
 import WebKit
+import CoreText
 
 let barHeight: CGFloat = 30
 let barGap: CGFloat = 6
@@ -121,6 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let fontURL = Bundle.main.url(forResource: "InterVariable", withExtension: "ttf", subdirectory: "Fonts") {
+            CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
+        }
         buildMenu()
         buildWindow()
         ensureServer()
