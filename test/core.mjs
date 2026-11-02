@@ -66,10 +66,12 @@ test("native loading tracks queued input, reconnects and the first fallback fram
   const first = vm.runInContext("api('home')", context);
   const second = vm.runInContext("api('home')", context);
   await settle(); assert.equal(loading(), true);
+  assert.equal(messages.at(-1).waitingForVideo, false, "queued input must keep live video visible");
   releases.shift()(); await first; await settle(); assert.equal(loading(), true);
   releases.shift()(); await second; assert.equal(loading(), false);
   offline = true; await vm.runInContext("poll()", context); assert.equal(loading(), true);
   assert.equal(element("overlay").hidden, false);
+  assert.equal(messages.at(-1).waitingForVideo, true, "lost connection reveals the native blur");
   offline = false; await vm.runInContext("poll()", context); assert.equal(loading(), false);
   vm.runInContext("startStream()", context); assert.equal(loading(), true);
   element("screen").listeners.load(); assert.equal(loading(), false);

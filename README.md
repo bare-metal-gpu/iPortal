@@ -45,7 +45,7 @@ Prefer the browser? Run `npm start` and open http://localhost:7100.
 - With a free Apple ID, run `npm run setup` again every 7 days.
 - The iPhone's sound plays on your Mac while mirroring.
 
-The Mac app builds through `macos/iPhonePortal.xcodeproj` so Xcode compiles BorderBeamKit’s Metal shader and embeds its resources. The dependency tracks Libraries.dev’s `main` branch, with the resolved commit checked in. A border beam indicates startup, reconnecting, video loading, and pending input; it fades away when ready. Reduce Motion uses a static border. If Xcode reports a missing Metal Toolchain, install it once with `xcodebuild -downloadComponent MetalToolchain`.
+The Mac app builds through `macos/iPhonePortal.xcodeproj` so Xcode compiles BorderBeamKit’s Metal shader and embeds its resources. The dependency tracks Libraries.dev’s `main` branch, with the resolved commit checked in. The phone window has 56-point corner resize targets with proportional sizing, and its loading background uses the same translucent blur as the toolbar. A border beam indicates startup, reconnecting, video loading, and pending input; it fades away when ready. Reduce Motion uses a static border. If Xcode reports a missing Metal Toolchain, install it once with `xcodebuild -downloadComponent MetalToolchain`.
 
 ## Automation API
 

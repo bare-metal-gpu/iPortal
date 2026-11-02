@@ -25,6 +25,64 @@ final class DragBar: NSVisualEffectView {
     override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
 }
 
+enum ResizeCorner: CaseIterable {
+    case topLeft, topRight, bottomLeft, bottomRight
+    var left: Bool { self == .topLeft || self == .bottomLeft }
+    var bottom: Bool { self == .bottomLeft || self == .bottomRight }
+}
+
+final class CornerResizeHandle: NSView {
+    let corner: ResizeCorner
+    var onResize: ((ResizeCorner, NSRect, NSPoint) -> Void)?
+    private var startFrame: NSRect?
+    private var startMouse = NSPoint.zero
+
+    init(corner: ResizeCorner) {
+        self.corner = corner
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func resetCursorRects() {
+        let cursor: NSCursor
+        if #available(macOS 15, *) {
+            let position: NSCursor.FrameResizePosition
+            switch corner {
+            case .topLeft: position = .topLeft
+            case .topRight: position = .topRight
+            case .bottomLeft: position = .bottomLeft
+            case .bottomRight: position = .bottomRight
+            }
+            cursor = .frameResize(position: position, directions: .all)
+        } else {
+            cursor = .crosshair
+        }
+        addCursorRect(bounds, cursor: cursor)
+    }
+
+    private func screenLocation(_ event: NSEvent) -> NSPoint {
+        // A left/top resize moves the window origin. Use the event's global
+        // position so later drag events cannot accumulate that movement twice.
+        if let point = event.cgEvent?.location, let primary = NSScreen.screens.first {
+            return NSPoint(x: point.x, y: primary.frame.maxY - point.y)
+        }
+        return window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        startFrame = window.frame
+        startMouse = screenLocation(event)
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let startFrame else { return }
+        let mouse = screenLocation(event)
+        onResize?(corner, startFrame, NSPoint(x: mouse.x - startMouse.x, y: mouse.y - startMouse.y))
+    }
+    override func mouseUp(with event: NSEvent) { startFrame = nil }
+}
+
 final class HoverView: NSView {
     var onHover: ((Bool) -> Void)?
     override func updateTrackingAreas() {
@@ -37,12 +95,13 @@ final class HoverView: NSView {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
     var window: MirrorWindow!
-    var phone: NSView!
+    var phone: NSVisualEffectView!
     var web: WKWebView!
     var bar: DragBar!
     var barButtons: [NSView] = []
+    var resizeHandles: [CornerResizeHandle] = []
     var server: Process?
     var ratio: CGFloat = 390 / 844
     var phoneHeight = defaultPhoneHeight
@@ -53,9 +112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var loadingBorder: LoadingBorderHost!
     var pageLoading = true
     var captureLoading = true
+    var waitingForVideo = true
 
     func updateLoadingBorder() {
         loadingBorderState.active = pageLoading || captureLoading
+        capture?.layer.isHidden = waitingForVideo || captureLoading
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -77,27 +138,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     // MARK: Window
 
-    var maxPhoneHeight: CGFloat { (window?.screen ?? NSScreen.main).map { $0.visibleFrame.height - barHeight - barGap - 20 } ?? 800 }
+    var maxPhoneHeight: CGFloat {
+        guard let screen = window?.screen ?? NSScreen.main else { return 800 }
+        return min(screen.visibleFrame.height - barHeight - barGap - 20,
+                   (screen.visibleFrame.width - 20) / ratio)
+    }
 
     func buildWindow() {
         phoneHeight = min(defaultPhoneHeight, maxPhoneHeight - 40)
         let size = windowSize()
         let vis = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         window = MirrorWindow(contentRect: NSRect(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2, width: size.width, height: size.height),
-                              styleMask: [.borderless, .miniaturizable], backing: .buffered, defer: false)
+                              styleMask: [.borderless, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "iPhone Portal"
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
         window.isReleasedWhenClosed = false
+        window.delegate = self
 
         let root = HoverView(frame: NSRect(origin: .zero, size: size))
         root.onHover = { [weak self] inside in self?.hover(inside) }
         window.contentView = root
 
-        phone = NSView()
+        phone = NSVisualEffectView()
+        phone.material = .hudWindow
+        phone.blendingMode = .behindWindow
+        phone.state = .active
         phone.wantsLayer = true
-        phone.layer?.backgroundColor = NSColor.black.cgColor
         phone.layer?.masksToBounds = true
         phone.layer?.cornerCurve = .continuous
         root.addSubview(phone)
@@ -110,6 +178,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         phone.addSubview(web)
         loadingBorder = LoadingBorderHost(rootView: LoadingBorder(state: loadingBorderState))
         phone.addSubview(loadingBorder)
+        resizeHandles = ResizeCorner.allCases.map { corner in
+            let handle = CornerResizeHandle(corner: corner)
+            handle.onResize = { [weak self] corner, frame, delta in
+                self?.resizeFromCorner(corner, initial: frame, delta: delta)
+            }
+            phone.addSubview(handle)
+            return handle
+        }
 
         bar = DragBar()
         bar.material = .hudWindow
@@ -159,11 +235,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func layout() {
         let w = (phoneHeight * ratio).rounded()
+        window.minSize = NSSize(width: (400 * ratio).rounded(), height: 400 + barGap + barHeight)
+        window.maxSize = NSSize(width: (maxPhoneHeight * ratio).rounded(), height: maxPhoneHeight + barGap + barHeight)
         phone.frame = NSRect(x: 0, y: 0, width: w, height: phoneHeight)
         phone.layer?.cornerRadius = w * 0.14 // iPhone screen corner radius relative to its width
         web.frame = phone.bounds
         loadingBorder.frame = phone.bounds
         loadingBorderState.radius = max(0, w * 0.14 - 2)
+        // Generous grab areas extend inward from every rounded phone corner.
+        // They sit above the input web view, so a resize cannot send a phone gesture.
+        let grabSize: CGFloat = 56
+        for handle in resizeHandles {
+            handle.frame = NSRect(x: handle.corner.left ? 0 : w - grabSize,
+                                  y: handle.corner.bottom ? 0 : phoneHeight - grabSize,
+                                  width: grabSize, height: grabSize)
+            window.invalidateCursorRects(for: handle)
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         capture?.layer.frame = phone.bounds
@@ -176,6 +263,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         barButtons[2].frame = NSRect(x: w - 62, y: y, width: 22, height: 16)
         barButtons[3].frame = NSRect(x: w - 32, y: y, width: 22, height: 16)
         window.invalidateShadow()
+    }
+
+    // Preserve the phone's aspect ratio, excluding the fixed-height toolbar.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        constrainedWindowSize(frameSize, relativeTo: sender.frame.size)
+    }
+
+    func constrainedWindowSize(_ frameSize: NSSize, relativeTo current: NSSize) -> NSSize {
+        let widthChange = abs(frameSize.width - current.width) / max(1, current.width)
+        let heightChange = abs(frameSize.height - current.height) / max(1, current.height)
+        let proposedHeight = widthChange > heightChange
+            ? frameSize.width / ratio
+            : frameSize.height - barGap - barHeight
+        let height = max(400, min(proposedHeight, maxPhoneHeight))
+        return NSSize(width: (height * ratio).rounded(), height: height + barGap + barHeight)
+    }
+
+    func resizeFromCorner(_ corner: ResizeCorner, initial: NSRect, delta: NSPoint) {
+        let proposed = NSSize(width: initial.width + (corner.left ? -delta.x : delta.x),
+                              height: initial.height + (corner.bottom ? -delta.y : delta.y))
+        let size = constrainedWindowSize(proposed, relativeTo: initial.size)
+        let origin = NSPoint(x: corner.left ? initial.maxX - size.width : initial.minX,
+                             y: corner.bottom ? initial.maxY - size.height : initial.minY)
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard phone != nil, loadingBorder != nil, barButtons.count == 4 else { return }
+        phoneHeight = window.frame.height - barGap - barHeight
+        layout()
     }
 
     func resize() {
@@ -220,6 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // In MJPEG mode the page reports the stream's real size once the first frame arrives.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
+        if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
         if let loading = d["loading"] as? Bool {
             pageLoading = loading
             updateLoadingBorder()
@@ -306,7 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if tries <= 1 {
                 self.captureLoading = false
                 self.web.loadHTMLString("""
-                <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box;background:#000;color:#999;font:13px -apple-system">
+                <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box;background:transparent;color:#aaa;font:13px -apple-system">
                 Couldn't start the mirror server.<br><br>Log: ~/Library/Logs/iPhoneMirror.log</body>
                 """, baseURL: nil)
                 return

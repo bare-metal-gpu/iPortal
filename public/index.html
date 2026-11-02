@@ -38,9 +38,12 @@
   body.app { background: transparent; }
   body.app aside { display: none; }
   body.app main { padding: 0; }
-  body.app #phone { width: 100vw; height: 100vh; padding: 0; border-radius: 0; box-shadow: none; }
-  body.app #screen { width: 100%; height: 100%; max-width: none; max-height: none; min-width: 0; min-height: 0; border-radius: 0; object-fit: fill; }
-  body.app #overlay { inset: 0; border-radius: 0; }
+  body.app #phone { width: 100vw; height: 100vh; padding: 0; border-radius: 0; box-shadow: none; background: transparent; }
+  body.app #screen { width: 100%; height: 100%; max-width: none; max-height: none; min-width: 0; min-height: 0; border-radius: 0; object-fit: fill; background: transparent; }
+  body.app.loading #screen { visibility: hidden; }
+  body.app #overlay { inset: 0; border-radius: 0; background: transparent; }
+  body.app #overlay b { color: #fff; text-shadow: 0 1px 3px #0008; }
+  body.app #overlayText { color: #ddd; text-shadow: 0 1px 3px #0008; }
   /* Native video (?video=native): the Mac app draws the screen underneath, the page only handles input. */
   body.native-video #phone { background: transparent; }
   body.native-video #screen { opacity: 0; }
@@ -130,8 +133,10 @@ let connected = false;
 let streamReady = false;
 let pendingActions = 0;
 function reportLoading() {
+  const waitingForVideo = !connected || (!nativeVideo && !streamReady);
+  document.body.classList.toggle("loading", waitingForVideo);
   window.webkit?.messageHandlers?.native?.postMessage({
-    loading: !connected || (!nativeVideo && !streamReady) || pendingActions > 0
+    loading: waitingForVideo || pendingActions > 0, waitingForVideo
   });
 }
 const params = new URLSearchParams(location.search);
