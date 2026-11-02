@@ -116,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func updateLoadingBorder() {
         loadingBorderState.active = pageLoading || captureLoading
+        loadingBorderState.showMessage = waitingForVideo || captureLoading
         capture?.layer.isHidden = waitingForVideo || captureLoading
     }
 
@@ -338,6 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
         if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
+        if let detail = d["loadingDetail"] as? String { loadingBorderState.detail = detail }
         if let loading = d["loading"] as? Bool {
             pageLoading = loading
             updateLoadingBorder()
@@ -376,11 +378,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         pageLoading = false
+        waitingForVideo = false
         updateLoadingBorder()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         pageLoading = false
+        waitingForVideo = false
         updateLoadingBorder()
     }
 
@@ -388,6 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         if captureFailed { js("startStream()") }
         if webView.url?.host == nil {
             pageLoading = false
+            waitingForVideo = false
             updateLoadingBorder()
         }
     }

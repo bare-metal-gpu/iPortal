@@ -43,6 +43,7 @@
   body.app.loading #screen { visibility: hidden; }
   body.app #overlay { inset: 0; border-radius: 0; background: transparent; }
   body.app #overlay b { color: #fff; text-shadow: 0 1px 3px #0008; }
+  body.native-loading-ui #overlay { display: none; }
   body.app #overlayText { color: #ddd; text-shadow: 0 1px 3px #0008; }
   /* Native video (?video=native): the Mac app draws the screen underneath, the page only handles input. */
   body.native-video #phone { background: transparent; }
@@ -132,15 +133,18 @@ const phone = $("phone");
 let connected = false;
 let streamReady = false;
 let pendingActions = 0;
+let loadingDetail = "";
 function reportLoading() {
   const waitingForVideo = !connected || (!nativeVideo && !streamReady);
   document.body.classList.toggle("loading", waitingForVideo);
   window.webkit?.messageHandlers?.native?.postMessage({
-    loading: waitingForVideo || pendingActions > 0, waitingForVideo
+    loading: waitingForVideo || pendingActions > 0, waitingForVideo,
+    loadingDetail: waitingForVideo ? loadingDetail : ""
   });
 }
 const params = new URLSearchParams(location.search);
 if (params.has("app")) document.body.classList.add("app");
+if (params.has("app") && window.webkit?.messageHandlers?.native) document.body.classList.add("native-loading-ui");
 let nativeVideo = params.get("video") === "native";
 document.body.classList.toggle("native-video", nativeVideo);
 
@@ -199,6 +203,7 @@ async function poll() {
     $("dot").classList.toggle("on", s.ok);
     $("device").textContent = s.device ? `${s.device.udid} · ${s.device.connection}` : s.ok ? "Connected over WiFi" : "No iPhone connected";
     $("quality").value = s.quality;
+    loadingDetail = !s.ok && !s.error?.startsWith("Starting WebDriverAgent") ? (s.error ?? "") : "";
     if (s.ok && !connected) {
       connected = true;
       if (nativeVideo) $("overlay").hidden = true;
@@ -218,6 +223,7 @@ async function poll() {
     $("overlay").hidden = false;
     $("dot").classList.remove("on");
     $("overlayText").textContent = "Mirror server is not running.";
+    loadingDetail = "Reconnecting to the mirror server…";
   }
   reportLoading();
   setTimeout(poll, connected ? 4000 : 1500);
