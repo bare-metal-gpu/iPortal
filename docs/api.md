@@ -167,3 +167,7 @@ The app polls once a second, blurs its last captured frame while unavailable, an
 Native readiness is scoped to the document, video epoch, and device identity. A poll-only status revision prevents cached UI messages from undoing a suspension. Old readiness callbacks cannot reactivate a replaced page or phone. Mouse, drag, scroll, and typing share the same readiness gate. Client action requests expire after 18 seconds and receipt lookups after 3 seconds; timed-out input is never blindly replayed. MJPEG has a 3-second connection/first-frame deadline, a 3-second presented-frame watchdog, and a server-side 5-second idle-read deadline.
 
 Regression checks now include real CSS class tracking and pointer handlers, stale document/device callbacks, transient outages, frozen fallback frames, multipart parsing, stalled streams, hung command queues, cheap health probes under slow WDA, capture serialization/cancellation, and native readiness/retry-budget tests.
+
+### Scroll gestures
+
+The Mac app forwards explicit trackpad begin/change/end phases and consumes those events before WebKit can dispatch them a second time. A trackpad gesture sends one phone swipe when the fingers lift; inertial momentum is ignored. Mouse-wheel events without phases are grouped into a single burst ending after 80 ms of inactivity. Lock/reconnect cancels unfinished gestures. A cancelled or abandoned gesture cannot be replayed by a later input.

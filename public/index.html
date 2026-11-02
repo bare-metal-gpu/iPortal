@@ -365,7 +365,7 @@ let outbound = Promise.resolve();
 function api(name, body = {}, fromWheel = false) {
   if (!controlOnly.has(name) && !canInteract()) return Promise.resolve();
   const epoch = inputEpoch;
-  if (!fromWheel) flushWheel(true); // Earlier wheel movement stays ahead of later input.
+  if (!fromWheel) flushWheel(); // Earlier wheel movement stays ahead of later input.
   if (name !== "type") flush(true); // keep typed text in order with other actions
   const requestId = crypto.randomUUID();
   pendingActions++;
@@ -497,36 +497,63 @@ screen.addEventListener("pointerup", (e) => {
 screen.addEventListener("pointercancel", () => (touch = null));
 screen.addEventListener("contextmenu", (e) => e.preventDefault());
 
-// ---------- Scrolling: wheel deltas become short controlled swipes ----------
+// ---------- Scrolling: one physical scroll gesture becomes one phone swipe ----------
 
 let wheel = null;
 let wheelTimer = null;
-let wheelInFlight = 0;
-function flushWheel(force = false) {
-  clearTimeout(wheelTimer);
-  wheelTimer = null;
-  if (!wheel || (wheelInFlight && !force)) return;
+// Desktop wheel events have no gesture phases. End a burst after a short pause;
+// the Mac app supplies explicit trackpad phases and suppresses momentum events.
+const wheelIdleMs = 80;
+function flushWheel() {
+  if (!wheel || wheel.sent) return;
   const pending = wheel;
-  wheel = null;
+  pending.sent = true;
   const lim = (v) => Math.max(-0.5, Math.min(0.5, -v));
   const dx = lim(pending.dx), dy = lim(pending.dy);
   const fit = (v, d) => Math.max(0.05 - Math.min(0, d), Math.min(0.95 - Math.max(0, d), v));
   const x = fit(pending.x, dx), y = fit(pending.y, dy);
   if (Math.abs(dx) + Math.abs(dy) < 0.01) return;
-  wheelInFlight++;
-  api("gesture", { points: [[x, y, 0], [x + dx * 0.5, y + dy * 0.5, 60], [x + dx, y + dy, 120]], end: 120 }, true)
-    .finally(() => { wheelInFlight--; if (!wheelInFlight && wheel) flushWheel(); });
+  api("gesture", { points: [[x, y, 0], [x + dx * 0.5, y + dy * 0.5, 60], [x + dx, y + dy, 120]], end: 120 }, true);
+}
+function finishWheel() {
+  clearTimeout(wheelTimer); wheelTimer = null;
+  flushWheel();
+  wheel = null;
+}
+function accumulateWheel(x, y, dx, dy, phased = false) {
+  if (!canInteract() || touch) return;
+  wheel ??= { x, y, dx: 0, dy: 0, sent: false, phased };
+  // A later click/typing action may already have flushed this gesture.
+  if (!wheel.sent) { wheel.dx += dx; wheel.dy += dy; }
+  if (!phased) {
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(finishWheel, wheelIdleMs);
+  }
+}
+function nativeScroll(event, epoch, documentId) {
+  if (epoch !== videoEpoch || documentId !== bridgeId || !canInteract()) return;
+  if (event.phase === "momentum") return;
+  if (event.phase === "cancelled") {
+    clearTimeout(wheelTimer); wheelTimer = null; wheel = null;
+    return;
+  }
+  if (event.phase === "began") {
+    // A missing end/cancel must not replay an abandoned trackpad gesture.
+    if (wheel?.phased) { clearTimeout(wheelTimer); wheelTimer = null; wheel = null; }
+    else finishWheel();
+    wheel = { x: event.x, y: event.y, dx: 0, dy: 0, sent: false, phased: true };
+  }
+  // A changed/ended event without a begin belongs to a gesture interrupted by
+  // lock/reconnect or one that began outside this window. Never replay its tail.
+  if (event.phase !== "none" && !wheel?.phased) return;
+  accumulateWheel(event.x, event.y, event.dx, event.dy, event.phase !== "none");
+  if (event.phase === "ended") finishWheel();
 }
 screen.addEventListener("wheel", (e) => {
   e.preventDefault();
-  if (!canInteract()) return;
   const r = screen.getBoundingClientRect();
-  wheel ??= { x: rel(e)[0], y: rel(e)[1], dx: 0, dy: 0 };
-  wheel.dx += e.deltaX / r.width;
-  wheel.dy += e.deltaY / r.height;
-  // Fixed first-frame deadline, never postponed by subsequent wheel events.
-  // During playback accumulate one pending movement instead of building a backlog.
-  if (!wheelInFlight && wheelTimer === null) wheelTimer = setTimeout(() => flushWheel(), 16);
+  const scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
+  accumulateWheel(...rel(e), e.deltaX * scale / r.width, e.deltaY * scale / r.height);
 }, { passive: false });
 
 // ---------- Keyboard ----------

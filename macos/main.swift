@@ -141,6 +141,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var terminating = false
     var wakeObserver: NSObjectProtocol?
     var retiredBridgeIDs: Set<String> = []
+    var scrollMonitor: Any?
+    var trackingScroll = false
 
     func updateLoadingBorder() {
         let phase: String
@@ -169,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func freezeVideo() {
+        trackingScroll = false
         if videoMode == "native" {
             loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
         }
@@ -288,6 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         buildMenu()
         buildWindow()
+        installScrollMonitor()
         ensureServer()
         lifecycleTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkVideoLifecycle() }
@@ -311,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
         lifecycleTimer?.invalidate()
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         capture?.stop()
         guard let p = server, p.isRunning else { return }
@@ -726,6 +731,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     // MARK: Actions
+
+    func installScrollMonitor() {
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, event.window === self.window else { return event }
+                let point = self.web.convert(event.locationInWindow, from: nil)
+                guard self.web.bounds.contains(point) || self.trackingScroll else { return event }
+                // Never also pass this event to WKWebView: its DOM wheel handler
+                // would turn the same physical gesture into a second swipe.
+                guard event.momentumPhase.isEmpty, !event.phase.contains(.mayBegin) else { return nil }
+                let phase: String
+                if event.phase.contains(.cancelled) { phase = "cancelled" }
+                else if event.phase.contains(.ended) { phase = "ended" }
+                else if event.phase.contains(.began) { phase = "began" }
+                else if event.phase.isEmpty { phase = "none" }
+                else { phase = "changed" }
+                if phase == "began" { self.trackingScroll = true }
+                if phase == "ended" || phase == "cancelled" { self.trackingScroll = false }
+                guard self.deviceLifecycle == "ready", !self.videoGate.bridgeID.isEmpty,
+                      self.web.bounds.width > 0, self.web.bounds.height > 0 else { return nil }
+                let width = self.web.bounds.width, height = self.web.bounds.height
+                let y = self.web.isFlipped ? point.y : height - point.y
+                // AppKit scroll deltas point up/left; DOM deltas point down/right.
+                // Non-precise mouse events are lines rather than pixel distances.
+                let hasPixelDelta = event.hasPreciseScrollingDeltas && (event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0)
+                let scale: CGFloat = hasPixelDelta ? 1 : 16
+                let deltaX = hasPixelDelta ? event.scrollingDeltaX : event.deltaX
+                let deltaY = hasPixelDelta ? event.scrollingDeltaY : event.deltaY
+                let payload: [String: Any] = ["x": min(1, max(0, point.x / width)),
+                    "y": min(1, max(0, y / height)), "dx": -deltaX * scale / width,
+                    "dy": -deltaY * scale / height, "phase": phase]
+                let args: [Any] = [payload, self.videoGate.epoch, self.videoGate.bridgeID]
+                if let data = try? JSONSerialization.data(withJSONObject: args),
+                   let json = String(data: data, encoding: .utf8) {
+                    self.js("nativeScroll(...\(json))")
+                }
+                return nil
+            }
+        }
+    }
 
     func js(_ code: String) { web.evaluateJavaScript(code, completionHandler: nil) }
 

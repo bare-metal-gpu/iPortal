@@ -291,56 +291,65 @@ test("Effect schemas reject malformed actions before device dispatch", async () 
   assert.equal((await Effect.runPromise(decodeRequest("gesture", { points: [[0, 0, 0], [1, 1, 42.5]], end: 43.75 }))).end, 43.75);
 });
 
-test("continuous wheel input dispatches promptly, coalesces under load and preserves holds", async () => {
-  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
-  const calls = [], nodes = new Map(), timers = new Map(), releases = [];
-  let now = 0, serial = 0;
-  function element(key) {
-    if (!nodes.has(key)) nodes.set(key, { content: "instance", listeners: {}, classList: trackedClasses(),
-      addEventListener(name, fn) { this.listeners[name] = fn; }, removeAttribute() {}, querySelector: () => element("child"),
-      getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 800 }), setPointerCapture() {},
-      append() {}, remove() {}, getContext: () => ({ drawImage() {}, clearRect() {} }), width: 400, height: 800, style: {}, dataset: {}, value: "" });
-    return nodes.get(key);
-  }
-  const context = vm.createContext({ console, AbortSignal, AbortController, TextDecoder, Blob, URLSearchParams, location: { search: "", reload() {} }, crypto, queueMicrotask,
-    performance: { now: () => now }, document: { body: element("body"), getElementById: element, querySelector: element,
-      createElement: () => element("ripple"), querySelectorAll: () => [], activeElement: null }, window: { addEventListener() {} },
-    setTimeout: (fn, ms) => { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
-    clearTimeout: id => timers.delete(id),
-    fetch: async (url, options) => {
-      if (url.startsWith("/stream")) return new Promise(() => {});
-      calls.push([url, options]);
-      if (url === "/api/gesture") await new Promise(resolve => releases.push(resolve));
-      return { json: async () => url === "/api/status" ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true, lifecycle: "ready" } : { ok: true } };
-    },
-  });
-  vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
-  const settle = () => new Promise(resolve => setImmediate(resolve));
-  async function advance(ms) {
-    now += ms;
-    for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn();
-    await settle();
-  }
-  await settle();
-  const screen = vm.runInContext("screen", context);
-  vm.runInContext("presentStreamFrame({width:400,height:800}, streamGeneration)", context);
+test("wheel bursts dispatch once and preserve click/long-press durations", async () => {
+  const h = browserHarness(); await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const screen = h.element("screen");
+  const gestures = () => h.calls.filter(([url]) => url === "/api/gesture").map(([, opts]) => JSON.parse(opts.body));
   const wheel = () => screen.listeners.wheel({ clientX: 200, clientY: 400, deltaX: 0, deltaY: 40, preventDefault() {} });
-  const gestures = () => calls.filter(([url]) => url === "/api/gesture").map(([, opts]) => JSON.parse(opts.body));
-  wheel(); await advance(8); wheel(); await advance(8);
-  assert.equal(gestures().length, 1, "continuous movement must not postpone first dispatch");
-  assert.equal(gestures()[0].end, 120);
-  for (let i = 0; i < 20; i++) { wheel(); await advance(10); }
-  assert.equal(gestures().length, 1, "one in-flight scroll with coalesced pending movement");
-  releases.shift()(); await settle();
-  assert.equal(gestures().length, 2);
-  releases.shift()(); await settle();
+  for (let i = 0; i < 20; i++) { wheel(); await h.advance(10); }
+  assert.equal(gestures().length, 0, "a physical burst must not be split while still moving");
+  await h.advance(80);
+  assert.equal(gestures().length, 1);
+  await h.advance(300);
+  assert.equal(gestures().length, 1, "completion must not replay accumulated movement");
+  wheel(); await h.advance(80); assert.equal(gestures().length, 2, "the next distinct burst still works");
   const event = { button: 0, pointerId: 1, clientX: 200, clientY: 400, preventDefault() {} };
-  screen.listeners.pointerdown(event); await advance(120); screen.listeners.pointerup(event); await settle();
-  assert.equal(gestures().at(-1).end, 40, "ordinary click does not replay mouse hold time");
-  releases.shift()(); await settle();
-  screen.listeners.pointerdown(event); await advance(600); screen.listeners.pointerup(event); await settle();
-  assert.equal(gestures().at(-1).end, 600, "long press duration is preserved");
-  releases.shift()(); await settle();
+  screen.listeners.pointerdown(event); await h.advance(120); screen.listeners.pointerup(event); await h.settle();
+  assert.equal(gestures().at(-1).end, 40);
+  screen.listeners.pointerdown(event); await h.advance(600); screen.listeners.pointerup(event); await h.settle();
+  assert.equal(gestures().at(-1).end, 600);
+});
+
+test("native scroll sends exactly one swipe in each direction and ignores momentum/cancelled tails", async () => {
+  const h = browserHarness(); await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const send = event => h.run(`nativeScroll(${JSON.stringify({x:0.5,y:0.5,dx:0,dy:0,...event})}, videoEpoch, bridgeId)`);
+  const gestures = () => h.calls.filter(([url]) => url === "/api/gesture").map(([, opts]) => JSON.parse(opts.body));
+  for (const [dx, dy] of [[0.04,0],[-0.04,0],[0,0.04],[0,-0.04]]) {
+    const count = gestures().length;
+    send({phase:"began"});
+    for (let i=0; i<6; i++) { send({phase:"changed",dx,dy}); await h.advance(20); }
+    assert.equal(gestures().length, count);
+    send({phase:"ended"}); await h.settle();
+    assert.equal(gestures().length, count+1);
+    const points = gestures().at(-1).points;
+    assert.equal(Math.sign(points.at(-1)[0]-points[0][0]), dx ? -Math.sign(dx) : 0);
+    assert.equal(Math.sign(points.at(-1)[1]-points[0][1]), dy ? -Math.sign(dy) : 0);
+    for(let i=0;i<10;i++) {send({phase:"momentum",dx,dy}); await h.advance(20);}
+    send({phase:"ended"}); await h.settle();
+    assert.equal(gestures().length,count+1,"momentum and duplicate end cannot create another swipe");
+  }
+  send({phase:"began"}); send({phase:"changed",dy:0.2}); send({phase:"cancelled"}); await h.settle();
+  assert.equal(gestures().length,4);
+  send({phase:"began"}); send({phase:"changed",dy:0.2});
+  h.lifecycle("locked"); await h.run("poll()");
+  h.lifecycle("ready"); await h.run("poll()"); h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  send({phase:"changed",dy:0.2}); send({phase:"ended"}); await h.settle();
+  assert.equal(gestures().length,4,"an interrupted gesture's tail cannot swipe after unlock");
+  send({phase:"began"}); send({phase:"changed",dx:0.2});
+  send({phase:"began"}); send({phase:"changed",dx:-0.2}); send({phase:"ended"}); await h.settle();
+  assert.equal(gestures().length,5,"a new begin discards an abandoned gesture instead of replaying it");
+});
+
+test("flushing scroll before another action cannot replay its remaining tail", async () => {
+  const h = browserHarness(); await h.settle(); h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const wheel = () => h.element("screen").listeners.wheel({clientX:200,clientY:400,deltaX:0,deltaY:40,preventDefault(){}});
+  wheel(); await h.run("api('home')");
+  wheel(); await h.advance(80);
+  assert.equal(h.calls.filter(([url])=>url==="/api/gesture").length,1);
+  wheel(); await h.advance(80);
+  assert.equal(h.calls.filter(([url])=>url==="/api/gesture").length,2,"subsequent scrolling is not stuck");
 });
 
 test("automatic browser binding blocks foreign origins and rebinding without CLI credentials", () => {
