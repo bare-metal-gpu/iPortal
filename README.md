@@ -46,4 +46,4 @@ Prefer the browser? Run `npm start` and open http://localhost:7100.
 
 ## Automation API
 
-The local server also supports element lookup, UI/device state, full-screen and element screenshots, and condition-based waits. See [the API reference](docs/api.md) for routes, examples, errors, and real-phone verification.
+The local server also supports element lookup, UI/device state, full-screen and element screenshots, condition-based waits, and timed keep-awake sessions. See [the API reference](docs/api.md) for routes, examples, errors, and real-phone verification.

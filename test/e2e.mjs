@@ -48,6 +48,14 @@ try {
   await post("launch", { bundleId: "com.apple.Preferences" });
   assert.equal(fake.log.findLast((l) => l.path.endsWith("/apps/launch")).body.bundleId, "com.apple.Preferences");
 
+  assert.equal((await post("keep-awake", { enabled: true, durationMs: 30000 })).value.pulses, 1);
+  assert.deepEqual(fake.log.findLast(l => l.path?.endsWith("/performIoHidEvent")).body, { page: 12, usage: 688, duration: 0.01 });
+  assert.equal((await (await fetch(`${base}/api/keep-awake`)).json()).value.enabled, true);
+  assert.equal((await post("keep-awake", { enabled: true, durationMs: -1 })).code, "invalid argument");
+  await post("lock");
+  assert.equal((await post("keep-awake")).value.reason, "lock requested");
+  assert.equal((await post("keep-awake", { enabled: false })).value.enabled, false);
+
   const selector = { using: "accessibility id", value: "Continue" };
   const absent = { using: "accessibility id", value: "Missing" };
   assert.deepEqual((await post("state")).value, { locked: false, app: { bundleId: "com.apple.Preferences", pid: 123 }, orientation: "PORTRAIT", screen: { width: 390, height: 844 } });

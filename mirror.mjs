@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { apiError, createInspection } from "./inspection.mjs";
+import { createKeepAwake } from "./keep-awake.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const { values: opts, positionals } = parseArgs({
@@ -402,6 +403,7 @@ async function status() {
 }
 
 const inspection = createInspection({ wda, withSession, enqueue });
+const keepAwake = createKeepAwake({ wda, withSession, enqueue });
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
 
@@ -421,18 +423,25 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/status") return send(res, 200, await status());
+  if (req.method === "GET" && url.pathname === "/api/keep-awake") return send(res, 200, { ok: true, value: keepAwake.status() });
 
-  const name = url.pathname.match(/^\/api\/(\w+)$/)?.[1];
-  if (req.method === "POST" && name && (Object.hasOwn(inspection, name) || Object.hasOwn(actions, name))) {
+  const name = url.pathname.match(/^\/api\/([\w-]+)$/)?.[1];
+  if (req.method === "POST" && name && (name === "keep-awake" || Object.hasOwn(inspection, name) || Object.hasOwn(actions, name))) {
     const controller = new AbortController();
     res.once("close", () => controller.abort());
     try {
       const body = await readBody(req);
+      if (name === "keep-awake") {
+        const value = await keepAwake.configure(body);
+        if (!res.destroyed) send(res, 200, { ok: true, value });
+        return;
+      }
       if (Object.hasOwn(inspection, name)) {
         const value = await inspection[name](body, controller.signal);
         if (!res.destroyed) send(res, 200, { ok: true, value });
         return;
       }
+      if (name === "lock") keepAwake.stop("lock requested");
       await enqueue(() => actions[name](body));
       return send(res, 200, { ok: true });
     } catch (e) {

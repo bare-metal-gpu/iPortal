@@ -1,6 +1,6 @@
-# Inspection API
+# Mirror API
 
-The local mirror server exposes read-only UI inspection and waits alongside its existing input commands. All endpoints below are `POST http://127.0.0.1:7100/api/<name>` with a JSON object body. They return `{ "ok": true, "value": ... }`. Existing input routes still return `{ "ok": true }`.
+The local mirror server exposes read-only UI inspection, waits, and timed keep-awake alongside its existing input commands. All endpoints below are `POST http://127.0.0.1:7100/api/<name>` with a JSON object body. They return `{ "ok": true, "value": ... }`. Existing input routes still return `{ "ok": true }`.
 
 The API is unauthenticated and listens only on loopback. Keep it local. Screenshots and UI trees may contain personal information; the server does not save them.
 
@@ -14,6 +14,7 @@ The API is unauthenticated and listens only on loopback. Keep it local. Screensh
 | `source` | `{ "format": "json" }` | UI hierarchy; formats: `json` (default), `xml`, `description` |
 | `screenshot` | `{}` | `{ "mimeType": "image/png", "encoding": "base64", "data": "..." }` |
 | `wait` | See below | Matching observation and `elapsedMs` |
+| `keep-awake` | `{ "enabled": true, "durationMs": 1800000 }` | Timed keep-awake lease; `{}` reads status, `{"enabled":false}` stops |
 
 `element` and `screenshot` also accept a `selector` instead of an `id`. A selector must resolve to exactly one element for these calls; multiple matches produce HTTP 409. Omit both for a whole-screen screenshot. Screenshot MIME types are detected from the returned bytes (PNG, JPEG or HEIC), not assumed.
 
@@ -67,6 +68,32 @@ curl -s http://127.0.0.1:7100/api/screenshot \
 # Inspect mimeType before choosing the extension.
 node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("screenshot.json")); if(!r.ok) throw Error(r.error); fs.writeFile("screen."+r.value.mimeType.split("/")[1],Buffer.from(r.value.data,"base64"));'
 ```
+
+## Keep-awake
+
+```bash
+# Hold an already-unlocked phone awake for 30 minutes
+curl -s http://127.0.0.1:7100/api/keep-awake \
+  -H 'Content-Type: application/json' -d '{"enabled":true,"durationMs":1800000}'
+
+# Read status without touching the phone
+curl -s http://127.0.0.1:7100/api/keep-awake
+
+# Release the lease
+curl -s http://127.0.0.1:7100/api/keep-awake \
+  -H 'Content-Type: application/json' -d '{"enabled":false}'
+```
+
+Opt-in only: the server starts with keep-awake disabled. `durationMs` defaults to 30 minutes and accepts 1000–7200000 ms (up to two hours). Enabling again replaces the previous lease and immediately sends a pulse. The lease belongs to the server and survives completion/disconnection of the HTTP request; it ends on expiration, explicit disable, server exit, an API lock request, or detection of a locked phone or upstream failure. It never unlocks a phone or restarts itself after a failure. GET and POST `{}` return status without querying the device.
+
+Pulses run immediately and then 15 seconds after the previous pulse completes, sharing the input/inspection queue. A long-running command can delay a pulse enough for Auto-Lock to fire. Each pulse first checks the lock state. Status includes `enabled`, `method`, `remainingMs`, `pulses` and `lastPulseAt` while active; after stopping it includes `reason` and any upstream `error`. A successful pulse means WDA accepted the event, not proof that every iOS version honors it. Normal Auto-Lock resumes when pulses stop; no phone settings are changed. An already-dispatched event can finish after disabling; a volume pair attempts to finish both presses.
+
+Methods:
+
+- `hid` (default): sends Consumer-page AC Idle Keep Alive (`page:12, usage:688`) through WDA's `performIoHidEvent` route. Avoids volume/button presses. Verified on an iPhone 16 Pro running iOS 26.7.1 with 30-second Auto-Lock; verify effectiveness on other iOS/device combinations. There is no automatic fallback to volume presses.
+- `volume`: explicit fallback sending volume-up then volume-down. May display the volume HUD, affect camera behavior, and change the final volume at its limits. If the second press fails, the first press is not undone. The fallback has automated stub coverage but was not used for the real-phone keep-awake verification.
+
+On the tested phone, WDA took about 5.2 seconds to acknowledge each HID event. An input/inspection request arriving during that operation can wait behind it. This implementation favors using the existing WDA route; it does not require rebuilding or re-signing the iPhone helper.
 
 ## Verification
 
