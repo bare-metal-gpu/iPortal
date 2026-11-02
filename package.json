@@ -3,13 +3,21 @@
   "version": "0.1.0",
   "description": "Control your iPhone from your Mac, an open alternative to iPhone Mirroring that works in the EU.",
   "type": "module",
-  "bin": { "iphone-mirror": "mirror.mjs" },
+  "bin": {
+    "iphone-mirror": "mirror.mjs"
+  },
   "scripts": {
     "setup": "scripts/setup-wda.sh",
     "start": "node mirror.mjs",
-    "test": "node --test test/keep-awake.mjs && node test/e2e.mjs",
+    "test": "node --test test/core.mjs test/keep-awake.mjs && node test/e2e.mjs && node scripts/test-native-contract.mjs",
     "app": "macos/build.sh --install"
   },
-  "engines": { "node": ">=20" },
-  "license": "MIT"
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@effect/platform-node": "4.1.2",
+    "effect": "4.1.2"
+  }
 }

@@ -10,7 +10,7 @@ Apple doesn't offer iPhone Mirroring in the EU. This app is the fix: it lets you
 
 ## Install
 
-You need a Mac with Xcode, Node 20+ and an Apple ID (a free one is fine).
+You need a Mac with Xcode, Node 22.19+ and an Apple ID (a free one is fine).
 
 1. Xcode → Settings → Accounts: add your Apple ID.
 2. Plug in your iPhone, unlock it, tap **Trust**.
@@ -18,7 +18,8 @@ You need a Mac with Xcode, Node 20+ and an Apple ID (a free one is fine).
 4. Run:
 
 ```bash
-git clone https://github.com/yachty66/iphone-mirror && cd iphone-mirror
+git clone https://github.com/bare-metal-gpu/iphone-mirror && cd iphone-mirror
+npm ci
 npm run setup   # builds the helper app for your iPhone
 npm run app     # installs "iPhone Mirroring EU" to ~/Applications
 ```
@@ -46,4 +47,4 @@ Prefer the browser? Run `npm start` and open http://localhost:7100.
 
 ## Automation API
 
-The local server also supports element lookup, UI/device state, full-screen and element screenshots, condition-based waits, and timed keep-awake sessions. See [the API reference](docs/api.md) for routes, examples, errors, and real-phone verification.
+The Effect 4 server supports validated input, selector-based taps and typing, UI/device inspection, screenshots, verified transitions, retry-safe command receipts, and timed keep-awake. Browser access checks and device selection happen automatically; no sign-in or pairing prompts are added. See [the API reference](docs/api.md) for routes, examples, errors, and real-phone verification.

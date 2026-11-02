@@ -15,6 +15,7 @@ function fixture() {
     wda: async (method, path, body) => {
       calls.push({ method, path, body });
       if (device.fail) throw Error("disconnected");
+      if (path === "/wda/mirror/keepalive") return { value: { completed: true } };
       return { value: path.endsWith("/locked") ? device.locked : null };
     },
   });
@@ -33,7 +34,8 @@ test("bounded lease pulses, renews, expires, and leaves no background timers", a
   await f.advance(15000);
   assert.equal(f.api.status().pulses, 2);
   await f.api.configure({ enabled: true, durationMs: 20000, method: "hid" });
-  assert.deepEqual(f.calls.at(-1).body, { page: 12, usage: 688, duration: 0.01 });
+  assert.equal(f.calls.at(-1).path, "/wda/mirror/keepalive");
+  assert.equal(f.api.status().backend, "hid-event-stream");
   await f.advance(15000);
   assert.equal(f.api.status().pulses, 2);
   await f.advance(5000);

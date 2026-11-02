@@ -4,10 +4,11 @@ import { apiError } from "./inspection.mjs";
 export function createKeepAwake({ wda, withSession, enqueue, intervalMs = 15000,
   now = () => performance.now(), later = setTimeout, cancel = clearTimeout }) {
   let lease = null;
+  let fastKeepAlive = true;
   let last = { enabled: false, reason: "not started" };
   const status = () => lease ? {
     enabled: true, method: lease.method, remainingMs: Math.max(0, Math.ceil(lease.deadline - now())),
-    pulses: lease.pulses, lastPulseAt: lease.lastPulseAt,
+    pulses: lease.pulses, lastPulseAt: lease.lastPulseAt, backend: lease.backend, lastPulseMs: lease.lastPulseMs,
   } : { ...last };
   function stop(reason = "disabled", error) {
     if (lease) {
@@ -34,22 +35,38 @@ export function createKeepAwake({ wda, withSession, enqueue, intervalMs = 15000,
         stop("locked");
         throw apiError("Unlock your iPhone before enabling keep-awake", 409, "device locked");
       }
-      await withSession(async (sid) => {
+      const pulseStarted = now();
+      let fastCompleted = false;
+      if (item.method === "hid" && fastKeepAlive) {
+        try {
+          const response = await wda("POST", "/wda/mirror/keepalive", {}, 5000);
+          if (response.value?.completed !== true) throw apiError("Invalid keep-alive acknowledgment", 502, "invalid response");
+          item.backend = "hid-event-stream";
+          fastCompleted = true;
+        } catch (e) {
+          if (!["unknown command", "unsupported operation"].includes(e.code)) throw e;
+          fastKeepAlive = false;
+        }
+      }
+      if (!fastCompleted) await withSession(async (sid) => {
         if (!current(item)) return;
         const base = `/session/${sid}/wda`;
         if (item.method === "hid") {
           // Consumer page, AC Idle Keep Alive. Acceptance alone does not prove iOS honors it.
           await wda("POST", `${base}/performIoHidEvent`, { page: 0x0c, usage: 0x02b0, duration: 0.01 }, 10000);
+          item.backend = "legacy-hid";
         } else {
           await wda("POST", `${base}/pressButton`, { name: "volumeUp" }, 5000);
           // Finish the pair even if the lease expires while the first press is in flight.
           await wda("POST", `${base}/pressButton`, { name: "volumeDown" }, 5000);
-        }
-        if (current(item)) {
-          item.pulses++;
-          item.lastPulseAt = new Date().toISOString();
+          item.backend = "volume";
         }
       }, { deadline: Math.min(item.deadline, now() + 10000) });
+      if (current(item)) {
+        item.pulses++;
+        item.lastPulseAt = new Date().toISOString();
+        item.lastPulseMs = Math.round(now() - pulseStarted);
+      }
     });
   }
   function schedule(item) {

@@ -1,8 +1,10 @@
 # Mirror API
 
-The local mirror server exposes read-only UI inspection, waits, and timed keep-awake alongside its existing input commands. All endpoints below are `POST http://127.0.0.1:7100/api/<name>` with a JSON object body. They return `{ "ok": true, "value": ... }`. Existing input routes still return `{ "ok": true }`.
+The server uses Effect 4 `HttpRouter` / `NodeHttpServer` and strict Effect schemas in `schemas.mjs`. All POST requests require `Content-Type: application/json`; unknown fields and malformed arguments are rejected before dispatch. Routes are `http://127.0.0.1:7100/api/<name>`. Inspection returns `{ "ok": true, "value": ... }` plus observation metadata. Inputs return `{ "ok": true, "requestId": "...", "outcome": "executed", "verified": false }`.
 
-The API is unauthenticated and listens only on loopback. Keep it local. Screenshots and UI trees may contain personal information; the server does not save them.
+The Mac server listens only on loopback. Exact Host/Origin checks, Fetch Metadata, JSON-only mutations and an automatically embedded server-instance fingerprint protect browser access without an authentication UI. Trusted local CLI clients need no credentials. This is not a security boundary against malicious software running as the same OS user. The bundled iPhone runner now binds both HTTP and MJPEG to device loopback via `TEST_RUNNER_USE_IP`; USB forwarding remains available, direct Wi-Fi access does not. Screenshots and UI trees are not saved by the server.
+
+One phone UDID is pinned for the server lifetime. Disconnecting it does not select another phone. Native video uses an exact ID match when available, or the unambiguous correspondence between one connected USB phone and one iOS capture source. With multiple unmatched candidates, the app automatically uses the pinned phone’s WDA video stream. `/api/status` includes `service`, `apiVersion`, `instanceId`, device identity, queue and keep-awake status.
 
 ## Endpoints
 
@@ -14,6 +16,7 @@ The API is unauthenticated and listens only on loopback. Keep it local. Screensh
 | `source` | `{ "format": "json" }` | UI hierarchy; formats: `json` (default), `xml`, `description` |
 | `screenshot` | `{}` | `{ "mimeType": "image/png", "encoding": "base64", "data": "..." }` |
 | `wait` | See below | Matching observation and `elapsedMs` |
+| `observe` | `{ "screenshot": true, "settleMs": 100 }` | Timestamped app/orientation/tree/screenshot observation and `stable` flag |
 | `keep-awake` | `{ "enabled": true, "durationMs": 1800000 }` | Timed keep-awake lease; `{}` reads status, `{"enabled":false}` stops |
 
 `element` and `screenshot` also accept a `selector` instead of an `id`. A selector must resolve to exactly one element for these calls; multiple matches produce HTTP 409. Omit both for a whole-screen screenshot. Screenshot MIME types are detected from the returned bytes (PNG, JPEG or HEIC), not assumed.
@@ -26,7 +29,7 @@ Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate str
 
 Element attributes: `type`, `name`, `label`, `value`, `enabled`, `visible`, `selected`, `hittable`, `accessible`, `rect`. Defaults are all except `selected` and `accessible`. Attribute values retain WDA's JSON types, including null. Bounds use logical screen points, not screenshot pixels. IDs are temporary and can become stale after UI changes; re-run the selector to recover. An element existing does not imply it is visible or hittable.
 
-Inspection uses WDA's accessibility hierarchy, so an app must expose meaningful accessible elements. State attributes are read sequentially and are not an atomic snapshot. Hierarchy snapshots use a depth of 50 rather than the original mirror's depth of 1; deep inspections can be slower than raw touch input.
+Inspection uses WDA's accessibility hierarchy, so an app must expose meaningful accessible elements. Selector-based element attributes reuse WDA’s expanded lookup response, avoiding separate USB requests for each attribute. Hittability is checked freshly; ID-based or missing attributes are read sequentially. Combined state is not an atomic snapshot. Hierarchy snapshots use a depth of 50 rather than the original mirror's depth of 1; deep inspections can be slower than raw touch input.
 
 ## Waits
 
@@ -48,7 +51,7 @@ Conditions:
 - `absent`: zero matches.
 - `attribute`: exactly one match whose requested attribute deeply equals `equals`. Multiple matches are an error; no match continues waiting.
 
-`timeoutMs`: 1–60000, default 10000. `intervalMs`: 50–5000, default 250. Timeouts include time spent in the command queue and making upstream requests. Each poll is serialized with input and other inspection operations, but the wait releases the queue between polls. Another request can therefore trigger the transition being awaited. A busy operation already ahead of a poll can delay delivery of the timeout response, but the expired poll will not contact WDA when it reaches the queue.
+`timeoutMs`: 1–60000, default 10000. `intervalMs`: 50–5000, default 250. Timeouts include time spent in the command queue and making upstream requests. Each poll is serialized with input and other inspection operations, but the wait releases the queue between polls. Another request can therefore trigger the transition being awaited. Queued work is removed on cancellation or deadline expiry. Device calls already dispatched may finish after a timeout. Individual queued operations have an eight-second budget (gestures may use their duration plus two seconds). The queue admits at most 64 pending operations and prioritizes keep-awake pulses while preserving FIFO order among ordinary inputs. `stableForMs` (0–10000, default 0) requires the same matching observation across the specified interval; it does not assert that the entire screen is stable.
 
 Selectors are evaluated afresh on each poll, including after stale-element errors during transitions. Transport, authorization, and invalid-selector errors are never treated as successful absence. Polling can miss short-lived states. Disconnecting the HTTP client cancels polling; an upstream operation already dispatched may still finish on the phone. Successful waits describe an observation, not a permanent guarantee about subsequent UI state.
 
@@ -58,7 +61,39 @@ A timeout returns HTTP 408:
 {"ok":false,"error":"Wait timed out","code":"timeout","details":{"elapsedMs":10000,"last":{"matched":false,"count":0}}}
 ```
 
-Invalid requests return 400; missing elements 404; stale or ambiguous targets 409; bodies over 1 MiB 413; other upstream failures 502 (or 503 when automation needs restarting). Errors have `ok`, `error`, and `code`. Inspect HTTP status and `ok`; do not assume a completed fetch means success.
+Invalid requests return 400; rejected origins/hosts 403; missing elements 404; stale, ambiguous or conflicting requests 409; bodies over 1 MiB 413; non-JSON mutations 415; full queues 429; upstream failures generally 502. Errors have `ok`, `error`, and `code`. Inspect HTTP status and `ok`; do not assume a completed fetch means success.
+
+## Element actions and verified transitions
+
+`tap` accepts exactly one `id` or `selector`. `type` accepts `text` plus an optional `id`/`selector`; without a target it preserves the original focused-keyboard behavior. Targeted operations re-resolve selectors and check enabled/hittable state before invoking XCTest's element action.
+
+```json
+{
+  "selector": { "using": "predicate string", "value": "type == 'XCUIElementTypeButton' AND label == 'Settings'" },
+  "expectedApp": "com.apple.Preferences",
+  "requestId": "navigation-001",
+  "waitFor": {
+    "selector": { "using": "accessibility id", "value": "General" },
+    "condition": "exists", "stableForMs": 100
+  }
+}
+```
+
+Send this to `/api/tap`. A visible label is not necessarily an accessibility identifier: use a label predicate when that is what you observed. Input routes accept optional `expectedApp`, `expectedOrientation`, `observationId`, `requestId`, `timeoutMs` and `waitFor`. A postcondition is observed after dispatch without monopolizing the queue; only success of that check produces `outcome: "verified"`. Without it, success is `executed`, not a claim about the resulting UI. Failed postconditions preserve `outcome: "executed"`; failures after dispatch with uncertain completion produce `unknown`. Never blindly retry an unknown outcome.
+
+Gesture points use normalized coordinates in the **current interface orientation**. They must be 1–256 triples `[x,y,ms]`, x/y within 0–1, initial time zero, nondecreasing timestamps, and `end` at least the last timestamp and no more than 10000 ms. Both Effect and the patched native route validate these constraints. Native touch independently checks lock state and optional app/orientation guards. Screen dimensions are read for each native gesture instead of caching portrait dimensions.
+
+## Observations
+
+`observe` captures app/orientation, source, an optional screenshot, then source/app/orientation again. It returns component capture timestamps and an opaque `id`. `stable: true` means the two sampled trees and app/orientation agreed; this is a bounded consistency check, **not an atomic snapshot or a guarantee of pixel stability**. If `settleMs` is supplied, that agreement must persist across samples; `timeoutMs` defaults to 8000, maximum 10000. Omit screenshot with `{"screenshot":false}` when a tree is enough.
+
+An input's optional `observationId` must refer to a stable observation no older than 15 seconds, and the current app, orientation and tree must still match. Mutations invalidate saved observations. Guards reduce stale-input errors but cannot eliminate a UI change between checking and executing. Only the last 32 observations are retained in memory.
+
+## Retry-safe command receipts
+
+Supply the same `requestId` when recovering a lost input reply. Concurrent and subsequent requests with the same ID and validated payload share the original result; different input with that ID is rejected. The browser generates IDs and checks receipts automatically, without resending an uncertain action.
+
+`GET /api/commands/<requestId>` returns queued/running/executed/verified/failed-or-unknown state and the result. Receipts persist in ignored `vendor/commands.json` (mode 0600); Other server ports use `vendor/commands-PORT.json`; `MIRROR_COMMANDS_FILE` overrides the location. Persistence contains hashes and sanitized receipts, not input text, screenshots or UI trees. A restart during an unfinished command marks its outcome unknown and prevents replay. The retention window is 24 hours, capped at 4096 receipts; a full store rejects new inputs rather than evicting live deduplication records. This is not an exactly-once guarantee across device failure or beyond retention. Local testing must use a separate receipt file.
 
 ## Save a screenshot
 
@@ -86,18 +121,18 @@ curl -s http://127.0.0.1:7100/api/keep-awake \
 
 Opt-in only: the server starts with keep-awake disabled. `durationMs` defaults to 30 minutes and accepts 1000–7200000 ms (up to two hours). Enabling again replaces the previous lease and immediately sends a pulse. The lease belongs to the server and survives completion/disconnection of the HTTP request; it ends on expiration, explicit disable, server exit, an API lock request, or detection of a locked phone or upstream failure. It never unlocks a phone or restarts itself after a failure. GET and POST `{}` return status without querying the device.
 
-Pulses run immediately and then 15 seconds after the previous pulse completes, sharing the input/inspection queue. A long-running command can delay a pulse enough for Auto-Lock to fire. Each pulse first checks the lock state. Status includes `enabled`, `method`, `remainingMs`, `pulses` and `lastPulseAt` while active; after stopping it includes `reason` and any upstream `error`. A successful pulse means WDA accepted the event, not proof that every iOS version honors it. Normal Auto-Lock resumes when pulses stop; no phone settings are changed. An already-dispatched event can finish after disabling; a volume pair attempts to finish both presses.
+Pulses run immediately and then 15 seconds after completion, with priority over queued input/inspection. Long in-flight device operations can still delay a pulse; timeout does not undo already-dispatched device work. Each pulse first checks the lock state. Status includes `enabled`, `method`, `remainingMs`, `pulses`, `lastPulseAt`, `backend` and `lastPulseMs` while active; after stopping it includes `reason` and any upstream `error`. A successful pulse means WDA accepted the event, not proof that every iOS version honors it. Normal Auto-Lock resumes when pulses stop; no phone settings are changed. An already-dispatched event can finish after disabling; a volume pair attempts to finish both presses.
 
 Methods:
 
-- `hid` (default): sends Consumer-page AC Idle Keep Alive (`page:12, usage:688`) through WDA's `performIoHidEvent` route. Avoids volume/button presses. Verified on an iPhone 16 Pro running iOS 26.7.1 with 30-second Auto-Lock; verify effectiveness on other iOS/device combinations. There is no automatic fallback to volume presses.
+- `hid` (default): sends Consumer-page AC Idle Keep Alive (`page:12, usage:688`) through the patched acknowledged event-stream route `/wda/mirror/keepalive`. Older helpers without that route, or reporting it unsupported, fall back to WDA's slower `performIoHidEvent`; other errors stop the lease. Avoids volume/button presses. Verified on an iPhone 16 Pro running iOS 26.7.1 with 30-second Auto-Lock; verify effectiveness on other iOS/device combinations. There is no automatic fallback to volume presses.
 - `volume`: explicit fallback sending volume-up then volume-down. May display the volume HUD, affect camera behavior, and change the final volume at its limits. If the second press fails, the first press is not undone. The fallback has automated stub coverage but was not used for the real-phone keep-awake verification.
 
-On the tested phone, WDA took about 5.2 seconds to acknowledge each HID event. An input/inspection request arriving during that operation can wait behind it. This implementation favors using the existing WDA route; it does not require rebuilding or re-signing the iPhone helper.
+The old WDA route takes about 5.24 seconds because Apple's daemon waits five seconds for a button confirmation before implicitly reporting success. The patched route uses synthesized event-stream playback with a shorter confirmation interval and waits for its daemon callback. Five final server pulse measurements on the same phone had a median of 0.67 seconds, roughly 87% lower latency than the legacy route. End-to-end HTTP renewal requests had a median of 0.70 seconds. This requires rebuilding the helper with `npm run setup`. A completed callback is not proof that application animations or accessibility state have settled.
 
 ## Verification
 
-`npm test` exercises the HTTP server, fake usbmuxd forwarding, existing input routes, inspection, timeout/error handling, session recovery, cancellation and concurrent waits.
+`npm test` covers Effect schema validation, browser binding, queue priority/deadlines/cancellation, persisted receipt recovery, real HTTP regression checks, fake USB forwarding, element actions, observations, waits, and device pinning. Unimplemented fake-WDA routes fail explicitly. On macOS it also compiles the exact native input-validation and rotation helpers and verifies fresh/repeated/upgrade/incompatible patch installation. Native tests do not simulate physical touchscreen behavior. On the connected iPhone, lookup, state, screenshots, waits, an observation-guarded tap, targeted typing, a portrait gesture, and duplicate-request recovery passed. Rotation geometry has native contract coverage for all four orientations; physical landscape interaction was not exercised. Seven-attribute lookup measured a 199 ms median using a selector’s expanded response versus 603 ms with separate ID-based attribute reads (three pairs on the same Settings navigation element).
 
 For an explicitly opted-in real phone test, unlock and connect the phone, then run:
 

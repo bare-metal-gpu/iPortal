@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/iPhone Mirroring EU.app"
-NODE="$(command -v node)" || { echo "Node 20+ is required."; exit 1; }
+NODE="$(command -v node)" || { echo "Node 22.19+ is required."; exit 1; }
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

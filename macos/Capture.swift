@@ -11,6 +11,8 @@ final class PhoneCapture {
     let audio = AVCaptureAudioPreviewOutput()
     var onSize: ((CGSize) -> Void)?
     private var observer: NSObjectProtocol?
+    private var deviceUDID = ""
+    private var allowSingleDeviceFallback = false
 
     init() {
         layer = AVCaptureVideoPreviewLayer(session: session)
@@ -19,7 +21,9 @@ final class PhoneCapture {
     }
 
     /// Calls done(true) once video is running, or done(false) if access is denied or no iPhone shows up.
-    func start(timeout: TimeInterval = 8, _ done: @escaping @MainActor (Bool) -> Void) {
+    func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, _ done: @escaping @MainActor (Bool) -> Void) {
+        deviceUDID = udid
+        allowSingleDeviceFallback = singleUsbDevice
         var prop = CMIOObjectPropertyAddress(
             mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyAllowScreenCaptureDevices),
             mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
@@ -45,7 +49,13 @@ final class PhoneCapture {
         let type: AVCaptureDevice.DeviceType
         if #available(macOS 14, *) { type = .external } else { type = .externalUnknown }
         let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [type], mediaType: .muxed, position: .unspecified).devices
-        return devices.first { $0.modelID.contains("iOS") } ?? devices.first
+        let normalize: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let expected = normalize(deviceUDID)
+        if let exact = devices.first(where: { normalize($0.uniqueID) == expected }) { return exact }
+        // CoreMediaIO may expose a video UUID instead of the USB UDID. Single-source
+        // correspondence is unambiguous only with one USB phone and one iOS capture source.
+        let ios = devices.filter { $0.modelID == "iOS Device" }
+        return allowSingleDeviceFallback && ios.count == 1 ? ios[0] : nil
     }
 
     // The device appears a second or two after screen capture devices are allowed.

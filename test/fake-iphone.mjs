@@ -20,6 +20,11 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = 
     staleOnce: false,
     staleLookupOnce: false,
     delayMs: 0,
+    locked: false,
+    app: "com.apple.Preferences",
+    orientation: "PORTRAIT",
+    settings: {},
+    devices: [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }],
   };
   let sessionId = "S1";
   let generation = 1;
@@ -53,24 +58,33 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = 
         if (ui.staleLookupOnce) { ui.staleLookupOnce = false; return fail("stale element reference"); }
         if (json.value === "INVALID") return fail("invalid selector");
         const found = ui.elements.filter((e) => json.using === "class name" ? e.type === json.value : e.name === json.value);
-        return reply(found.map((e) => ({ "element-6066-11e4-a52e-4f735466cecf": e.id })));
+        return reply(found.map((e) => ({ "element-6066-11e4-a52e-4f735466cecf": e.id,
+          ...(ui.settings.shouldUseCompactResponses === false ? { type: e.type, label: e.label, rect: e.rect, enabled: e.enabled, displayed: e.visible, "attribute/name": e.name, "attribute/value": e.value } : {}) })));
       }
       if (route.startsWith("/source?")) return reply(new URL(req.url, "http://x").searchParams.get("format") === "json" ? { type: "Application", children: ui.elements } : "<Application/>");
       if (route === "/screenshot") return reply(jpeg.toString("base64"));
-      if (route === "/wda/locked") return reply(false);
-      if (route === "/wda/activeAppInfo") return reply({ bundleId: "com.apple.Preferences", pid: 123 });
-      if (route === "/orientation") return reply("PORTRAIT");
+      if (route === "/wda/locked") return reply(ui.locked);
+      if (route === "/wda/activeAppInfo") return reply({ bundleId: ui.app, pid: 123 });
+      if (route === "/orientation") return reply(ui.orientation);
       const elementRoute = route.match(/^\/element\/([^/]+)\/(.+)$/);
       if (elementRoute) {
         if (ui.staleOnce) { ui.staleOnce = false; return fail("stale element reference"); }
         const element = ui.elements.find((e) => e.id === decodeURIComponent(elementRoute[1]));
         if (!element) return fail("stale element reference");
+        if (elementRoute[2] === "click") { ui.onClick?.(element); return reply(null); }
+        if (elementRoute[2] === "value") { element.value = json.value.join(""); return reply(null); }
         if (elementRoute[2] === "screenshot") return reply(jpeg.toString("base64"));
         const attr = elementRoute[2].replace(/^attribute\//, "");
         return reply(element[attr] ?? null);
       }
       if (req.url.endsWith("/window/size")) return reply({ width: 390, height: 844 });
-      reply(null);
+      if (route === "/wda/lock") { ui.locked = true; return reply(null); }
+      if (route === "/wda/unlock") { ui.locked = false; return reply(null); }
+      if (route === "/wda/apps/launch") { ui.app = json.bundleId; return reply(null); }
+      if (route === "/wda/homescreen") { ui.app = "com.apple.springboard"; return reply(null); }
+      if (route === "/appium/settings") { Object.assign(ui.settings, json.settings); return reply(ui.settings); }
+      if (["/appium/settings", "/actions", "/wda/keys", "/wda/pressButton", "/wda/performIoHidEvent", "/wda/siri/activate"].includes(route) && req.method === "POST") return reply(null);
+      fail("unknown command", `Unimplemented fake route: ${req.method} ${route}`);
     });
   });
 
@@ -104,14 +118,16 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100 } = 
         sock.write(Buffer.concat([h, b]));
       };
       if (xml.includes("<string>ListDevices</string>")) {
-        msg(`<key>DeviceList</key><array><dict><key>DeviceID</key><integer>7</integer><key>MessageType</key><string>Attached</string><key>Properties</key><dict><key>ConnectionType</key><string>USB</string><key>DeviceID</key><integer>7</integer><key>SerialNumber</key><string>00008110-FAKEFAKEFAKE</string></dict></dict></array>`);
+        msg(`<key>DeviceList</key><array>${ui.devices.map(d => `<dict><key>DeviceID</key><integer>${d.id}</integer><key>MessageType</key><string>Attached</string><key>Properties</key><dict><key>ConnectionType</key><string>${d.connection}</string><key>DeviceID</key><integer>${d.id}</integer><key>SerialNumber</key><string>${d.udid}</string></dict></dict>`).join("")}</array>`);
         return;
       }
       if (xml.includes("<string>Connect</string>")) {
         sock.off("data", onData);
         const p = +xml.match(/<key>PortNumber<\/key><integer>(\d+)</)[1];
         const port = ((p & 0xff) << 8) | (p >> 8);
-        log.push({ mux: "connect", port });
+        const deviceId = +xml.match(/<key>DeviceID<\/key><integer>(\d+)</)[1];
+        log.push({ mux: "connect", port, deviceId });
+        if (!ui.devices.some(d => d.id === deviceId)) return msg(`<key>Number</key><integer>2</integer>`);
         const target = { 8100: wdaPort, 9100: mjpegPort }[port];
         if (!target) return msg(`<key>MessageType</key><string>Result</string><key>Number</key><integer>3</integer>`);
         const up = net.connect(target, "127.0.0.1", () => {

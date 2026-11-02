@@ -53,7 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
         buildWindow()
-        startCapture()
         ensureServer()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -214,13 +213,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     // MARK: Video
 
-    func startCapture() {
+    func startCapture(udid: String, singleUsbDevice: Bool) {
         let c = PhoneCapture()
         c.onSize = { [weak self] size in self?.setAspect(width: size.width, height: size.height) }
         phone.layer?.insertSublayer(c.layer, at: 0) // underneath the transparent web view
         c.layer.frame = phone.bounds
         capture = c
-        c.start { [weak self] ok in
+        c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self] ok in
             guard let self, !ok else { return }
             NSLog("iPhone Mirroring EU: no direct screen capture, falling back to the MJPEG stream")
             self.capture?.layer.removeFromSuperlayer()
@@ -238,24 +237,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: Server
 
     func ensureServer() {
-        probe { up in
+        probe { up, _, _ in
             if !up { self.startServer() }
             self.waitForServer(tries: up ? 1 : 60)
         }
     }
 
-    func probe(_ done: @escaping @MainActor (Bool) -> Void) {
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!)
+    func probe(_ done: @escaping @MainActor (Bool, String?, Bool) -> Void) {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/status")!)
         req.timeoutInterval = 1
-        URLSession.shared.dataTask(with: req) { _, resp, _ in
-            let up = (resp as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async { done(up) }
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            let status = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let up = (resp as? HTTPURLResponse)?.statusCode == 200 && status?["service"] as? String == "iphone-mirror" && status?["apiVersion"] as? Int == 2
+            let udid = (status?["device"] as? [String: Any])?["udid"] as? String
+            let singleUsbDevice = (status?["captureIdentity"] as? [String: Any])?["singleUsbDevice"] as? Bool ?? false
+            DispatchQueue.main.async { done(up, udid, singleUsbDevice) }
         }.resume()
     }
 
     func waitForServer(tries: Int) {
-        probe { up in
+        probe { up, udid, singleUsbDevice in
             if up {
+                if let udid { self.startCapture(udid: udid, singleUsbDevice: singleUsbDevice) } else { self.captureFailed = true }
                 let video = self.captureFailed ? "" : "&video=native"
                 self.web.load(URLRequest(url: URL(string: "http://localhost:\(port)/?app=1\(video)")!))
                 return

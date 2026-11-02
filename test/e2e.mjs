@@ -1,12 +1,16 @@
 // End-to-end test against the fake iPhone: usbmuxd forwarding, status, MJPEG stream and input commands.
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { startFakeIphone, SOCKET } from "./fake-iphone.mjs";
 
 const fake = startFakeIphone();
 const PORT = 7199;
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-e2e-"));
 const server = spawn(process.execPath, ["mirror.mjs", "--port", PORT, "--wda-port", "18200", "--mjpeg-port", "19200", "--no-open"], {
-  env: { ...process.env, USBMUXD_SOCKET_ADDRESS: SOCKET },
+  env: { ...process.env, USBMUXD_SOCKET_ADDRESS: SOCKET, MIRROR_COMMANDS_FILE: path.join(scratch, "commands.json") },
   stdio: "inherit",
 });
 const base = `http://127.0.0.1:${PORT}`;
@@ -21,6 +25,7 @@ try {
   const status = await (await fetch(`${base}/api/status`)).json();
   assert.equal(status.ok, true, JSON.stringify(status));
   assert.equal(status.device.udid, "00008110-FAKEFAKEFAKE");
+  assert.equal(status.captureIdentity.singleUsbDevice, true);
 
   const res = await fetch(`${base}/stream`);
   assert.match(res.headers.get("content-type"), /multipart\/x-mixed-replace/);
@@ -55,6 +60,7 @@ try {
   await post("lock");
   assert.equal((await post("keep-awake")).value.reason, "lock requested");
   assert.equal((await post("keep-awake", { enabled: false })).value.enabled, false);
+  await post("unlock");
 
   const selector = { using: "accessibility id", value: "Continue" };
   const absent = { using: "accessibility id", value: "Missing" };
@@ -82,7 +88,7 @@ try {
   fake.ui.staleLookupOnce = true;
   assert.equal((await post("wait", { selector: absent, condition: "absent", intervalMs: 50 })).value.matched, true);
   fake.ui.staleOnce = true;
-  assert.equal((await post("wait", { selector, condition: "attribute", attribute: "enabled", equals: true, intervalMs: 50 })).value.matched, true);
+  assert.equal((await post("wait", { selector, condition: "attribute", attribute: "hittable", equals: true, intervalMs: 50 })).value.matched, true);
   const request = (name, body) => fetch(`${base}/api/${name}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const timedOut = await request("wait", { selector: absent, timeoutMs: 150, intervalMs: 50 });
   assert.equal(timedOut.status, 408);
@@ -125,14 +131,71 @@ try {
   for (const [name, body] of [["elements", {}], ["element", { selector, attributes: ["bad"] }], ["source", { format: "bad" }], ["wait", { selector, timeoutMs: -1 }], ["wait", { selector, condition: "attribute", attribute: "value" }], ["elements", { selector: { using: "xpath", value: "INVALID" } }]]) {
     assert.equal((await request(name, body)).status, 400, `${name} rejects invalid input`);
   }
-  const malformed = await fetch(`${base}/api/elements`, { method: "POST", body: "{" });
+  const malformed = await fetch(`${base}/api/elements`, { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
   assert.equal(malformed.status, 400);
   assert.equal((await request("elements", { padding: "x".repeat(1024 * 1024) })).status, 413);
   assert.equal((await fetch(`${base}/api/status`)).status, 200, "malformed JSON must not crash server");
   assert.equal((await request("constructor", {})).status, 404);
 
+  // Real HTTP regression checks: no browser-origin bypass, malformed mutations or replay.
+  const foreign = await fetch(`${base}/api/home`, { method: "POST", headers: { origin: "https://untrusted.example", "content-type": "text/plain" }, body: "{}" });
+  assert.equal(foreign.status, 403);
+  assert.equal((await fetch(`${base}/api/home`, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" })).status, 415);
+  const browser = await fetch(`${base}/api/home`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-mirror-instance": status.instanceId }, body: "{}" });
+  assert.equal(browser.status, 200);
+  for (const [name, body] of [["type", {}], ["quality", { level: "constructor" }], ["gesture", { points: [[]], end: 0 }]]) assert.equal((await request(name, body)).status, 400);
+  const replayId = "e2e-replay";
+  const beforeReplay = fake.log.filter(x => x.path === "/wda/homescreen").length;
+  const [firstReply, secondReply] = await Promise.all([post("home", { requestId: replayId }), post("home", { requestId: replayId })]);
+  assert.deepEqual(firstReply, secondReply);
+  assert.equal(fake.log.filter(x => x.path === "/wda/homescreen").length, beforeReplay + 1);
+  assert.equal((await (await fetch(`${base}/api/commands/${replayId}`)).json()).value.state, "executed");
+  assert.equal((await request("launch", { requestId: replayId, bundleId: "different" })).status, 409);
+
+  assert.equal((await request("tap", { selector, expectedApp: "wrong.app" })).status, 409);
+  fake.ui.app = "com.apple.Preferences";
+  fake.ui.elements[0].hittable = false;
+  assert.equal((await post("tap", { selector })).code, "element not actionable");
+  fake.ui.elements[0].hittable = true;
+  const observation = (await post("observe", { screenshot: false })).value;
+  assert.equal(observation.stable, true);
+  fake.ui.elements[0].label = "Changed";
+  assert.equal((await post("tap", { selector, observationId: observation.id })).code, "stale observation");
+  const fresh = (await post("observe", { screenshot: false })).value;
+  const tapVerified = await post("tap", { selector, observationId: fresh.id, expectedApp: "com.apple.Preferences", waitFor: { selector, condition: "exists" } });
+  assert.equal(tapVerified.outcome, "verified");
+  await post("type", { selector, text: "test" });
+  assert.equal(fake.ui.elements[0].value, "test");
+  assert.equal((await post("wait", { selector, stableForMs: 100, intervalMs: 50 })).value.matched, true);
+
+  // A disconnected client must not cause a queued input to execute later.
+  fake.ui.delayMs = 100;
+  const blocking = post("state");
+  await new Promise(r => setTimeout(r, 30));
+  const cancelInput = new AbortController();
+  const beforeCancel = fake.log.filter(x => x.path === "/wda/homescreen").length;
+  const cancelledInput = fetch(`${base}/api/home`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: "cancelled-input" }), signal: cancelInput.signal }).catch(() => {});
+  await new Promise(r => setTimeout(r, 40)); cancelInput.abort(); await cancelledInput;
+  await blocking; await new Promise(r => setTimeout(r, 100));
+  fake.ui.delayMs = 0;
+  assert.equal(fake.log.filter(x => x.path === "/wda/homescreen").length, beforeCancel);
+  const receipt = (await (await fetch(`${base}/api/commands/cancelled-input`)).json()).value;
+  assert.equal(receipt.response.body.outcome, "not executed");
+
+  // Disconnecting the pinned device must not silently select the other phone.
+  fake.ui.devices = [{ id: 8, udid: "OTHER-PHONE", connection: "USB" }];
+  const disconnected = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(disconnected.device, null);
+  assert.equal(disconnected.pinnedUdid, "00008110-FAKEFAKEFAKE");
+  assert.equal(disconnected.captureIdentity.singleUsbDevice, false);
+  fake.ui.devices.push({ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" });
+  const multiple = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(multiple.device.udid, "00008110-FAKEFAKEFAKE");
+  assert.equal(multiple.captureIdentity.singleUsbDevice, false);
+  fake.ui.devices = [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }];
+
   const cancelled = new AbortController();
-  const cancelledWait = fetch(`${base}/api/wait`, { method: "POST", body: JSON.stringify({ selector: absent, timeoutMs: 10000, intervalMs: 50 }), signal: cancelled.signal }).catch(() => {});
+  const cancelledWait = fetch(`${base}/api/wait`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ selector: absent, timeoutMs: 10000, intervalMs: 50 }), signal: cancelled.signal }).catch(() => {});
   await new Promise((r) => setTimeout(r, 80));
   cancelled.abort();
   await cancelledWait;
@@ -148,5 +211,6 @@ try {
 } finally {
   server.kill();
   fake.close();
+  fs.rmSync(scratch, { recursive: true, force: true });
   setTimeout(() => process.exit(), 100);
 }

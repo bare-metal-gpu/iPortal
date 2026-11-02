@@ -1,6 +1,8 @@
 // Read-only UI inspection over WDA. Polls share the input queue, not the whole wait.
 import { isDeepStrictEqual } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
+import { fingerprint } from "./commands.mjs";
 
 const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
 const STRATEGIES = new Set(["accessibility id", "id", "name", "class name", "predicate string", "class chain", "xpath"]);
@@ -39,6 +41,7 @@ function target(body) {
 }
 
 export function createInspection({ wda, withSession, enqueue }) {
+  const observations = new Map();
   // Deadlines include queue time. Check again when a queued operation actually starts.
   const run = (fn, signal, deadline) => enqueue(() => {
     signal?.throwIfAborted();
@@ -52,27 +55,45 @@ export function createInspection({ wda, withSession, enqueue }) {
       };
       return fn(call);
     }, { deadline, signal });
-  });
+  }, { signal, deadline });
 
-  const find = async (call, query) => {
+  const find = async (call, query, rich = false) => {
     const result = await call("POST", "/elements", query);
     if (!Array.isArray(result)) throw apiError("Invalid element list from WDA", 502, "invalid response");
     return result.map((item) => {
       const id = item[ELEMENT_KEY] ?? item.ELEMENT;
       if (typeof id !== "string") throw apiError("Missing element ID from WDA", 502, "invalid response");
-      return { id };
+      if (!rich) return { id };
+      const attributes = {};
+      for (const [name, key] of Object.entries({ type: "type", label: "label", rect: "rect", enabled: "enabled", visible: "displayed", selected: "selected", name: "attribute/name", value: "attribute/value", accessible: "attribute/accessible" })) {
+        if (Object.hasOwn(item, key)) attributes[name] = item[key];
+      }
+      return { id, attributes };
     });
   };
-  const resolve = async (call, t) => {
-    if (t.id) return t.id;
-    const elements = await find(call, t.selector);
+  const resolveDetailed = async (call, t) => {
+    if (t.id) return { id: t.id, attributes: {} };
+    const elements = await find(call, t.selector, true);
     if (!elements.length) throw apiError("No matching element", 404, "no such element");
     if (elements.length !== 1) throw apiError("Selector is ambiguous; use a more specific selector or an element id", 409, "ambiguous element");
-    return elements[0].id;
+    return elements[0];
   };
+  const resolve = async (call, t) => (await resolveDetailed(call, t)).id;
   const read = (call, id, name) => call("GET", `/element/${encodeURIComponent(id)}/${name === "rect" ? "rect" : `attribute/${name}`}`);
 
-  return {
+  const api = {
+    tap: (body, signal) => run(async call => {
+      const id = await resolve(call, target(body));
+      if (!(await read(call, id, "enabled")) || !(await read(call, id, "hittable"))) throw apiError("Element is not currently actionable", 409, "element not actionable");
+      await call("POST", `/element/${encodeURIComponent(id)}/click`, {});
+      return { id };
+    }, signal),
+    type: (body, signal) => run(async call => {
+      const id = await resolve(call, target(body));
+      if (!(await read(call, id, "enabled")) || !(await read(call, id, "hittable"))) throw apiError("Element is not currently actionable", 409, "element not actionable");
+      await call("POST", `/element/${encodeURIComponent(id)}/value`, { value: [...body.text] });
+      return { id };
+    }, signal),
     state: (_body, signal) => run(async (call) => ({
       locked: await call("GET", "/wda/locked"),
       app: await call("GET", "/wda/activeAppInfo"),
@@ -89,10 +110,10 @@ export function createInspection({ wda, withSession, enqueue }) {
       if (!Array.isArray(names) || !names.length || names.length > ATTRIBUTES.size) throw apiError("attributes must be a non-empty supported attribute array");
       names.forEach(attribute);
       return run(async (call) => {
-        const id = await resolve(call, t);
+        const { id, attributes } = await resolveDetailed(call, t);
         const result = { id };
-        // WDA/XCTest operations stay sequential. This is not an atomic snapshot.
-        for (const name of new Set(names)) result[name] = await read(call, id, name);
+        // Lookup fields come from one WDA snapshot. Hittable remains a fresh native check.
+        for (const name of new Set(names)) result[name] = Object.hasOwn(attributes, name) ? attributes[name] : await read(call, id, name);
         return result;
       }, signal);
     },
@@ -115,6 +136,49 @@ export function createInspection({ wda, withSession, enqueue }) {
         return { mimeType, encoding: "base64", data };
       }, signal);
     },
+    observe: async (body, signal) => {
+      const deadline = performance.now() + (body.timeoutMs ?? 8000);
+      const settleMs = body.settleMs ?? 0;
+      let lastHash, stableSince = performance.now(), result;
+      do {
+        result = await run(async call => {
+          const startedAt = new Date().toISOString();
+          const beforeApp = await call("GET", "/wda/activeAppInfo");
+          const orientation = await call("GET", "/orientation");
+          const source = await call("GET", "/source?format=json");
+          const beforeSourceAt = new Date().toISOString();
+          const screenshot = body.screenshot === false ? undefined : await api.screenshot({}, signal);
+          const screenshotAt = screenshot ? new Date().toISOString() : undefined;
+          const afterSource = await call("GET", "/source?format=json");
+          const sourceAt = new Date().toISOString();
+          const afterApp = await call("GET", "/wda/activeAppInfo");
+          const afterOrientation = await call("GET", "/orientation");
+          const hash = fingerprint(afterSource);
+          return { id: randomUUID(), startedAt, beforeSourceAt, sourceAt, screenshotAt, finishedAt: new Date().toISOString(),
+            app: afterApp, orientation: afterOrientation, source: afterSource, ...(screenshot ? { screenshot } : {}),
+            stable: beforeApp.bundleId === afterApp.bundleId && orientation === afterOrientation && fingerprint(source) === hash, hash };
+        }, signal, deadline);
+        if (!result.stable || lastHash !== result.hash) stableSince = performance.now();
+        lastHash = result.hash;
+        if (result.stable && performance.now() - stableSince >= settleMs) break;
+        if (!settleMs) break;
+        await sleep(Math.min(100, Math.max(0, deadline - performance.now())), undefined, { signal });
+      } while (performance.now() < deadline);
+      result.stable = result.stable && performance.now() - stableSince >= settleMs;
+      if (observations.size >= 32) observations.delete(observations.keys().next().value);
+      observations.set(result.id, { hash: result.hash, app: result.app.bundleId, orientation: result.orientation, stable: result.stable, at: performance.now() });
+      const { hash, ...publicResult } = result;
+      return publicResult;
+    },
+    verifyObservation: (id, signal) => run(async call => {
+      const observation = observations.get(id);
+      if (!observation?.stable || performance.now() - observation.at > 15000) throw apiError("Observation is missing, unstable or expired; observe again", 409, "stale observation");
+      const app = await call("GET", "/wda/activeAppInfo");
+      const orientation = await call("GET", "/orientation");
+      const source = await call("GET", "/source?format=json");
+      if (app.bundleId !== observation.app || orientation !== observation.orientation || fingerprint(source) !== observation.hash) throw apiError("UI changed since the observation", 409, "stale observation");
+    }, signal),
+    invalidateObservations: () => observations.clear(),
     wait: async (body, signal) => {
       const query = selector(body.selector);
       const condition = body.condition ?? "exists";
@@ -128,11 +192,13 @@ export function createInspection({ wda, withSession, enqueue }) {
       const started = performance.now();
       const deadline = started + timeoutMs;
       let last = null;
+      let matchedSince = null;
+      let matchHash = null;
       try {
         while (true) {
           const observation = await run(async (call) => {
             let elements;
-            try { elements = await find(call, query); }
+            try { elements = await find(call, query, condition === "attribute"); }
             catch (e) {
               // A changing hierarchy can stale during lookup itself. It is not proof of absence.
               if (e.code === "stale element reference") return { matched: false, retry: e.code };
@@ -144,7 +210,7 @@ export function createInspection({ wda, withSession, enqueue }) {
             if (!elements.length) return { matched: false, count: 0 };
             const id = elements[0].id;
             try {
-              const value = await read(call, id, body.attribute);
+              const value = Object.hasOwn(elements[0].attributes, body.attribute) ? elements[0].attributes[body.attribute] : await read(call, id, body.attribute);
               return { matched: isDeepStrictEqual(value, body.equals), count: 1, id, attribute: body.attribute, value };
             } catch (e) {
               if (missing(e)) return { matched: false, count: 0 }; // Re-resolve after a UI transition.
@@ -153,7 +219,10 @@ export function createInspection({ wda, withSession, enqueue }) {
           }, signal, deadline);
           last = observation;
           if (performance.now() >= deadline) throw apiError("Wait timed out", 408, "timeout");
-          if (last.matched) return { ...last, elapsedMs: Math.round(performance.now() - started) };
+          const hash = fingerprint(last);
+          if (!last.matched || matchHash !== hash) matchedSince = last.matched ? performance.now() : null;
+          matchHash = hash;
+          if (last.matched && performance.now() - matchedSince >= (body.stableForMs ?? 0)) return { ...last, elapsedMs: Math.round(performance.now() - started) };
           await sleep(Math.min(intervalMs, Math.max(0, deadline - performance.now())), undefined, { signal });
         }
       } catch (e) {
@@ -165,4 +234,5 @@ export function createInspection({ wda, withSession, enqueue }) {
       }
     },
   };
+  return api;
 }
