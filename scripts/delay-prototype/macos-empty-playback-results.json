@@ -1,0 +1,62 @@
+[
+  {
+    "ignoreDelay" : false,
+    "elapsedMs" : 201.04037481360137,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : false,
+    "elapsedMs" : 200.31895814463496,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : false,
+    "elapsedMs" : 200.34279162064195,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : false,
+    "elapsedMs" : 200.14608325436711,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : false,
+    "elapsedMs" : 200.11912495829165,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : true,
+    "elapsedMs" : 0.033624935895204544,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : true,
+    "elapsedMs" : 0.024958280846476555,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : true,
+    "elapsedMs" : 0.0216667540371418,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : true,
+    "elapsedMs" : 0.019958475604653358,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  },
+  {
+    "ignoreDelay" : true,
+    "elapsedMs" : 0.046874862164258957,
+    "eventCount" : 0,
+    "underlyingClass" : "RCPPlayer"
+  }
+]
