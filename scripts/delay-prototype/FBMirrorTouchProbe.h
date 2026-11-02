@@ -8,10 +8,16 @@
 @property(nonatomic,strong) NSMutableArray<NSValue *> *trail;
 + (instancetype)shared;
 + (NSDictionary *)show;
++ (NSDictionary *)hide;
+- (void)holdIdleTimer;
+- (void)releaseIdleTimer;
+- (void)becameActive;
 - (NSDictionary *)snapshot;
 - (void)reset;
 @end
 static UIWindow *FBMirrorProbeWindow;
+static BOOL FBMirrorProbeOwnsIdleTimer;
+static BOOL FBMirrorProbePriorIdleTimer;
 @implementation FBMirrorTouchProbe
 + (instancetype)shared {
   static FBMirrorTouchProbe *probe;
@@ -30,6 +36,8 @@ static UIWindow *FBMirrorProbeWindow;
     self.label.textAlignment = NSTextAlignmentCenter; self.label.font = [UIFont monospacedSystemFontOfSize:18 weight:UIFontWeightMedium];
     self.label.userInteractionEnabled = NO;
     [self addSubview:self.label]; [self reset];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(releaseIdleTimer) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(becameActive) name:UIApplicationDidBecomeActiveNotification object:nil];
   } return self;
 }
 + (NSDictionary *)show {
@@ -46,8 +54,34 @@ static UIWindow *FBMirrorProbeWindow;
     FBMirrorProbeWindow.windowLevel = UIWindowLevelNormal + 1;
   }
   [FBMirrorProbeWindow makeKeyAndVisible];
+  [probe becameActive];
   [probe setNeedsLayout]; [probe layoutIfNeeded];
   return probe.snapshot;
+}
+// This is a foreground application assertion, not a persistent Auto-Lock setting.
+- (void)holdIdleTimer {
+  if(!FBMirrorProbeOwnsIdleTimer) {
+    FBMirrorProbePriorIdleTimer=UIApplication.sharedApplication.idleTimerDisabled;
+    FBMirrorProbeOwnsIdleTimer=YES;
+  }
+  UIApplication.sharedApplication.idleTimerDisabled=YES;
+}
+- (void)releaseIdleTimer {
+  if(!FBMirrorProbeOwnsIdleTimer)return;
+  UIApplication.sharedApplication.idleTimerDisabled=FBMirrorProbePriorIdleTimer;
+  FBMirrorProbeOwnsIdleTimer=NO;
+}
+- (void)becameActive {
+  if(FBMirrorProbeWindow && !FBMirrorProbeWindow.hidden && UIApplication.sharedApplication.applicationState==UIApplicationStateActive) [self holdIdleTimer];
+}
++ (NSDictionary *)hide {
+  [self.shared releaseIdleTimer];
+  FBMirrorProbeWindow.hidden=YES;
+  return [self.shared snapshot];
+}
+- (void)dealloc {
+  [NSNotificationCenter.defaultCenter removeObserver:self];
+  [self releaseIdleTimer];
 }
 - (void)layoutSubviews {
   [super layoutSubviews];
@@ -81,6 +115,6 @@ static UIWindow *FBMirrorProbeWindow;
 }
 - (NSDictionary *)snapshot {
   return @{@"bundleId":NSBundle.mainBundle.bundleIdentifier ?: @"",@"applicationState":@(UIApplication.sharedApplication.applicationState),
-    @"width":@(self.bounds.size.width),@"height":@(self.bounds.size.height),@"activeCount":@(self.active.count),@"events":[self.events copy]};
+    @"idleTimerHeld":@(FBMirrorProbeOwnsIdleTimer),@"idleTimerDisabled":@(UIApplication.sharedApplication.idleTimerDisabled),@"visible":@(self.window && !self.window.hidden),@"width":@(self.bounds.size.width),@"height":@(self.bounds.size.height),@"activeCount":@(self.active.count),@"events":[self.events copy]};
 }
 @end

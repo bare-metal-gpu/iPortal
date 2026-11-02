@@ -8,7 +8,7 @@ The experiment distinguishes three facts:
 2. Real daemon taps at confirmation intervals 0, 50 and 300 ms measure input onset, touch lifetime and callback-after-touch-end, using UIKit events from the same runner process and monotonic uptime.
 3. Runner-local full-tap Recap playback tests whether disabling completion delay can deliver input under the existing signing/entitlement boundary. Prewarm must succeed. A fast callback without matching UIKit began/ended events is **not** an improvement.
 
-No system daemon is modified, no entitlement is added, and queue ownership is retained until the actual callback. Nonempty tests target only the foreground runner recorder, in portrait, with bounded complete taps. Reset refuses to discard active-contact evidence.
+No system daemon is modified, no entitlement is added, and queue ownership is retained until the actual callback. Nonempty tests target only the foreground runner recorder, in portrait, with bounded complete taps. Reset and hide refuse to discard active-contact evidence. The recorder holds the foreground app’s idle timer only while visible, restoring the previous value when hidden or backgrounded; no keepalive HID pulses contaminate measurements. The harness hides an idle recorder in its finalizer.
 
 Build in this worktree only:
 

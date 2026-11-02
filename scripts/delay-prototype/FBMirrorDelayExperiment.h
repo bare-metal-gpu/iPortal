@@ -29,8 +29,12 @@ static id<FBResponsePayload> FBMirrorDelayRun(NSDictionary *arguments)
   if (![NSProcessInfo.processInfo.environment[@"MIRROR_DELAY_EXPERIMENT"] isEqual:@"1"])
     return FBResponseWithStatus([FBCommandStatus unsupportedOperationErrorWithMessage:@"Delay experiment disabled" traceback:nil]);
   NSString *mode = arguments[@"mode"];
-  if ([@[@"show", @"state", @"reset"] containsObject:mode]) {
+  if ([@[@"show", @"state", @"reset", @"hide"] containsObject:mode]) {
     if ([mode isEqual:@"show"]) return FBResponseWithObject([FBMirrorTouchProbe show]);
+    if ([mode isEqual:@"hide"]) {
+      if (FBMirrorTouchProbe.shared.active.count) return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Cannot hide active contact" traceback:nil]);
+      return FBResponseWithObject([FBMirrorTouchProbe hide]);
+    }
     if ([mode isEqual:@"reset"]) {
       if (FBMirrorTouchProbe.shared.active.count) return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Cannot reset active contact" traceback:nil]);
       [FBMirrorTouchProbe.shared reset];
@@ -52,7 +56,7 @@ static id<FBResponsePayload> FBMirrorDelayRun(NSDictionary *arguments)
     return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Device locked" traceback:nil]);
   if (![XCUIApplication.fb_activeApplication.bundleID isEqual:NSBundle.mainBundle.bundleIdentifier])
     return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Activate the runner touch recorder first" traceback:nil]);
-  if (!FBMirrorTouchProbe.shared.window || FBMirrorTouchProbe.shared.active.count)
+  if (!FBMirrorTouchProbe.shared.window || ![FBMirrorTouchProbe.shared.snapshot[@"visible"] boolValue] || FBMirrorTouchProbe.shared.active.count)
     return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Show an idle touch recorder first" traceback:nil]);
   UIInterfaceOrientation orientation;
   NSError *error = nil;
