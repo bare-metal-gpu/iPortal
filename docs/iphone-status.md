@@ -61,3 +61,10 @@ covers binary-section preservation, repeated linking, and unsupported layouts.
 
 Physical-device checks: standalone launch, waiting/connecting/connected screen,
 countdown, heartbeat expiry, and background updates without stealing focus.
+
+On 2026-11-03, the final shared SwiftUI build was verified on the connected iPhone:
+the orb, animated connection state, border beam, and countdown rendered correctly;
+status updates left Settings in the foreground. With the Mac app and test process
+stopped, a fresh phone-app launch stayed on the waiting screen. Reopening the Mac
+app restored video/control readiness and a 30-minute keep-awake lease. The native
+heartbeat expiry transitions had also passed the preceding physical-device test.
