@@ -75,18 +75,19 @@ export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 
   });
 }
 
-export function startServer({ port, instanceId, html, mjpeg, dispatch, statusEvents, onListening }) {
+export function startServer({ port, instanceId, html, mjpeg, dispatch, statusEvents, onListening, identity = {}, fallbackPort = false }) {
+  let boundPort = port;
   const headers = { "cache-control": "no-store", "x-mirror-instance": instanceId, "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin", "referrer-policy": "no-referrer" };
   const json = response => HttpServerResponse.jsonUnsafe(response.body, { status: response.status, headers });
   const handler = request => Effect.gen(function*() {
-    yield* Effect.try(() => checkRequest(request, port, instanceId));
-    const url = new URL(request.url, `http://localhost:${port}`);
+    yield* Effect.try(() => checkRequest(request, boundPort, instanceId));
+    const url = new URL(request.url, `http://localhost:${boundPort}`);
     if (request.method === "GET" && url.pathname === "/") {
       return HttpServerResponse.text(html.replace("<head>", `<head><meta name="mirror-instance" content="${instanceId}">`), { contentType: "text/html", headers });
     }
     if (request.method === "GET" && url.pathname === "/api/health") {
       // Process liveness must not depend on USB, XCTest, lock state or a session.
-      return json({ status: 200, body: { service: "iphone-mirror", apiVersion: 2, instanceId, ok: true } });
+      return json({ status: 200, body: { service: "iphone-mirror", apiVersion: 2, instanceId, ok: true, ...identity } });
     }
     if (request.method === "GET" && url.pathname === "/api/events" && statusEvents) {
       return HttpServerResponse.stream(Stream.fromReadableStream({ evaluate: () => statusEvents.stream(), onError: e => e }), {
@@ -114,11 +115,15 @@ export function startServer({ port, instanceId, html, mjpeg, dispatch, statusEve
   const live = HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
     Layer.provide(NodeHttpServer.layer(() => {
       const server = http.createServer({ requestTimeout: 10000, headersTimeout: 10000, connectionsCheckingInterval: 1000 });
-      server.once("listening", onListening);
+      server.once("listening", () => { boundPort = server.address().port; onListening?.(boundPort); });
       return server;
     }, { port, host: "127.0.0.1" })),
   );
   return Effect.runFork(Layer.launch(live).pipe(Effect.catchCause(cause => Effect.sync(() => {
+    if (fallbackPort && port !== 0 && /EADDRINUSE/.test(Cause.pretty(cause))) {
+      startServer({ port: 0, instanceId, html, mjpeg, dispatch, statusEvents, onListening, identity });
+      return;
+    }
     console.error("Could not start mirror server:", Cause.pretty(cause));
     process.exit(1);
   }))));

@@ -205,6 +205,15 @@ function reportLoading() {
   });
 }
 const params = new URLSearchParams(location.search);
+const deviceKind = params.get("kind") === "iPad" ? "iPad" : "iPhone";
+if (deviceKind === "iPad") {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    if (!["SCRIPT", "STYLE"].includes(walker.currentNode.parentElement?.tagName))
+      walker.currentNode.textContent = walker.currentNode.textContent.replaceAll(/iPhone(?! Portal)/g, deviceKind);
+  }
+  $("screen").setAttribute("aria-label", "iPad screen");
+}
 if (params.has("app")) document.body.classList.add("app");
 if (params.has("app") && window.webkit?.messageHandlers?.native) document.body.classList.add("native-loading-ui");
 let nativeVideo = params.get("video") === "native";
@@ -379,12 +388,12 @@ function toast(msg) {
 
 // Keep implementation details in API responses, not in the app's messages.
 function actionMessage(response) {
-  if (response.outcome === "unknown") return "Check your iPhone before trying again.";
-  if (response.outcome === "executed") return "Action sent. Check your iPhone.";
+  if (response.outcome === "unknown") return `Check your ${deviceKind} before trying again.`;
+  if (response.outcome === "executed") return `Action sent. Check your ${deviceKind}.`;
   const messages = {
-    "device locked": "Unlock your iPhone.",
+    "device locked": `Unlock your ${deviceKind}.`,
     "app changed": "The app changed. Try again.",
-    "orientation changed": "Your iPhone rotated. Try again.",
+    "orientation changed": `Your ${deviceKind} rotated. Try again.`,
     "stale observation": "The screen changed. Try again.",
     "no such element": "Couldn't find that item.",
     "stale element reference": "That item changed. Try again.",
@@ -417,7 +426,7 @@ function api(name, body = {}, fromGesture = false) {
       const receipt = await requestJSON(`/api/commands/${requestId}`, {}, 3000);
       if (receipt.value?.response?.body?.ok) return;
     } catch {}
-    toast("Connection lost. Check your iPhone before trying again.");
+    toast(`Connection lost. Check your ${deviceKind} before trying again.`);
   } finally {
     pendingActions--;
     reportLoading();
@@ -454,7 +463,7 @@ function usbConnectionChanged(attached, epoch, documentId) {
   usbDevicePresent = false;
   connected = false;
   setLifecycle(attached ? "connecting" : "disconnected");
-  loadingDetail = attached ? "" : "Connect your iPhone";
+  loadingDetail = attached ? "" : `Connect your ${deviceKind}`;
   statusRevision++;
   reportLoading();
   // Discard a pre-event response; it cannot resurrect the detached transport.
@@ -518,13 +527,13 @@ function applyServerStatus(s) {
       return;
     }
     $("dot").classList.toggle("on", s.ok);
-    $("device").textContent = s.device || s.ok ? "iPhone connected" : "No iPhone connected";
+    $("device").textContent = s.device || s.ok ? `${deviceKind} connected` : `No ${deviceKind} connected`;
     $("quality").value = s.quality;
     singleUsbDevice = s.captureIdentity?.singleUsbDevice === true;
     usbDevicePresent = Boolean(s.device);
     setLifecycle(s.lifecycle, s.device?.udid ?? s.pinnedUdid ?? "", s.instanceId,
       s.device ? String(s.device.id ?? "") : usbConnectionID);
-    loadingDetail = lifecycle === "locked" ? "Unlock your iPhone." : !s.ok ? (s.error ?? "") : "";
+    loadingDetail = lifecycle === "locked" ? `Unlock your ${deviceKind}.` : !s.ok ? (s.error ?? "") : "";
     if (lifecycle === "ready" && !connected) {
       connected = true;
       if (nativeVideo) $("overlay").hidden = true;

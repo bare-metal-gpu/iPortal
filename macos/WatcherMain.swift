@@ -49,7 +49,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenu() {
         let devices = (usbMonitor?.connectedDevices ?? []).map {
-            PortalUSBDevice(serial: $0.serial, name: names.name(for: $0.serial, fallback: $0.name))
+            PortalUSBDevice(serial: $0.serial, name: names.name(for: $0.serial, fallback: $0.name), kind: $0.kind)
         }
         menuBar?.update(devices: devices, mirroring: !PortalWatcher.mainApplications.isEmpty)
     }

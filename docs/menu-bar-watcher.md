@@ -2,8 +2,8 @@
 
 The bundled `iPhone Portal Watcher.app` owns the status item and IOKit USB
 observer. It is a separate `LSUIElement` app registered with
-`SMAppService.loginItem(identifier:)`. The main app owns the mirror, server and
-capture. Closing its last window, Dock Quit and Command-Q terminate that process
+`SMAppService.loginItem(identifier:)`. The main app owns a separate mirror, server
+and capture per selected device. Closing its last window, Dock Quit and Command-Q terminate that process
 normally. The helper remains alive. The menu-bar settings' **Quit iPhone Portal**
 terminates both processes; logout and shutdown follow normal macOS behavior.
 
@@ -21,7 +21,7 @@ runs inside the helper. Main-app termination stops its owned server; an
 independently started server is left alone. Both processes share local device
 name preferences, and workspace notifications track main-app launch/termination.
 
-USB arrivals open an anchored list of attached iPhones. Each play action carries
+USB arrivals open an anchored list of attached iPhones and iPads. Each play action carries
 the selected USB serial through to the server's UDID argument. The list retains
 unavailable rows for two seconds through USB mode changes, disabling their play
 actions immediately. Reattachment cancels removal, and repeated updates cannot

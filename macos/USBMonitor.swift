@@ -10,10 +10,11 @@ final class PhoneUSBMonitor {
     private var removed: io_iterator_t = 0
     private var serials: [UInt64: String] = [:]
     private var names: [String: String] = [:]
+    private var kinds: [String: PortalDeviceKind] = [:]
     private let changed: (String, Bool) -> Void
     var connectedSerials: Set<String> { Set(serials.values) }
     var connectedDevices: [PortalUSBDevice] {
-        connectedSerials.sorted().map { PortalUSBDevice(serial: $0, name: names[$0] ?? "iPhone") }
+        connectedSerials.sorted().map { PortalUSBDevice(serial: $0, name: names[$0] ?? "iPhone", kind: kinds[$0] ?? .iPhone) }
     }
 
     init(changed: @escaping (String, Bool) -> Void) {
@@ -50,8 +51,9 @@ final class PhoneUSBMonitor {
             guard let serial = serial ?? serials[id] else { continue }
             if attached {
                 let product = IORegistryEntryCreateCFProperty(service, "USB Product Name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String
-                guard product?.hasPrefix("iPhone") == true else { continue }
+                guard let product, let kind = PortalDeviceKind(product: product) else { continue }
                 names[serial] = product
+                kinds[serial] = kind
             } else if serials[id] == nil { continue }
             if attached { serials[id] = serial } else { serials.removeValue(forKey: id) }
             if !initial { changed(serial, attached) }

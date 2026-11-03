@@ -69,12 +69,12 @@ private struct MirrorPopover: View {
     var body: some View {
         VStack(spacing: 0) {
             if state.devices.isEmpty {
-                Text("No iPhone connected").font(.system(size: 13)).foregroundStyle(.secondary)
+                Text("No device connected").font(.system(size: 13)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).frame(height: 56)
             } else {
                 ForEach(state.devices) { device in
                     HStack(spacing: 12) {
-                        Image(systemName: "iphone").font(.system(size: 23))
+                        Image(systemName: device.kind.symbol).font(.system(size: 23))
                             .foregroundStyle(.white.opacity(0.65)).accessibilityHidden(true)
                         Text(device.name).font(.system(size: 13, weight: .medium))
                             .foregroundStyle(.white.opacity(0.9)).lineLimit(1).help(device.name)
@@ -147,7 +147,7 @@ final class MirrorMenuBar: NSObject {
         item.button?.target = self
         item.button?.action = #selector(clicked)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        panel.title = "Connected iPhones"
+        panel.title = "Connected Devices"
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true

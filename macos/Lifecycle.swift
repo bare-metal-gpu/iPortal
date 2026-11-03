@@ -36,16 +36,62 @@ enum PortalWatcherRequest: Equatable {
     }
 }
 
+func deviceKey(_ serial: String) -> String { serial.lowercased().filter { $0.isLetter || $0.isNumber } }
+
+enum PortalDeviceKind: String {
+    case iPhone, iPad
+    init?(product: String) {
+        if product.hasPrefix("iPhone") { self = .iPhone }
+        else if product.hasPrefix("iPad") { self = .iPad }
+        else { return nil }
+    }
+    var symbol: String { self == .iPad ? "ipad" : "iphone" }
+    var initialRatio: CGFloat { self == .iPad ? 3 / 4 : 390 / 844 }
+    func radius(width: CGFloat, height: CGFloat) -> CGFloat {
+        min(width, height) * (self == .iPad ? 0.035 : 0.14)
+    }
+}
+
+// One owner per physical device, independent of USB spelling or enumeration ID.
+// Removal is identity-checked: a delayed close cannot remove a replacement.
+struct DeviceSessionRegistry<Session: AnyObject> {
+    private var sessions: [String: Session] = [:]
+    var values: [Session] { Array(sessions.values) }
+    func session(for serial: String) -> Session? { sessions[deviceKey(serial)] }
+    mutating func insert(_ session: Session, for serial: String) { sessions[deviceKey(serial)] = session }
+    mutating func remove(_ session: Session, for serial: String) {
+        if sessions[deviceKey(serial)] === session { sessions.removeValue(forKey: deviceKey(serial)) }
+    }
+}
+
 struct PortalUSBDevice: Identifiable, Equatable {
     let serial: String
     let name: String
+    var kind: PortalDeviceKind = .iPhone
     var id: String { serial }
+}
+
+struct CaptureSourceIdentity {
+    let id: String
+    let isIOS: Bool
+}
+
+// Display names can be duplicated, renamed, or stale. They are never identity.
+// Never assume the sole camera belongs to one of several attached devices.
+func captureSourceID(for target: String, devices: [PortalUSBDevice], sources: [CaptureSourceIdentity],
+                     singleUSB: Bool) -> String? {
+    let expected = deviceKey(target)
+    if let exact = sources.first(where: { deviceKey($0.id) == expected }) { return exact.id }
+    let ios = sources.filter(\.isIOS)
+    if singleUSB, devices.count == 1, deviceKey(devices[0].serial) == expected, ios.count == 1 { return ios[0].id }
+    return nil
 }
 
 struct PortalDeviceRow: Identifiable, Equatable {
     let serial: String
     let name: String
     var available: Bool
+    var kind: PortalDeviceKind = .iPhone
     var id: String { serial }
 }
 
@@ -60,7 +106,7 @@ struct USBDeviceListState {
     mutating func update(_ devices: [PortalUSBDevice], at now: TimeInterval) {
         let connected = Set(devices.map(\.serial))
         for device in devices {
-            rows[device.serial] = PortalDeviceRow(serial: device.serial, name: device.name, available: true)
+            rows[device.serial] = PortalDeviceRow(serial: device.serial, name: device.name, available: true, kind: device.kind)
             deadlines.removeValue(forKey: device.serial)
         }
         for serial in rows.keys where !connected.contains(serial) {
@@ -81,6 +127,7 @@ struct USBDeviceListState {
 // Recent iPhones omit the UDID separator in IOKit; usbmuxd expects it.
 func phoneUDID(fromUSBSerial serial: String) -> String {
     let compact = serial.replacingOccurrences(of: "-", with: "")
+    if compact.count == 40, compact.allSatisfy({ $0.isHexDigit }) { return compact.lowercased() }
     guard compact.count == 24, compact.allSatisfy({ $0.isHexDigit }) else { return serial }
     return (String(compact.prefix(8)) + "-" + String(compact.suffix(16))).uppercased()
 }

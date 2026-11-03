@@ -10,9 +10,14 @@ const TINY_JPEG = Buffer.from(
   "base64",
 );
 
-export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, guardedTouch = false, multiTouch = guardedTouch } = {}) {
+export function startFakeIphone({ frame, frameTag, wdaPort = 18100, mjpegPort = 19100, socketPath = SOCKET, guardedTouch = false, multiTouch = guardedTouch } = {}) {
   const log = [];
-  const jpeg = frame ? fs.readFileSync(frame) : TINY_JPEG;
+  let jpeg = frame ? fs.readFileSync(frame) : TINY_JPEG;
+  if (frameTag) {
+    const comment = Buffer.from(frameTag);
+    const header = Buffer.from([0xff, 0xfe, 0, 0]); header.writeUInt16BE(comment.length + 2, 2);
+    jpeg = Buffer.concat([jpeg.subarray(0, 2), header, comment, jpeg.subarray(2)]);
+  }
   const ui = {
     elements: [{ id: "button-1", type: "XCUIElementTypeButton", name: "Continue", label: "Continue", value: null, enabled: true, visible: true, hittable: true, rect: { x: 20, y: 40, width: 100, height: 44 } }],
     error: null,
@@ -28,6 +33,8 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
     multiTouch,
     removeTouch: false,
     devices: [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }],
+    targets: {},
+    size: { width: 390, height: 844 },
   };
   const subscribers = new Set();
   const attached = d => `<key>MessageType</key><string>Attached</string><key>DeviceID</key><integer>${d.id}</integer><key>Properties</key><dict><key>ConnectionType</key><string>${d.connection}</string><key>DeviceID</key><integer>${d.id}</integer><key>SerialNumber</key><string>${d.udid}</string></dict>`;
@@ -98,7 +105,7 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
         const attr = elementRoute[2].replace(/^attribute\//, "");
         return reply(element[attr] ?? null);
       }
-      if (req.url.endsWith("/window/size")) return reply({ width: 390, height: 844 });
+      if (req.url.endsWith("/window/size")) return reply(ui.size);
       if (route === "/wda/lock") { ui.locked = true; return reply(null); }
       if (route === "/wda/unlock") { ui.locked = false; return reply(null); }
       if (route === "/wda/apps/launch") { ui.app = json.bundleId; return reply(null); }
@@ -121,7 +128,7 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
   });
 
   // Speaks enough of the usbmuxd plist protocol for ListDevices and Connect.
-  fs.rmSync(SOCKET, { force: true });
+  fs.rmSync(socketPath, { force: true });
   const mux = net.createServer((sock) => {
     sock.on("error", () => {});
     let buf = Buffer.alloc(0);
@@ -157,13 +164,15 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
         const deviceId = +xml.match(/<key>DeviceID<\/key><integer>(\d+)</)[1];
         log.push({ mux: "connect", port, deviceId });
         if (!ui.devices.some(d => d.id === deviceId)) return msg(`<key>Number</key><integer>2</integer>`);
-        const target = { 8100: wdaPort, 9100: mjpegPort }[port];
+        const target = (ui.targets[deviceId] ?? { 8100: wdaPort, 9100: mjpegPort })[port];
         if (!target) return msg(`<key>MessageType</key><string>Result</string><key>Number</key><integer>3</integer>`);
         const up = net.connect(target, "127.0.0.1", () => {
           msg(`<key>MessageType</key><string>Result</string><key>Number</key><integer>0</integer>`);
           sock.pipe(up).pipe(sock);
         });
         up.on("error", () => sock.destroy());
+        sock.on("close", () => up.destroy());
+        up.on("close", () => sock.destroy());
       }
     };
     sock.on("data", onData);
@@ -171,7 +180,7 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
 
   wda.listen(wdaPort, "127.0.0.1");
   mjpeg.listen(mjpegPort, "127.0.0.1");
-  mux.listen(SOCKET);
+  mux.listen(socketPath);
   return { log, ui, close: () => [wda, mjpeg, mux].forEach((s) => s.close()) };
 }
 

@@ -7,6 +7,7 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { apiError, createInspection } from "./inspection.mjs";
@@ -21,6 +22,7 @@ import { pinchActions, pinchPaths } from "./pinch.mjs";
 import { createUSBMonitor } from "./usb-events.mjs";
 import { createStatusEvents } from "./status-events.mjs";
 import { createStartupLock } from "./startup-lock.mjs";
+import { claimDevice, canonicalUDID } from "./device-runtime.mjs";
 
 const instanceId = randomUUID();
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -35,14 +37,18 @@ const { values: opts, positionals } = parseArgs({
     first: { type: "boolean", default: false },
     "no-open": { type: "boolean", default: false },
     "no-autostart": { type: "boolean", default: false },
+    managed: { type: "boolean", default: false },
+    owner: { type: "string" },
+    "device-kind": { type: "string", default: "iPhone" },
   },
 });
 
-const WDA_PORT = +opts["wda-port"];
-const MJPEG_PORT = +opts["mjpeg-port"];
+let WDA_PORT = +opts["wda-port"];
+let MJPEG_PORT = +opts["mjpeg-port"];
 const MANUAL = Boolean(opts.wda);
-const WDA = (opts.wda ?? `http://127.0.0.1:${WDA_PORT}`).replace(/\/$/, "");
-const MJPEG = MANUAL ? `${new URL(WDA).protocol}//${new URL(WDA).hostname}:${MJPEG_PORT}` : `http://127.0.0.1:${MJPEG_PORT}`;
+let WDA = (opts.wda ?? `http://127.0.0.1:${WDA_PORT}`).replace(/\/$/, "");
+let MJPEG = MANUAL ? `${new URL(WDA).protocol}//${new URL(WDA).hostname}:${MJPEG_PORT}` : `http://127.0.0.1:${MJPEG_PORT}`;
+if (opts.managed && (!opts.udid || !opts.owner)) throw new Error("Managed sessions require a device and owner");
 
 // ---------- usbmuxd ----------
 
@@ -109,7 +115,7 @@ async function listDevices() {
     const xml = await muxRead(sock);
     return [...xml.matchAll(/<key>Properties<\/key>\s*<dict>([\s\S]*?)<\/dict>/g)].map(([, p]) => ({
       id: +plistValue(p, "DeviceID"),
-      udid: plistValue(p, "SerialNumber"),
+      udid: canonicalUDID(plistValue(p, "SerialNumber")),
       connection: plistValue(p, "ConnectionType"),
     }));
   } finally {
@@ -117,13 +123,21 @@ async function listDevices() {
   }
 }
 
-let pinnedUdid = opts.udid ?? null;
+let pinnedUdid = opts.udid ? canonicalUDID(opts.udid) : null;
 let connectedUsbUdids = [];
 let usbMonitor;
+let deviceLease;
+async function ensureDeviceLease() {
+  if (pinnedUdid && !deviceLease) {
+    deviceLease = claimDevice(pinnedUdid).then(release => { process.on("exit", release); });
+  }
+  await deviceLease;
+}
 async function pickDevice() {
-  const devices = await (usbMonitor ? usbMonitor.devices() : listDevices());
+  const devices = (await (usbMonitor ? usbMonitor.devices() : listDevices())).map(d => ({ ...d, udid: canonicalUDID(d.udid) }));
   connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
   if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
+  await ensureDeviceLease();
   return devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
 }
 
@@ -139,14 +153,19 @@ async function muxConnect(deviceId, port) {
 }
 
 // Local TCP port -> device port, like iproxy.
-function forward(localPort, devicePort) {
+const tunnels = new Set();
+async function forward(localPort, devicePort) {
   const server = net.createServer(async (client) => {
     client.pause();
     client.on("error", () => {});
     try {
       const dev = await pickDevice();
       if (!dev) throw new Error("no device");
+      const generation = transport.signal;
       const remote = await muxConnect(dev.id, devicePort);
+      if (generation.aborted || client.destroyed) { remote.destroy(); client.destroy(); return; }
+      tunnels.add(client);
+      client.on("close", () => tunnels.delete(client));
       remote.on("error", () => client.destroy());
       client.on("close", () => remote.destroy());
       remote.on("close", () => client.destroy());
@@ -155,11 +174,11 @@ function forward(localPort, devicePort) {
       client.destroy();
     }
   });
-  server.on("error", (e) => {
-    console.error(`  ! could not listen on 127.0.0.1:${localPort}: ${e.message}`);
-    process.exit(1);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(localPort, "127.0.0.1", resolve);
   });
-  server.listen(localPort, "127.0.0.1");
+  return server.address().port;
 }
 
 // ---------- WebDriverAgent ----------
@@ -195,6 +214,7 @@ const QUALITY = {
 };
 let quality = "balanced";
 let sid = null;
+let transport = new AbortController();
 
 async function session({ deadline, signal } = {}) {
   if (sid) return sid;
@@ -354,15 +374,19 @@ let wdaProcess = null;
 let wdaProblem = null;
 let wdaRetryAt = 0;
 let launchLockedDevice = null;
+let shuttingDown = false;
 const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
 function maybeStartWda(udid, connectionID) {
-  if (wdaProcess || Date.now() < wdaRetryAt || opts["no-autostart"] || MANUAL || process.platform !== "darwin") return;
+  if (shuttingDown || wdaProcess || Date.now() < wdaRetryAt || opts["no-autostart"] || MANUAL || process.platform !== "darwin") return;
   if (!fs.existsSync(path.join(ROOT, "vendor/build"))) return;
-  const logPath = path.join(ROOT, "vendor/wda.log");
+  const logPath = path.join(ROOT, `vendor/wda-${udid}.log`);
   const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   const log = fs.openSync(logPath, "a");
-  console.log(`  starting WebDriverAgent on ${udid} (log: vendor/wda.log)`);
-  wdaProcess = spawn("bash", [path.join(ROOT, "scripts/run-wda.sh")], { env: { ...process.env, UDID: udid }, stdio: ["ignore", "pipe", "pipe"] });
+  console.log(`  starting WebDriverAgent on ${udid}`);
+  wdaProcess = spawn(process.execPath, [path.join(ROOT, "scripts/owned-process.mjs"), "bash", path.join(ROOT, "scripts/run-wda.sh")], {
+    env: { ...process.env, UDID: udid }, stdio: ["pipe", "pipe", "pipe"],
+  });
+  wdaProcess.stdin.on("error", () => {});
   let tail = "";
   const output = chunk => {
     fs.writeSync(log, chunk);
@@ -399,7 +423,10 @@ function restartWda() {
   console.log("  automation is off on the iPhone, restarting WebDriverAgent");
   sid = null;
   if (wdaProcess) wdaProcess.kill();
-  else spawn("pkill", ["-f", "test-without-building.*WebDriverAgent"], { stdio: "ignore" });
+  else {
+    wdaRetryAt = 0;
+    void pickDevice().then(device => { if (device) maybeStartWda(device.udid, device.id); }).catch(() => {});
+  }
   // The next status poll sees WDA down and starts it again.
 }
 
@@ -411,8 +438,27 @@ async function automationAllowed() {
     return true; // WDA isn't up yet; status() takes care of starting it
   }
 }
-process.on("SIGINT", () => process.exit());
-process.on("SIGTERM", () => process.exit()); // the Mac app stops the server this way
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  keepAwake.stop("mirror closed");
+  portalStatus.stop(); statusEvents.stop(); usbMonitor?.stop();
+  transport.abort(apiError("Mirror closed", 409, "session closed"));
+  for (const tunnel of tunnels) tunnel.destroy();
+  // Retain the per-device lease until its owned test launcher has exited. A
+  // quick close/reopen cannot race an old launcher tearing down the new runner.
+  const child = wdaProcess;
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const exited = once(child, "exit");
+    const timer = setTimeout(() => child.kill("SIGKILL"), 2000);
+    child.stdin.end();
+    child.kill();
+    try { await exited; } finally { clearTimeout(timer); }
+  }
+  process.exit();
+}
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
 
 // ---------- HTTP server ----------
 
@@ -453,6 +499,7 @@ async function status(signal) {
       : "Finish setting up iPhone Portal on your Mac.";
   } else if (MANUAL && !up) error = "Reconnect your iPhone.";
   const lifecycle = !MANUAL && !device ? "disconnected" : locked === true ? "locked" : up && locked === false ? "ready" : "connecting";
+  if (opts["device-kind"] === "iPad" && error) error = error.replaceAll(/iPhone(?! Portal)/g, "iPad");
   return { service: "iphone-mirror", apiVersion: 2, instanceId, observedAt, ok: Boolean(up), device, pinnedUdid, locked, lifecycle,
     captureIdentity: { singleUsbDevice: Boolean(pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid) },
     error, quality, queue: scheduler.stats(), keepAwake: keepAwake.status() };
@@ -481,9 +528,11 @@ const portalStatus = createPortalStatus({ wda, keepAwake: keepAwake.status });
 const statusEvents = createStatusEvents({ read: status });
 process.on("exit", () => portalStatus.stop());
 let commands;
-const commandLedger = () => commands ??= createCommands({ file: process.env.MIRROR_COMMANDS_FILE ?? path.join(ROOT, "vendor", opts.port === "7100" ? "commands.json" : `commands-${opts.port}.json`) });
+const commandLedger = () => commands ??= createCommands({ file: process.env.MIRROR_COMMANDS_FILE ?? path.join(ROOT, "vendor", opts.udid ? `commands-${canonicalUDID(opts.udid)}.json` : opts.port === "7100" ? "commands.json" : `commands-${opts.port}.json`) });
 
 async function dispatch(name, body, signal) {
+  // A command submitted before detach must never execute after reattachment.
+  signal = signal ? AbortSignal.any([signal, transport.signal]) : transport.signal;
   const started = performance.now();
   if (name === "status") return { status: 200, body: await statusEvents.refresh() };
   if (name === "presence") {
@@ -543,13 +592,20 @@ async function dispatch(name, body, signal) {
 }
 
 if (!MANUAL) {
-  forward(WDA_PORT, 8100);
-  forward(MJPEG_PORT, 9100);
+  if (pinnedUdid) {
+    await ensureDeviceLease();
+  }
+  WDA_PORT = await forward(WDA_PORT, 8100);
+  MJPEG_PORT = await forward(MJPEG_PORT, 9100);
+  WDA = `http://127.0.0.1:${WDA_PORT}`;
+  MJPEG = `http://127.0.0.1:${MJPEG_PORT}`;
 }
 startServer({ port: +opts.port, instanceId, html: fs.readFileSync(path.join(ROOT, "public/index.html"), "utf8"), mjpeg: MJPEG, dispatch,
   statusEvents,
-  onListening: () => {
-    const url = `http://localhost:${opts.port}`;
+  identity: opts.owner ? { owner: opts.owner, pinnedUdid } : {}, fallbackPort: opts.managed,
+  onListening: port => {
+    const url = `http://localhost:${port}`;
+    if (opts.managed) console.log(JSON.stringify({ event: "mirror-listening", owner: opts.owner, udid: pinnedUdid, port }));
     console.log(`\n  iPhone Mirror running at ${url}\n`);
     if (process.platform === "darwin" && !opts["no-open"]) spawn("open", [url], { stdio: "ignore" });
   },
@@ -557,11 +613,18 @@ startServer({ port: +opts.port, instanceId, html: fs.readFileSync(path.join(ROOT
 if (!MANUAL) {
   let observedDeviceID;
   usbMonitor = createUSBMonitor({ address: USBMUXD, list: listDevices, onChange(devices) {
+    devices = devices.map(d => ({ ...d, udid: canonicalUDID(d.udid) }));
     if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
     connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
     const device = devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
     if (!device) { keepAwake.stop("disconnected"); startupLock.reset(); launchLockedDevice = null; }
     if (observedDeviceID === (device?.id ?? null)) { statusEvents.invalidate(); return; }
+    if (observedDeviceID !== undefined) {
+      transport.abort(apiError("Device connection changed", 409, "device changed"));
+      transport = new AbortController();
+      for (const tunnel of tunnels) tunnel.destroy();
+      sid = null; guardedTouch = undefined; fastTouch = true; multiTouch = undefined;
+    }
     observedDeviceID = device?.id ?? null;
     statusEvents.invalidate({ device, pinnedUdid, observedAt: Date.now(), ok: false, locked: null,
       lifecycle: device ? "connecting" : "disconnected",

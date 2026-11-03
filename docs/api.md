@@ -4,7 +4,21 @@ The server uses Effect 4 `HttpRouter` / `NodeHttpServer` and strict Effect schem
 
 The Mac server listens only on loopback. Exact Host/Origin checks, Fetch Metadata, JSON-only mutations and an automatically embedded server-instance fingerprint protect browser access without an authentication UI. Trusted local CLI clients need no credentials. This is not a security boundary against malicious software running as the same OS user. The bundled iPhone runner now binds both HTTP and MJPEG to device loopback via `TEST_RUNNER_USE_IP`; USB forwarding remains available, direct Wi-Fi access does not. Screenshots and UI trees are not saved by the server.
 
-One phone UDID is pinned for the server lifetime. Disconnecting it does not select another phone. Native video uses an exact ID match when available, or the unambiguous correspondence between one connected USB phone and one iOS capture source. With multiple unmatched candidates, the app automatically uses the pinned phone’s WDA video stream. `/api/status` includes `service`, `apiVersion`, `instanceId`, device identity, queue and keep-awake status.
+One device UDID is pinned for the server lifetime. Disconnecting it does not select another phone or iPad. Native video uses an exact ID match when available, or the unambiguous correspondence between one connected USB device and one iOS capture source. With multiple unmatched candidates, the app automatically uses the pinned device's screenshot stream. `/api/status` includes `service`, `apiVersion`, `instanceId`, device identity, queue and keep-awake status.
+
+The Mac app runs one isolated server per mirrored device. The first available
+session uses port 7100; additional sessions receive an available port automatically.
+Managed `/api/health` responses include the selected `pinnedUdid` and launch `owner`.
+For CLI automation with explicit ports, run a separate process per UDID:
+
+```bash
+node mirror.mjs --udid <first-udid> --port 7100 --wda-port 8100 --mjpeg-port 9100 --no-open
+node mirror.mjs --udid <second-udid> --port 7101 --wda-port 8101 --mjpeg-port 9101 --no-open --device-kind iPad
+```
+
+Each device can have only one owning server. Queues, inspection observations,
+command receipts and keep-awake leases belong to that server's device. Detach
+cancels queued commands instead of replaying them after reconnection.
 
 ## Endpoints
 

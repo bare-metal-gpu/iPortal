@@ -9,8 +9,8 @@ import IOKit
 
 // BEGIN TESTABLE CAPTURE EXECUTOR
 // Cancellation is visible immediately, even while AVFoundation is blocked in
-// startRunning(). Every session shares this queue: replacement capture must not
-// configure the same USB device until the preceding session has stopped.
+// startRunning(). Each capture source has a queue: replacement capture must not
+// configure the same source until its predecessor stops, but other devices run independently.
 final class CaptureLifetime: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
@@ -26,11 +26,19 @@ final class CaptureLifetime: @unchecked Sendable {
 }
 
 enum CaptureSessionExecutor {
-    private static let queue = DispatchQueue(label: "iphone-portal.capture-sessions", qos: .userInitiated)
+    private static let lock = NSLock()
+    private static var queues: [String: DispatchQueue] = [:]
+    private static func queue(for key: String) -> DispatchQueue {
+        lock.lock(); defer { lock.unlock() }
+        if let queue = queues[key] { return queue }
+        let queue = DispatchQueue(label: "iphone-portal.capture-\(key)", qos: .userInitiated)
+        queues[key] = queue
+        return queue
+    }
 
-    static func start(_ lifetime: CaptureLifetime, operation: @escaping @Sendable () -> Bool,
+    static func start(_ lifetime: CaptureLifetime, key: String = "default", operation: @escaping @Sendable () -> Bool,
                       completion: @escaping @Sendable (Bool) -> Void) {
-        queue.async {
+        queue(for: key).async {
             guard !lifetime.isCancelled else { return }
             let started = operation()
             guard !lifetime.isCancelled else { return }
@@ -38,12 +46,39 @@ enum CaptureSessionExecutor {
         }
     }
 
-    static func stop(_ lifetime: CaptureLifetime, teardown: @escaping @Sendable () -> Void) {
+    static func stop(_ lifetime: CaptureLifetime, key: String = "default", teardown: @escaping @Sendable () -> Void) {
         lifetime.cancel()
-        queue.async(execute: teardown)
+        queue(for: key).async(execute: teardown)
     }
 }
 // END TESTABLE CAPTURE EXECUTOR
+
+@MainActor
+private enum CapturePermissions {
+    static var pending: Task<(Bool, Bool), Never>?
+    static func access(_ type: AVMediaType) async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: type) {
+        case .authorized: return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: type) { continuation.resume(returning: $0) }
+            }
+        default: return false
+        }
+    }
+    static func request() async -> (Bool, Bool) {
+        if let pending { return await pending.value }
+        let task = Task { @MainActor in
+            let video = await access(.video)
+            let audio = video ? await access(.audio) : false
+            return (video, audio)
+        }
+        pending = task
+        let result = await task.value
+        pending = nil
+        return result
+    }
+}
 
 // Retain one pixel buffer, not a history of frames. The capture queue never
 // performs image conversion; snapshots are made only on lifecycle transitions.
@@ -94,6 +129,10 @@ private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDe
 
 @MainActor
 final class PhoneCapture {
+    private static var claims: [String: UUID] = [:]
+    private let claimID = UUID()
+    private var sourceID: String?
+    var connectedDevices: () -> [PortalUSBDevice] = { [] }
     let session = AVCaptureSession()
     let layer: AVCaptureVideoPreviewLayer
     let audio = AVCaptureAudioPreviewOutput()
@@ -124,6 +163,8 @@ final class PhoneCapture {
     }
     private var deviceUDID = ""
     private var allowSingleDeviceFallback = false
+    private(set) var identityAmbiguous = false
+    func updateIdentityPolicy(singleUSB: Bool) { allowSingleDeviceFallback = singleUSB }
 
     init(audioVolume: Float = 1) {
         frames = FrameStore(lifetime: lifetime)
@@ -148,23 +189,16 @@ final class PhoneCapture {
         CMIOObjectSetPropertyData(CMIOObjectID(kCMIOObjectSystemObject), &prop, 0, nil, UInt32(MemoryLayout<UInt32>.size), &allow)
         portalTrace("capture-devices-enabled")
 
-        AVCaptureDevice.requestAccess(for: .video) { video in
-            portalTrace("capture-video-permission", ["allowed": video])
-            AVCaptureDevice.requestAccess(for: .audio) { audio in
-                portalTrace("capture-audio-permission", ["allowed": audio])
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        guard !self.stopped else { return }
-                        self.startupTimeoutAt = ProcessInfo.processInfo.systemUptime + 10
-                        guard video else { return self.finish(false) }
-                        let deadline = ProcessInfo.processInfo.systemUptime + timeout
-                        self.observe(AVCaptureDevice.wasConnectedNotification, object: nil) { [weak self] in
-                            self?.waitForDevice(until: deadline, withAudio: audio)
-                        }
-                        self.waitForDevice(until: deadline, withAudio: audio)
-                    }
-                }
+        Task { @MainActor [weak self] in
+            let (video, audio) = await CapturePermissions.request()
+            guard let self, !self.stopped else { return }
+            self.startupTimeoutAt = ProcessInfo.processInfo.systemUptime + 10
+            guard video else { return self.finish(false) }
+            let deadline = ProcessInfo.processInfo.systemUptime + timeout
+            self.observe(AVCaptureDevice.wasConnectedNotification, object: nil) { [weak self] in
+                self?.waitForDevice(until: deadline, withAudio: audio)
             }
+            self.waitForDevice(until: deadline, withAudio: audio)
         }
     }
 
@@ -178,7 +212,8 @@ final class PhoneCapture {
         let session = self.session
         let video = self.video
         let frames = self.frames
-        CaptureSessionExecutor.stop(lifetime) {
+        if let sourceID, Self.claims[sourceID] == claimID { Self.claims.removeValue(forKey: sourceID) }
+        CaptureSessionExecutor.stop(lifetime, key: sourceID ?? deviceUDID) {
             video.setSampleBufferDelegate(nil, queue: nil)
             session.stopRunning()
             session.beginConfiguration()
@@ -209,13 +244,13 @@ final class PhoneCapture {
         let type: AVCaptureDevice.DeviceType
         if #available(macOS 14, *) { type = .external } else { type = .externalUnknown }
         let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [type], mediaType: .muxed, position: .unspecified).devices
-        let normalize: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
-        let expected = normalize(deviceUDID)
-        if let exact = devices.first(where: { normalize($0.uniqueID) == expected }) { return exact }
-        // CoreMediaIO may expose a video UUID instead of the USB UDID. Single-source
-        // correspondence is unambiguous only with one USB phone and one iOS capture source.
-        let ios = devices.filter { $0.modelID == "iOS Device" }
-        return allowSingleDeviceFallback && ios.count == 1 ? ios[0] : nil
+        let connected = connectedDevices()
+        let identity = captureSourceID(for: deviceUDID, devices: connected, sources: devices.map {
+            CaptureSourceIdentity(id: $0.uniqueID, isIOS: $0.modelID == "iOS Device")
+        }, singleUSB: allowSingleDeviceFallback)
+        identityAmbiguous = identity == nil && connected.count > 1 && devices.contains { $0.modelID == "iOS Device" }
+        guard let identity, Self.claims[identity] == nil || Self.claims[identity] == claimID else { return nil }
+        return devices.first { $0.uniqueID == identity }
     }
 
     // The device appears a second or two after screen capture devices are allowed.
@@ -223,10 +258,13 @@ final class PhoneCapture {
         guard !stopped, !configuring else { return }
         discoveryRetry?.cancel()
         if let device = findDevice() {
+            sourceID = device.uniqueID
+            Self.claims[device.uniqueID] = claimID
             configuring = true
             portalTrace("capture-device-available")
             return run(device, withAudio: withAudio)
         }
+        if identityAmbiguous { return finish(false) }
         if ProcessInfo.processInfo.systemUptime > deadline { return finish(false) }
         let retry = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.waitForDevice(until: deadline, withAudio: withAudio) }
@@ -247,7 +285,7 @@ final class PhoneCapture {
         let audio = self.audio
         let frames = self.frames
         let frameQueue = self.frameQueue
-        CaptureSessionExecutor.start(lifetime, operation: {
+        CaptureSessionExecutor.start(lifetime, key: device.uniqueID, operation: {
             portalTrace("capture-configure")
             guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return false }
             session.beginConfiguration()

@@ -20,6 +20,16 @@ private func drain() {
 @main
 struct CaptureSessionTests {
     static func main() {
+        // One stalled phone must not block capture on a different device.
+        let slowEntered = DispatchSemaphore(value: 0), slowRelease = DispatchSemaphore(value: 0)
+        let otherReady = DispatchSemaphore(value: 0)
+        CaptureSessionExecutor.start(CaptureLifetime(), key: "slow-phone", operation: {
+            slowEntered.signal(); wait(slowRelease, "slow capture was not released"); return true
+        }, completion: { _ in })
+        wait(slowEntered, "slow capture did not begin")
+        CaptureSessionExecutor.start(CaptureLifetime(), key: "other-ipad", operation: { true }, completion: { _ in otherReady.signal() })
+        wait(otherReady, "a different device must not wait for stalled capture")
+        slowRelease.signal()
         // Replacement must wait for the old start AND a deliberately slow
         // teardown. Cancellation must suppress the old ready notification.
         let events = Events()

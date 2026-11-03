@@ -3,6 +3,39 @@ import Foundation
 @main
 struct LifecycleTests {
     static func main() {
+        final class Session {}
+        var registry = DeviceSessionRegistry<Session>()
+        let phoneSession = Session(), tabletSession = Session(), replacement = Session()
+        registry.insert(phoneSession, for: "00008140-00000000000000A1")
+        registry.insert(tabletSession, for: "00008140-00000000000000A2")
+        assert(registry.session(for: "0000814000000000000000a1") === phoneSession)
+        registry.insert(replacement, for: "0000814000000000000000A1")
+        registry.remove(phoneSession, for: "00008140-00000000000000A1")
+        assert(registry.values.count == 2 && registry.session(for: "0000814000000000000000A1") === replacement)
+        registry.remove(replacement, for: "0000814000000000000000A1")
+        assert(registry.values.count == 1 && registry.session(for: "00008140-00000000000000A2") === tabletSession)
+        assert(PortalDeviceKind(product: "iPad Pro") == .iPad)
+        assert(PortalDeviceKind(product: "iPhone 16 Pro") == .iPhone)
+        assert(PortalDeviceKind(product: "Apple Watch") == nil)
+        assert(PortalDeviceKind.iPad.initialRatio == 0.75)
+        assert(abs(PortalDeviceKind.iPad.radius(width: 800, height: 600) - 21) < 0.001)
+        let phone = PortalUSBDevice(serial: "phone", name: "Phone")
+        let tablet = PortalUSBDevice(serial: "tablet", name: "Tablet", kind: .iPad)
+        let source = CaptureSourceIdentity(id: "video-uuid", isIOS: true)
+        assert(captureSourceID(for: "tablet", devices: [phone, tablet], sources: [source], singleUSB: false) == nil)
+        assert(captureSourceID(for: "phone", devices: [phone, tablet], sources: [source], singleUSB: true) == nil,
+               "stale single-source status cannot select the other device")
+        assert(captureSourceID(for: "phone", devices: [phone], sources: [source], singleUSB: true) == source.id)
+        let duplicate = PortalUSBDevice(serial: "other", name: "Tablet")
+        assert(captureSourceID(for: "tablet", devices: [tablet, duplicate], sources: [source], singleUSB: false) == nil)
+        assert(captureSourceID(for: "tablet", devices: [tablet], sources: [source, source], singleUSB: false) == nil)
+        assert(captureSourceID(for: "tablet", devices: [tablet], sources: [CaptureSourceIdentity(id: "tablet", isIOS: true)], singleUSB: false) == "tablet")
+        var padList = USBDeviceListState()
+        padList.update([phone, tablet], at: 0)
+        padList.update([phone], at: 1)
+        assert(padList.devices.first(where: { $0.serial == "phone" })?.available == true)
+        assert(padList.devices.first(where: { $0.serial == "tablet" })?.kind == .iPad)
+        assert(padList.devices.first(where: { $0.serial == "tablet" })?.available == false)
         let serial = "0000814000000000000000A1"
         for request in [PortalWatcherRequest.mirror(serial), .login(true), .login(false)] {
             assert(PortalWatcherRequest(url: request.url) == request, "watcher commands must round-trip without losing the selected phone")
@@ -30,6 +63,7 @@ struct LifecycleTests {
         assert(phoneUDID(fromUSBSerial: "0000814000000000000000A1") == "00008140-00000000000000A1")
         assert(phoneUDID(fromUSBSerial: "00008140-00000000000000A1") == "00008140-00000000000000A1")
         assert(phoneUDID(fromUSBSerial: "0123456789012345678901234567890123456789") == "0123456789012345678901234567890123456789")
+        assert(phoneUDID(fromUSBSerial: String(repeating: "A", count: 40)) == String(repeating: "a", count: 40))
         var invitations = USBInvitationGate()
         assert(invitations.attached("phone", at: 0), "a new connection can offer mirroring")
         assert(!invitations.attached("phone", at: 0.1), "duplicate notifications must not reopen a dismissed popover")
