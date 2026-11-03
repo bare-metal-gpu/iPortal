@@ -1,6 +1,6 @@
-# iPhone Portal
-
-<img src="macos/icon.png" width="128" align="right" />
+<p align="center">
+  <img src="docs/banner.png" alt="iPhone Portal — a glass-engraved title and Dynamic Island symbol against a sparse star field" width="100%" />
+</p>
 
 **Getting this in the EU?**
 
