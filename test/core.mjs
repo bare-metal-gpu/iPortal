@@ -10,6 +10,7 @@ import { createScheduler, commandContext } from "../scheduler.mjs";
 import { createCommands } from "../commands.mjs";
 import { decodeRequest } from "../schemas.mjs";
 import { checkRequest } from "../server.mjs";
+import { pinchActions } from "../pinch.mjs";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function trackedClasses() {
@@ -286,9 +287,81 @@ test("Effect schemas reject malformed actions before device dispatch", async () 
     ["gesture", { points: [[0, 0, 5]], end: 50 }], ["gesture", { points: [[0, 0, 0], [0, 1, 100], [0, 1, 50]], end: 100 }],
     ["gesture", { points: [[0, 0, 0], [0, 1, 100]], end: 50 }], ["gesture", { points: [[0, 0, 0]], end: 10001 }],
     ["home", { typo: true }], ["tap", {}], ["tap", { id: "a", selector: { using: "id", value: "a" } }],
+    ...[0, -1, 5, NaN, Infinity, "2"].map(scale => ["pinch", { x: 0.5, y: 0.5, scale }]),
+    ["pinch", { x: 2, y: 0.5, scale: 2 }], ["pinch", { x: 0.5, scale: 2 }],
+    ["pinch", { x: 0.5, y: 0.5, scale: 2, durationMs: 0 }],
   ]) await assert.rejects(Effect.runPromise(decodeRequest(name, body)), undefined, name);
   assert.deepEqual(await Effect.runPromise(decodeRequest("gesture", { points: [[0, 0, 0], [1, 1, 100]], end: 100 })), { points: [[0, 0, 0], [1, 1, 100]], end: 100 });
   assert.equal((await Effect.runPromise(decodeRequest("gesture", { points: [[0, 0, 0], [1, 1, 42.5]], end: 43.75 }))).end, 43.75);
+  assert.equal((await Effect.runPromise(decodeRequest("pinch", { x: 0.5, y: 0.5, scale: 2 }))).scale, 2);
+});
+
+test("pinch paths are simultaneous, preserve scale and stay on screen in portrait and landscape", () => {
+  for (const [width, height] of [[390, 844], [844, 390]]) {
+    for (const scale of [0.25, 0.5, 1.5, 2, 4]) for (const x of [0, 0.5, 1]) for (const y of [0, 0.5, 1]) {
+      const fingers = pinchActions({ x, y, scale, durationMs: 333 }, { width, height });
+      assert.equal(new Set(fingers.map(f => f.id)).size, 2);
+      const [left, right] = fingers.map(f => f.actions);
+      assert.deepEqual(left.map(a => [a.type, a.duration]), right.map(a => [a.type, a.duration]));
+      assert.equal(left.reduce((total, a) => total + (a.duration ?? 0), 0), 373);
+      for (const finger of fingers) for (const point of finger.actions.filter(a => a.type === "pointerMove")) {
+        assert.ok(point.x >= 0 && point.x < width && point.y >= 0 && point.y < height);
+      }
+      const startDistance = right[0].x - left[0].x;
+      const endDistance = right.at(-2).x - left.at(-2).x;
+      assert.ok(Math.abs(endDistance / startDistance - scale) < 0.06);
+      assert.ok(Math.abs((right[0].x + left[0].x) - (right.at(-2).x + left.at(-2).x)) <= 1, "zoom must not also pan");
+    }
+  }
+});
+
+test("native pinch adds deltas once, cancels stale tails and cannot also scroll", async () => {
+  const h = browserHarness(); await h.settle(); h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const send = event => h.run(`nativePinch(${JSON.stringify({ x: 0.4, y: 0.6, delta: 0, ...event })}, videoEpoch, bridgeId)`);
+  const pinches = () => h.calls.filter(([url]) => url === "/api/pinch").map(([, opts]) => JSON.parse(opts.body));
+  h.run("nativeScroll({phase:'began',x:0.5,y:0.5,dx:0,dy:0.2}, videoEpoch, bridgeId)");
+  send({ phase: "began" }); send({ phase: "changed", delta: 0.25 }); send({ phase: "changed", delta: 0.25 });
+  await h.settle(); assert.equal(pinches().length, 0);
+  h.run("nativeScroll({phase:'ended',x:0.5,y:0.5,dx:0,dy:0.2}, videoEpoch, bridgeId)");
+  send({ phase: "ended" }); send({ phase: "ended" }); await h.settle();
+  assert.equal(pinches().length, 1); assert.equal(pinches()[0].scale, 1.5);
+  assert.equal(pinches()[0].x, 0.4); assert.equal(pinches()[0].y, 0.6);
+  assert.equal(h.calls.filter(([url]) => url === "/api/gesture").length, 0);
+  send({ phase: "began" }); send({ phase: "changed", delta: -0.5 }); send({ phase: "ended" }); await h.settle();
+  assert.equal(pinches().at(-1).scale, 0.5);
+  send({ phase: "began" }); send({ phase: "changed", delta: 1 }); send({ phase: "cancelled" }); send({ phase: "ended" });
+  send({ phase: "began" }); send({ phase: "changed", delta: 1 });
+  h.lifecycle("locked"); await h.run("poll()");
+  h.lifecycle("ready"); await h.run("poll()"); h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  send({ phase: "changed", delta: 1 }); send({ phase: "ended" }); await h.settle();
+  assert.equal(pinches().length, 2);
+  h.run("nativePinch({phase:'began',x:0.5,y:0.5,delta:1}, videoEpoch-1, bridgeId)");
+  send({ phase: "ended" }); await h.settle(); assert.equal(pinches().length, 2);
+  send({ phase: "began" }); send({ phase: "changed", delta: 2 });
+  send({ phase: "began" }); send({ phase: "changed", delta: 0.5 });
+  await h.run("api('home')"); send({ phase: "changed", delta: 1 }); send({ phase: "ended" }); await h.settle();
+  assert.equal(pinches().length, 3); assert.equal(pinches().at(-1).scale, 1.5, "early flush cannot replay or add its tail");
+});
+
+test("Command-scroll zooms once per burst, latches its trackpad mode and Safari scales are cumulative", async () => {
+  const h = browserHarness(); await h.settle(); h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const screen = h.element("screen");
+  const pinches = () => h.calls.filter(([url]) => url === "/api/pinch").map(([, opts]) => JSON.parse(opts.body));
+  const wheel = (deltaY, modifiers = {}) => screen.listeners.wheel({ clientX: 200, clientY: 400, deltaX: 0, deltaY, preventDefault() {}, ...modifiers });
+  wheel(-50, { metaKey: true }); wheel(-50, { metaKey: true }); await h.advance(80);
+  assert.equal(pinches().length, 1); assert.ok(pinches()[0].scale > 1);
+  wheel(100, { ctrlKey: true }); await h.advance(80);
+  assert.equal(pinches().length, 2); assert.ok(pinches()[1].scale < 1);
+  for (const event of [{phase:"began",zoom:true}, {phase:"changed",zoom:true,dy:-0.1}, {phase:"ended",zoom:false}]) {
+    h.run(`nativeScroll(${JSON.stringify({x:0.5,y:0.5,dx:0,dy:0,...event})}, videoEpoch, bridgeId)`);
+  }
+  await h.settle(); assert.equal(pinches().length, 3);
+  assert.equal(h.calls.filter(([url]) => url === "/api/gesture").length, 0);
+  const gesture = (name, scale) => screen.listeners[name]({ clientX: 200, clientY: 400, scale, preventDefault() {} });
+  gesture("gesturestart", 1); gesture("gesturechange", 1.5); gesture("gesturechange", 2); gesture("gestureend", 2);
+  await h.settle(); assert.equal(pinches().at(-1).scale, 2);
+  wheel(100); await h.advance(80);
+  assert.equal(h.calls.filter(([url]) => url === "/api/gesture").length, 1, "ordinary scrolling still swipes");
 });
 
 test("wheel bursts dispatch once and preserve click/long-press durations", async () => {

@@ -120,6 +120,7 @@
     <h2>Controls</h2>
     Click to tap, hold for a long press, drag to swipe.<br />
     Scroll wheel or trackpad scrolls.<br />
+    Pinch or <kbd>⌘</kbd>-scroll to zoom.<br />
     Just start typing to type. <kbd>⌘V</kbd> pastes your Mac clipboard.<br />
     <kbd>⌥H</kbd> Home, <kbd>⌥J</kbd> App Switcher.<br />
     Keep the iPhone unlocked and set Auto-Lock to Never while mirroring.
@@ -153,7 +154,7 @@ function setNativeVideoReady(ready, epoch, documentId) {
 }
 function invalidateInput() {
   inputEpoch++;
-  touch = null; wheel = null; typed = "";
+  touch = null; wheel = null; pinch = null; typed = "";
   clearTimeout(wheelTimer); wheelTimer = null;
 }
 function setLifecycle(next, identity = deviceUdid, instance = serverInstance) {
@@ -362,10 +363,10 @@ function toast(msg) {
 }
 
 let outbound = Promise.resolve();
-function api(name, body = {}, fromWheel = false) {
+function api(name, body = {}, fromGesture = false) {
   if (!controlOnly.has(name) && !canInteract()) return Promise.resolve();
   const epoch = inputEpoch;
-  if (!fromWheel) flushWheel(); // Earlier wheel movement stays ahead of later input.
+  if (!fromGesture) { flushWheel(); flushPinch(); } // Keep earlier gestures ahead of later input.
   if (name !== "type") flush(true); // keep typed text in order with other actions
   const requestId = crypto.randomUUID();
   pendingActions++;
@@ -464,7 +465,7 @@ function ripple(e) {
 let touch = null;
 
 screen.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0 || !canInteract()) return;
+  if (e.button !== 0 || !canInteract() || pinch) return;
   e.preventDefault();
   screen.setPointerCapture(e.pointerId);
   touch = { t0: performance.now(), last: 0, points: [[...rel(e), 0]] };
@@ -508,6 +509,10 @@ function flushWheel() {
   if (!wheel || wheel.sent) return;
   const pending = wheel;
   pending.sent = true;
+  if (pending.zoom) {
+    sendPinch(pending.x, pending.y, Math.exp(-pending.dy * 4));
+    return;
+  }
   const lim = (v) => Math.max(-0.5, Math.min(0.5, -v));
   const dx = lim(pending.dx), dy = lim(pending.dy);
   const fit = (v, d) => Math.max(0.05 - Math.min(0, d), Math.min(0.95 - Math.max(0, d), v));
@@ -520,9 +525,12 @@ function finishWheel() {
   flushWheel();
   wheel = null;
 }
-function accumulateWheel(x, y, dx, dy, phased = false) {
-  if (!canInteract() || touch) return;
-  wheel ??= { x, y, dx: 0, dy: 0, sent: false, phased };
+function accumulateWheel(x, y, dx, dy, phased = false, zoom = false) {
+  if (!canInteract() || touch || pinch) return;
+  // A modifier change starts a new mouse burst. For trackpads, keep the mode
+  // chosen at finger-down even if Command is released before finger-up.
+  if (!phased && wheel && wheel.zoom !== zoom) finishWheel();
+  wheel ??= { x, y, dx: 0, dy: 0, sent: false, phased, zoom };
   // A later click/typing action may already have flushed this gesture.
   if (!wheel.sent) { wheel.dx += dx; wheel.dy += dy; }
   if (!phased) {
@@ -531,7 +539,7 @@ function accumulateWheel(x, y, dx, dy, phased = false) {
   }
 }
 function nativeScroll(event, epoch, documentId) {
-  if (epoch !== videoEpoch || documentId !== bridgeId || !canInteract()) return;
+  if (epoch !== videoEpoch || documentId !== bridgeId || !canInteract() || pinch) return;
   if (event.phase === "momentum") return;
   if (event.phase === "cancelled") {
     clearTimeout(wheelTimer); wheelTimer = null; wheel = null;
@@ -541,20 +549,64 @@ function nativeScroll(event, epoch, documentId) {
     // A missing end/cancel must not replay an abandoned trackpad gesture.
     if (wheel?.phased) { clearTimeout(wheelTimer); wheelTimer = null; wheel = null; }
     else finishWheel();
-    wheel = { x: event.x, y: event.y, dx: 0, dy: 0, sent: false, phased: true };
+    wheel = { x: event.x, y: event.y, dx: 0, dy: 0, sent: false, phased: true, zoom: Boolean(event.zoom) };
   }
   // A changed/ended event without a begin belongs to a gesture interrupted by
   // lock/reconnect or one that began outside this window. Never replay its tail.
   if (event.phase !== "none" && !wheel?.phased) return;
-  accumulateWheel(event.x, event.y, event.dx, event.dy, event.phase !== "none");
+  accumulateWheel(event.x, event.y, event.dx, event.dy, event.phase !== "none", Boolean(event.zoom));
   if (event.phase === "ended") finishWheel();
 }
 screen.addEventListener("wheel", (e) => {
   e.preventDefault();
   const r = screen.getBoundingClientRect();
   const scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
-  accumulateWheel(...rel(e), e.deltaX * scale / r.width, e.deltaY * scale / r.height);
+  accumulateWheel(...rel(e), e.deltaX * scale / r.width, e.deltaY * scale / r.height, false, Boolean(e.metaKey || e.ctrlKey));
 }, { passive: false });
+
+// ---------- Pinch: one two-finger zoom per complete gesture ----------
+
+let pinch = null;
+function sendPinch(x, y, scale) {
+  scale = Math.max(0.25, Math.min(4, scale));
+  if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.02) return;
+  api("pinch", { x, y, scale, durationMs: 240 }, true);
+}
+function flushPinch() {
+  if (!pinch || pinch.sent) return;
+  pinch.sent = true;
+  sendPinch(pinch.x, pinch.y, pinch.scale);
+}
+function updatePinch(event, source) {
+  if (!canInteract()) return;
+  if (event.phase === "began") {
+    // macOS can switch from scrolling to magnifying without lifting fingers.
+    // Discard that unfinished scroll so pinching cannot also swipe the photo.
+    if (wheel?.phased) { clearTimeout(wheelTimer); wheelTimer = null; wheel = null; }
+    else finishWheel();
+    touch = null;
+    pinch = { x: event.x, y: event.y, scale: 1, sent: false, source };
+  }
+  if (!pinch || pinch.source !== source) return;
+  if (event.phase === "cancelled") { pinch = null; return; }
+  if (!pinch.sent) {
+    if (Number.isFinite(event.scale)) pinch.scale = event.scale; // Safari's cumulative scale
+    else if (Number.isFinite(event.delta)) pinch.scale += event.delta; // AppKit's incremental delta
+  }
+  if (event.phase === "ended") { flushPinch(); pinch = null; }
+}
+function nativePinch(event, epoch, documentId) {
+  if (epoch !== videoEpoch || documentId !== bridgeId) return;
+  updatePinch(event, "native");
+}
+// Safari uses gesture events; Chromium reports trackpad pinches as Ctrl-wheel.
+for (const [name, phase] of [["gesturestart", "began"], ["gesturechange", "changed"], ["gestureend", "ended"]]) {
+  screen.addEventListener(name, e => {
+    e.preventDefault();
+    const [x, y] = rel(e);
+    updatePinch({ phase, x, y, scale: e.scale }, "safari");
+  }, { passive: false });
+}
 
 // ---------- Keyboard ----------
 

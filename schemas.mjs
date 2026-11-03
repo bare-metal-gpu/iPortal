@@ -25,10 +25,14 @@ const metadata = {
   timeoutMs: optional(integer(1, 60000)), waitFor: optional(Wait),
 };
 const duration = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 10000 }));
+const coordinate = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
 const point = Schema.Tuple([Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
   Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })), duration]);
 const action = fields => Schema.Struct({ ...fields, ...metadata });
 export const ActionSchemas = {
+  pinch: action({ x: coordinate, y: coordinate,
+    scale: Schema.Finite.check(Schema.isBetween({ minimum: 0.25, maximum: 4 })),
+    durationMs: optional(integer(80, 1000)) }),
   gesture: action({ points: Schema.Array(point).check(Schema.isMinLength(1), Schema.isMaxLength(256)), end: duration })
     .check(filter(b => b.points[0][2] === 0 && b.end >= b.points.at(-1)[2] && b.points.every((p, i) => !i || p[2] >= b.points[i - 1][2]), "Gesture times must start at zero, increase monotonically, and end after the final point")),
   shortcut: action({ name: enumOf("switcher", "control", "notifications", "spotlight") }),

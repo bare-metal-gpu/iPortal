@@ -16,6 +16,7 @@ import { commandContext, createScheduler } from "./scheduler.mjs";
 import { createCommands } from "./commands.mjs";
 import { ActionSchemas } from "./schemas.mjs";
 import { errorResponse, startServer } from "./server.mjs";
+import { pinchActions, pinchPaths } from "./pinch.mjs";
 
 const instanceId = randomUUID();
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -238,11 +239,22 @@ const clamp = (v) => Math.min(1, Math.max(0, v));
 
 let fastTouch = true; // false once we learn this WDA build lacks /wda/mirror/touch (see scripts/wda-fast-touch.patch)
 let guardedTouch;
+let multiTouch;
 async function supportsGuardedTouch() {
   if (guardedTouch !== undefined) return guardedTouch;
-  try { guardedTouch = (await wda("GET", "/wda/mirror/capabilities")).value?.guardedTouch === true; }
-  catch (e) { if (e.code !== "unknown command") throw e; guardedTouch = false; }
+  try {
+    const capabilities = (await wda("GET", "/wda/mirror/capabilities")).value;
+    guardedTouch = capabilities?.guardedTouch === true;
+    multiTouch = guardedTouch && capabilities?.multiTouch === true;
+  }
+  catch (e) { if (e.code !== "unknown command") throw e; guardedTouch = false; multiTouch = false; }
   return guardedTouch;
+}
+async function supportsMultiTouch() { await supportsGuardedTouch(); return multiTouch === true; }
+async function legacyGestureGuards(guards) {
+  if ((await wda("GET", "/wda/locked")).value) throw apiError("Unlock your iPhone", 409, "device locked");
+  if (guards.expectedBundleId && (await wda("GET", "/wda/activeAppInfo")).value.bundleId !== guards.expectedBundleId) throw apiError("Foreground app changed", 409, "app changed");
+  if (guards.expectedOrientation && (await withSession(s => wda("GET", `/session/${s}/orientation`))).value !== guards.expectedOrientation) throw apiError("Screen orientation changed", 409, "orientation changed");
 }
 
 // points: [[x, y, ms], ...] with x/y as 0..1 fractions of the screen; end: ms when the finger lifts.
@@ -253,12 +265,10 @@ async function gesture(points, end, guards = {}) {
       return (await wda("POST", "/wda/mirror/touch", { points, end, ...guards })).value;
     } catch (e) {
       if (e.code !== "unknown command") throw e;
-      fastTouch = false; guardedTouch = false;
+      fastTouch = false; guardedTouch = false; multiTouch = false;
       // A helper replacement may have removed the guarded route. The fallback
       // must perform its own checks before dispatch rather than trust cached capability.
-      if ((await wda("GET", "/wda/locked")).value) throw apiError("Unlock your iPhone", 409, "device locked");
-      if (guards.expectedBundleId && (await wda("GET", "/wda/activeAppInfo")).value.bundleId !== guards.expectedBundleId) throw apiError("Foreground app changed", 409, "app changed");
-      if (guards.expectedOrientation && (await withSession(s => wda("GET", `/session/${s}/orientation`))).value !== guards.expectedOrientation) throw apiError("Screen orientation changed", 409, "orientation changed");
+      await legacyGestureGuards(guards);
       console.log("  WDA has no fast touch endpoint; rerun npm run setup for lower latency");
     }
   }
@@ -278,6 +288,22 @@ async function gesture(points, end, guards = {}) {
   });
 }
 
+async function pinch(body) {
+  if (body.scale === 1) return;
+  if (await supportsMultiTouch()) {
+    const guards = { expectedBundleId: body.expectedApp, expectedOrientation: body.expectedOrientation };
+    try { return (await wda("POST", "/wda/mirror/touch", { ...pinchPaths(body), ...guards })).value; }
+    catch (e) {
+      if (e.code !== "unknown command") throw e; // Never replay an uncertain gesture.
+      fastTouch = false; guardedTouch = false; multiTouch = false;
+      await legacyGestureGuards(guards);
+    }
+  }
+  return withSession(async s => (await wda("POST", `/session/${s}/actions`, {
+    actions: pinchActions(body, await screenSize(s)),
+  })).value);
+}
+
 const SHORTCUTS = {
   switcher: { points: [[0.5, 0.998, 0], [0.5, 0.75, 250], [0.5, 0.6, 500]], end: 1300 },
   control: { points: [[0.93, 0.004, 0], [0.93, 0.45, 250]], end: 300 },
@@ -286,6 +312,7 @@ const SHORTCUTS = {
 };
 
 const actions = {
+  pinch,
   gesture: body => gesture(body.points, body.end, { expectedBundleId: body.expectedApp, expectedOrientation: body.expectedOrientation }),
   shortcut: body => gesture(SHORTCUTS[body.name].points, SHORTCUTS[body.name].end, { expectedBundleId: body.expectedApp, expectedOrientation: body.expectedOrientation }),
   type: (body) => body.id || body.selector ? inspection.type(body) : withSession((s) => wda("POST", `/session/${s}/wda/keys`, { value: [...body.text] })),
@@ -447,7 +474,7 @@ async function dispatch(name, body, signal) {
       await commandContext.run({ signal, deadline, onDispatch, priority: 5, operationTimeoutMs: Math.max(8000, (body.end ?? 0) + 2000) }, async () => {
         await enqueue(async () => {
           timing.queueMs = Math.round(performance.now() - started);
-          const nativeGuards = ["gesture", "shortcut"].includes(name) && await supportsGuardedTouch();
+          const nativeGuards = name === "pinch" ? await supportsMultiTouch() : ["gesture", "shortcut"].includes(name) && await supportsGuardedTouch();
           if (!nativeGuards && !["unlock", "lock", "ensure", "quality"].includes(name)) {
             if ((await wda("GET", "/wda/locked")).value) throw apiError("Unlock your iPhone", 409, "device locked");
           }
@@ -464,7 +491,7 @@ async function dispatch(name, body, signal) {
           timing.actionMs = Math.round(performance.now() - actionStarted);
           if (result?.timing) timing.native = result.timing;
           executed = true;
-          if (["gesture", "shortcut", "tap", "type", "home", "button"].includes(name)) keepAwake.activity();
+          if (["gesture", "pinch", "shortcut", "tap", "type", "home", "button"].includes(name)) keepAwake.activity();
         });
         if (body.waitFor) await inspection.wait(body.waitFor, signal);
       });

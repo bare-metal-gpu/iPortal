@@ -31,8 +31,19 @@ try {
   const fast = await post("gesture", body);
   assert.equal(fast.timing.native.confirmationMs, 50);
 
+  const pinchBody = { x: 0.5, y: 0.5, scale: 2, expectedApp: fake.ui.app };
+  const beforePinch = fake.log.length;
+  assert.equal((await post("pinch", pinchBody)).timing.native.confirmationMs, 50);
+  const pinchCalls = fake.log.slice(beforePinch);
+  assert.deepEqual(pinchCalls.map(l => l.path), ["/wda/mirror/touch"], "two fingers share one guarded on-device dispatch");
+  assert.equal(pinchCalls[0].body.fingers.length, 2);
+  assert.equal(pinchCalls[0].body.expectedBundleId, fake.ui.app);
+  assert.equal((await post("pinch", { ...pinchBody, expectedApp: "wrong" })).status, 409);
+
   // Replacing a capable helper with an old helper must never bypass host guards.
   fake.ui.removeTouch = true;
+  assert.equal((await post("pinch", { ...pinchBody, expectedApp: "wrong" })).status, 409);
+  assert.equal(fake.log.filter(l => l.path?.endsWith("/actions")).length, 0);
   assert.equal((await post("gesture", { ...body, expectedApp: "wrong" })).status, 409);
   assert.equal(fake.log.filter(l => l.path?.endsWith("/actions")).length, 0);
   assert.equal((await post("gesture", body)).ok, true);

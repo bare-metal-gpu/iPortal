@@ -1,0 +1,65 @@
+--- a/WebDriverAgentLib/Commands/FBTouchActionCommands.m
++++ b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+@@ -52,6 +52,13 @@
+   return YES;
+ }
+ 
++static BOOL FBMirrorValidFingers(id fingers, id end)
++{
++  if (![fingers isKindOfClass:NSArray.class] || [fingers count] != 2) return NO;
++  for (id points in fingers) if (!FBMirrorValidPoints(points, end)) return NO;
++  return YES;
++}
++
+ static CGSize FBMirrorOrientedSize(CGSize size, NSInteger orientation)
+ {
+   CGFloat shortSide = MIN(size.width, size.height), longSide = MAX(size.width, size.height);
+@@ -134,12 +141,14 @@
+ {
+   NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+   NSArray *points = request.arguments[@"points"];
++  NSArray *fingers = request.arguments[@"fingers"];
+   NSNumber *end = request.arguments[@"end"];
+-  if (!FBMirrorValidPoints(points, end)) {
+-    return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"Expected 1..256 [x,y,ms] points: finite x/y in 0..1, time starts at zero and increases, end >= last time and <= 10000ms" traceback:nil]);
++  if ((points != nil) == (fingers != nil)
++      || (points && !FBMirrorValidPoints(points, end)) || (fingers && !FBMirrorValidFingers(fingers, end))) {
++    return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"Provide points or exactly two fingers, each with 1..256 [x,y,ms] points: finite x/y in 0..1, time starts at zero and increases, end >= last time and <= 10000ms" traceback:nil]);
+   }
+   for (NSString *key in request.arguments) {
+-    if (![@[@"points", @"end", @"expectedBundleId", @"expectedOrientation"] containsObject:key]) {
++    if (![@[@"points", @"fingers", @"end", @"expectedBundleId", @"expectedOrientation"] containsObject:key]) {
+       return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"Unknown touch argument" traceback:nil]);
+     }
+   }
+@@ -176,13 +185,15 @@
+   CGPoint (^at)(NSArray *) = ^CGPoint(NSArray *p) {
+     return CGPointMake([p[0] doubleValue] * (size.width - 1), [p[1] doubleValue] * (size.height - 1));
+   };
+-  XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:at(points[0]) offset:0];
+-  for (NSUInteger i = 1; i < points.count; i++) {
+-    [path moveToPoint:at(points[i]) atOffset:[points[i][2] doubleValue] / 1000];
+-  }
+-  [path liftUpAtOffset:MAX(0.04, end.doubleValue / 1000)];
+   XCSynthesizedEventRecord *event = [[XCSynthesizedEventRecord alloc] initWithName:@"mirror" displayID:screen.displayID interfaceOrientation:orientation];
+-  [event addPointerEventPath:path];
++  for (NSArray *finger in fingers ?: @[points]) {
++    XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:at(finger[0]) offset:0];
++    for (NSUInteger i = 1; i < finger.count; i++) {
++      [path moveToPoint:at(finger[i]) atOffset:[finger[i][2] doubleValue] / 1000];
++    }
++    [path liftUpAtOffset:MAX(0.04, end.doubleValue / 1000)];
++    [event addPointerEventPath:path];
++  }
+   // This is the last guard before dispatch. A user can still change UI after this check.
+   if (XCUIDevice.sharedDevice.fb_isScreenLocked) {
+     return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Device is locked" traceback:nil]);
+@@ -211,7 +222,7 @@
+ {
+   // Describes implemented routes, not a guarantee that a particular iOS runtime
+   // accepts their private APIs. Keepalive must return completed:true before use.
+-  return FBResponseWithObject(@{@"version":@3, @"guardedTouch":@YES, @"orientedTouch":@YES, @"validatedTouch":@YES, @"keepaliveEventStream":@YES});
++  return FBResponseWithObject(@{@"version":@4, @"guardedTouch":@YES, @"multiTouch":@YES, @"orientedTouch":@YES, @"validatedTouch":@YES, @"keepaliveEventStream":@YES});
+ }
+ 
+ + (id<FBResponsePayload>)handleMirrorKeepalive:(FBRouteRequest *)request

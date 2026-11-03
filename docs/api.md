@@ -87,7 +87,7 @@ Helpers advertising `guardedTouch` perform gesture lock/app/orientation checks t
 
 Successful input replies also include diagnostic `timing`: `queueMs` (admission and queue), `preflightMs`, `actionMs`, and `totalMs`, plus `native.guardMs`, `native.playbackMs` and `native.confirmationMs` when supplied by the helper. These use monotonic elapsed time. They are not input-to-display measurements and are not retained in receipts across a server restart.
 
-The UI and controls are unchanged. Ordinary mouse clicks shorter than 250 ms play a 40 ms tap; longer holds and drag paths retain their recorded durations. When idle, wheel input coalesces for 16 ms before its first dispatch, then accumulates one pending movement while playback runs. Each wheel segment lasts 120 ms. Continuous scrolling no longer resets a 90 ms silence timer or creates an unbounded command backlog. Drags still submit a complete path after mouse-up; true streaming touches are not enabled.
+Ordinary mouse clicks shorter than 250 ms play a 40 ms tap; longer holds and drag paths retain their recorded durations. Each scroll gesture plays one 120 ms swipe, as described below. Drags and pinches submit complete gestures after finger-up; true streaming touches are not enabled.
 
 ## Observations
 
@@ -171,3 +171,13 @@ Regression checks now include real CSS class tracking and pointer handlers, stal
 ### Scroll gestures
 
 The Mac app forwards explicit trackpad begin/change/end phases and consumes those events before WebKit can dispatch them a second time. A trackpad gesture sends one phone swipe when the fingers lift; inertial momentum is ignored. Mouse-wheel events without phases are grouped into a single burst ending after 80 ms of inactivity. Lock/reconnect cancels unfinished gestures. A cancelled or abandoned gesture cannot be replayed by a later input.
+
+### Pinch zoom
+
+Pinch the Mac trackpad over the mirror to zoom, or hold Command while scrolling with a mouse. Each completed pinch sends one simultaneous two-finger gesture to the iPhone, centered near the pointer. Ordinary scrolling still swipes. The browser also accepts Ctrl-wheel (Chromium trackpad pinch) and Safari gesture events. Magnification follows [AppKit's incremental magnification](https://developer.apple.com/documentation/appkit/nsevent/magnification). Lock, reconnect, cancellation and stale document callbacks discard unfinished pinches.
+
+Helpers advertising `multiTouch` accept exactly two validated `fingers` paths through `/wda/mirror/touch`. Both paths share one on-device lock/app/orientation check and one acknowledged event record with the existing 50 ms confirmation interval. Older helpers use [W3C touch actions](https://appium.github.io/appium-xcuitest-driver/12.3/guides/gestures/) with host guards; that fallback has a longer completion delay. Uncertain playback is never retried through the fallback.
+
+`POST /api/pinch` accepts `{ "x": 0.5, "y": 0.5, "scale": 2, "durationMs": 240 }` plus the normal action metadata. Coordinates are normalized in the current interface orientation; scale is 0.25–4 (below 1 zooms out, above 1 zooms in, 1 does nothing), and duration is 80–1000 ms, default 240. Both fingers start together, settle for 40 ms, then move for the requested duration and lift together. The center is clamped near screen edges so neither finger leaves the display. Dimensions are read for every pinch; lock/app/orientation checks, serialization and receipt recovery use the existing action pipeline. Supported behavior depends on the foreground app; Photos supports zooming an open photo.
+
+Live Photos checks on the connected iPhone verified zoom-in and zoom-out. The two fast-route requests completed in 587 ms and 580 ms, versus 4126 ms and 3922 ms through W3C actions; these are server command durations, not input-to-display measurements. Physical trackpad pinch and Command-scroll were also confirmed on the installed Mac app.

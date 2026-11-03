@@ -11,6 +11,9 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const patch = await readFile(join(root, 'scripts/wda-mirror-safety.patch'), 'utf8');
 const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n');
 const helpers = added.slice(added.indexOf('static BOOL FBMirrorFiniteNumber'), added.indexOf('static BOOL FBMirrorReadOrientation'));
+const multiPatch = await readFile(join(root, 'scripts/wda-multitouch.patch'), 'utf8');
+const multiAdded = multiPatch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n');
+const multiHelper = multiAdded.slice(multiAdded.indexOf('static BOOL FBMirrorValidFingers'), multiAdded.indexOf('\n}\n') + 3);
 assert(helpers.includes('FBMirrorValidPoints') && helpers.includes('FBMirrorOrientedSize'));
 const temporary = await mkdtemp(join(tmpdir(), 'iphone-mirror-native-'));
 try {
@@ -19,7 +22,13 @@ try {
 #import <CoreGraphics/CoreGraphics.h>
 #import <math.h>
 ${helpers}
+${multiHelper}
 int main(void) { @autoreleasepool {
+  NSArray *finger = @[@[@0.25,@0.5,@0], @[@0.1,@0.5,@240]];
+  NSCAssert(FBMirrorValidFingers(@[finger, finger], @240), @"two synchronized fingers");
+  for (id fingers in @[NSNull.null, @[], @[finger], @[finger, finger, finger], @[finger, @[]], @[finger, @[@[@2,@0,@0]]]])
+    NSCAssert(!FBMirrorValidFingers(fingers, @240), @"invalid fingers");
+  NSCAssert(!FBMirrorValidFingers(@[finger, finger], @239), @"both paths must end before finger-up");
   NSCAssert(FBMirrorValidPoints(@[@[@0,@1,@0]], @0), @"edge tap");
   NSCAssert(FBMirrorValidPoints(@[@[@0,@1,@0],@[@1,@0,@10000]], @10000), @"max duration");
   NSCAssert(FBMirrorValidPoints(@[@[@0.5,@0.5,@0],@[@0.5,@0.5,@0]], @40), @"equal offsets");
@@ -70,6 +79,11 @@ int main(void) { @autoreleasepool {
     await writeFile(source, upstream);
     execFileSync(installer, [checkout]);
     const installed = await readFile(source, 'utf8');
+    execFileSync(installer, [checkout]);
+    assert.equal(await readFile(source, 'utf8'), installed);
+    await writeFile(source, upstream);
+    for (const patch of ['wda-fast-touch.patch', 'wda-mirror-safety.patch', 'wda-mirror-latency.patch'])
+      execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts', patch)]);
     execFileSync(installer, [checkout]);
     assert.equal(await readFile(source, 'utf8'), installed);
     await writeFile(source, upstream);

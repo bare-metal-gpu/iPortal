@@ -143,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var retiredBridgeIDs: Set<String> = []
     var scrollMonitor: Any?
     var trackingScroll = false
+    var trackingMagnify = false
 
     func updateLoadingBorder() {
         let phase: String
@@ -172,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func freezeVideo() {
         trackingScroll = false
+        trackingMagnify = false
         if videoMode == "native" {
             loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
         }
@@ -733,39 +735,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: Actions
 
     func installScrollMonitor() {
-        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self, event.window === self.window else { return event }
                 let point = self.web.convert(event.locationInWindow, from: nil)
-                guard self.web.bounds.contains(point) || self.trackingScroll else { return event }
+                guard self.web.bounds.contains(point) || self.trackingScroll || self.trackingMagnify else { return event }
                 // Never also pass this event to WKWebView: its DOM wheel handler
                 // would turn the same physical gesture into a second swipe.
-                guard event.momentumPhase.isEmpty, !event.phase.contains(.mayBegin) else { return nil }
+                let magnifying = event.type == .magnify
+                guard !event.phase.contains(.mayBegin) else { return nil }
+                if !magnifying && (!event.momentumPhase.isEmpty || self.trackingMagnify) { return nil }
                 let phase: String
                 if event.phase.contains(.cancelled) { phase = "cancelled" }
                 else if event.phase.contains(.ended) { phase = "ended" }
                 else if event.phase.contains(.began) { phase = "began" }
                 else if event.phase.isEmpty { phase = "none" }
                 else { phase = "changed" }
-                if phase == "began" { self.trackingScroll = true }
-                if phase == "ended" || phase == "cancelled" { self.trackingScroll = false }
+                if magnifying {
+                    if phase == "began" { self.trackingMagnify = true; self.trackingScroll = false }
+                    if phase == "ended" || phase == "cancelled" { self.trackingMagnify = false }
+                } else {
+                    if phase == "began" { self.trackingScroll = true }
+                    if phase == "ended" || phase == "cancelled" { self.trackingScroll = false }
+                }
                 guard self.deviceLifecycle == "ready", !self.videoGate.bridgeID.isEmpty,
                       self.web.bounds.width > 0, self.web.bounds.height > 0 else { return nil }
                 let width = self.web.bounds.width, height = self.web.bounds.height
                 let y = self.web.isFlipped ? point.y : height - point.y
-                // AppKit scroll deltas point up/left; DOM deltas point down/right.
-                // Non-precise mouse events are lines rather than pixel distances.
-                let hasPixelDelta = event.hasPreciseScrollingDeltas && (event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0)
-                let scale: CGFloat = hasPixelDelta ? 1 : 16
-                let deltaX = hasPixelDelta ? event.scrollingDeltaX : event.deltaX
-                let deltaY = hasPixelDelta ? event.scrollingDeltaY : event.deltaY
-                let payload: [String: Any] = ["x": min(1, max(0, point.x / width)),
-                    "y": min(1, max(0, y / height)), "dx": -deltaX * scale / width,
-                    "dy": -deltaY * scale / height, "phase": phase]
+                var payload: [String: Any] = ["x": min(1, max(0, point.x / width)),
+                    "y": min(1, max(0, y / height)), "phase": phase]
+                if magnifying {
+                    payload["delta"] = event.magnification
+                } else {
+                    // AppKit deltas point up/left; DOM deltas point down/right.
+                    // Non-precise mouse events are lines rather than pixels.
+                    let hasPixelDelta = event.hasPreciseScrollingDeltas && (event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0)
+                    let scale: CGFloat = hasPixelDelta ? 1 : 16
+                    let deltaX = hasPixelDelta ? event.scrollingDeltaX : event.deltaX
+                    let deltaY = hasPixelDelta ? event.scrollingDeltaY : event.deltaY
+                    payload["dx"] = -deltaX * scale / width
+                    payload["dy"] = -deltaY * scale / height
+                    payload["zoom"] = event.modifierFlags.contains(.command)
+                }
                 let args: [Any] = [payload, self.videoGate.epoch, self.videoGate.bridgeID]
                 if let data = try? JSONSerialization.data(withJSONObject: args),
                    let json = String(data: data, encoding: .utf8) {
-                    self.js("nativeScroll(...\(json))")
+                    self.js("\(magnifying ? "nativePinch" : "nativeScroll")(...\(json))")
                 }
                 return nil
             }

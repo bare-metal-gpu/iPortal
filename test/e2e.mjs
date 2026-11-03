@@ -64,6 +64,27 @@ try {
   assert.equal(swipe[2].duration, 120);
   assert.equal(swipe[2].y, Math.round(0.2 * 843));
 
+  const pinchBody = { x: 0.5, y: 0.5, scale: 2, durationMs: 240, expectedApp: fake.ui.app, requestId: "pinch-once" };
+  const actionCount = () => fake.log.filter(l => l.path?.endsWith("/actions")).length;
+  const beforePinch = actionCount();
+  const pinchReply = await post("pinch", pinchBody);
+  assert.equal(pinchReply.outcome, "executed");
+  const pinch = fake.log.findLast(l => l.path?.endsWith("/actions")).body.actions;
+  assert.equal(pinch.length, 2);
+  assert.ok(pinch[0].actions.at(-2).x < pinch[0].actions[0].x);
+  assert.ok(pinch[1].actions.at(-2).x > pinch[1].actions[0].x);
+  assert.equal((await post("pinch", pinchBody)).requestId, pinchReply.requestId);
+  assert.equal(actionCount(), beforePinch + 1, "receipt recovery must not replay a pinch");
+  assert.equal((await post("pinch", { x: 0.5, y: 0.5, scale: 1 })).ok, true);
+  assert.equal(actionCount(), beforePinch + 1, "a neutral scale must not become a two-finger tap");
+  fake.ui.locked = true;
+  assert.equal((await post("pinch", { x: 0.5, y: 0.5, scale: 0.5 })).code, "device locked");
+  fake.ui.locked = false;
+  assert.equal((await post("pinch", { x: 0.5, y: 0.5, scale: 2, expectedApp: "wrong.app" })).code, "app changed");
+  assert.equal((await post("pinch", { x: 0.5, y: 0.5, scale: 2, expectedOrientation: "LANDSCAPE" })).code, "orientation changed");
+  assert.equal((await post("pinch", { x: 0.5, y: 0.5, scale: 0 })).code, "invalid argument");
+  assert.equal(actionCount(), beforePinch + 1, "invalid or stale pinch input cannot reach the phone");
+
   await post("type", { text: "hi\n" });
   assert.deepEqual(fake.log.findLast((l) => l.path === "/session/S1/wda/keys").body.value, ["h", "i", "\n"]);
 

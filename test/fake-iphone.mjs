@@ -10,7 +10,7 @@ const TINY_JPEG = Buffer.from(
   "base64",
 );
 
-export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, guardedTouch = false } = {}) {
+export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, guardedTouch = false, multiTouch = guardedTouch } = {}) {
   const log = [];
   const jpeg = frame ? fs.readFileSync(frame) : TINY_JPEG;
   const ui = {
@@ -25,6 +25,7 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
     orientation: "PORTRAIT",
     settings: {},
     guardedTouch,
+    multiTouch,
     removeTouch: false,
     devices: [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }],
   };
@@ -47,7 +48,7 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
       const fail = (error, message = error) => reply({ error, message }, {}, 404);
       if (req.url === "/status") return reply({ ready: true });
       if (req.url === "/session") return reply({ sessionId, capabilities: {} });
-      if (req.url === "/wda/mirror/capabilities") return reply({ version: ui.guardedTouch ? 3 : 1, guardedTouch: ui.guardedTouch });
+      if (req.url === "/wda/mirror/capabilities") return reply({ version: ui.multiTouch ? 4 : ui.guardedTouch ? 3 : 1, guardedTouch: ui.guardedTouch, multiTouch: ui.multiTouch });
       if (req.url === "/wda/mirror/touch") {
         if (!ui.guardedTouch || ui.removeTouch) return fail("unknown command");
         if (ui.locked || (json.expectedBundleId && json.expectedBundleId !== ui.app) || (json.expectedOrientation && json.expectedOrientation !== ui.orientation)) return fail("invalid element state");
