@@ -1,6 +1,29 @@
 import Cocoa
 import SwiftUI
 
+// The approved 20-point upper-half iPhone silhouette. Draw as a template so
+// AppKit supplies the correct menu-bar tint in light, dark and selected states.
+private func portalMenuIcon() -> NSImage {
+    let image = NSImage(size: NSSize(width: 20, height: 20), flipped: true) { _ in
+        NSColor.black.setStroke()
+        NSColor.black.setFill()
+        let outline = NSBezierPath()
+        outline.lineWidth = 1.65
+        outline.lineCapStyle = .round
+        outline.move(to: NSPoint(x: 2, y: 18))
+        outline.line(to: NSPoint(x: 2, y: 6.4))
+        outline.curve(to: NSPoint(x: 6.4, y: 2), controlPoint1: NSPoint(x: 2, y: 3.97), controlPoint2: NSPoint(x: 3.97, y: 2))
+        outline.line(to: NSPoint(x: 13.6, y: 2))
+        outline.curve(to: NSPoint(x: 18, y: 6.4), controlPoint1: NSPoint(x: 16.03, y: 2), controlPoint2: NSPoint(x: 18, y: 3.97))
+        outline.line(to: NSPoint(x: 18, y: 18))
+        outline.stroke()
+        NSBezierPath(roundedRect: NSRect(x: 6.4, y: 4.6, width: 7.2, height: 2.1), xRadius: 1.05, yRadius: 1.05).fill()
+        return true
+    }
+    image.isTemplate = true
+    return image
+}
+
 @MainActor
 private final class MenuBarState: ObservableObject {
     @Published var devices: [PortalDeviceRow] = []
@@ -142,8 +165,8 @@ final class MirrorMenuBar: NSObject {
     override init() {
         super.init()
         item.autosaveName = "iPhonePortal"
-        item.button?.image = NSImage(systemSymbolName: "iphone", accessibilityDescription: "iPhone Portal")
-        item.button?.image?.isTemplate = true
+        item.button?.image = portalMenuIcon()
+        item.button?.setAccessibilityLabel("iPhone Portal")
         item.button?.toolTip = "iPhone Portal"
         item.button?.target = self
         item.button?.action = #selector(clicked)
