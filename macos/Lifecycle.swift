@@ -1,4 +1,22 @@
 import Foundation
+import CoreGraphics
+
+// Intent changes immediately; a closing panel remains on screen during its fade.
+// An old completion must never hide a popup the user has since reopened.
+struct PopoverPresentation {
+    private(set) var visible = false
+    private var revision = 0
+    mutating func setVisible(_ visible: Bool) -> Int {
+        revision += 1
+        self.visible = visible
+        return revision
+    }
+    func canFinishClosing(_ revision: Int) -> Bool { !visible && self.revision == revision }
+}
+
+func dismissesPopoverMouseDown(at point: CGPoint, panel: CGRect, statusItem: CGRect?, menuTracking: Bool) -> Bool {
+    !menuTracking && !panel.contains(point) && !(statusItem?.contains(point) ?? false)
+}
 
 // Delivered directly to the containing app with NSWorkspace. No global URL
 // handler, shell interpolation, or durable command queue is needed.

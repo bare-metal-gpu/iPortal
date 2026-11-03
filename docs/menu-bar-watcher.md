@@ -37,6 +37,14 @@ including the top notch. It is positioned from the status button's screen
 coordinates, clamped to the display edge, and dismissed on outside click or
 Escape. Reduce Motion uses a static border.
 
+Clicking the status icon toggles the popup with a short fade. Outside-click
+monitors exclude both the popup and the status icon, so mouse-down cannot dismiss
+it before the icon's mouse-up action runs. Visibility follows the requested state;
+stale fade completions cannot hide a popup reopened by a rapid click. Reduce Motion
+uses immediate visibility changes. Regression tests cover icon/outside hit testing
+and interrupted transitions; the installed helper's rapid toggles were confirmed
+by the user.
+
 ## Building and diagnostics
 
 The Xcode project embeds and signs the helper as a target dependency. For stable

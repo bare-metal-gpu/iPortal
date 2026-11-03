@@ -3,6 +3,22 @@ import Foundation
 @main
 struct LifecycleTests {
     static func main() {
+        var popup = PopoverPresentation()
+        _ = popup.setVisible(true)
+        let firstClose = popup.setVisible(false)
+        assert(popup.canFinishClosing(firstClose))
+        _ = popup.setVisible(true)
+        assert(!popup.canFinishClosing(firstClose), "a rapid reopen cancels the old fade-out completion")
+        let secondClose = popup.setVisible(false)
+        assert(!popup.canFinishClosing(firstClose), "an older fade cannot finish a later close")
+        assert(popup.canFinishClosing(secondClose))
+        let panel = CGRect(x: 100, y: 300, width: 300, height: 118)
+        let statusItem = CGRect(x: 235, y: 420, width: 30, height: 24)
+        assert(!dismissesPopoverMouseDown(at: CGPoint(x: 250, y: 432), panel: panel, statusItem: statusItem, menuTracking: false),
+               "status-item mouse-down must leave the popup open for its mouse-up toggle")
+        assert(!dismissesPopoverMouseDown(at: CGPoint(x: 200, y: 350), panel: panel, statusItem: statusItem, menuTracking: false))
+        assert(!dismissesPopoverMouseDown(at: .zero, panel: panel, statusItem: statusItem, menuTracking: true))
+        assert(dismissesPopoverMouseDown(at: .zero, panel: panel, statusItem: statusItem, menuTracking: false))
         final class Session {}
         var registry = DeviceSessionRegistry<Session>()
         let phoneSession = Session(), tabletSession = Session(), replacement = Session()

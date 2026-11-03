@@ -5,7 +5,8 @@ import SwiftUI
 private final class MenuBarState: ObservableObject {
     @Published var devices: [PortalDeviceRow] = []
     @Published var loginEnabled = false
-    @Published var visible = false
+    @Published var presentation = PopoverPresentation()
+    var visible: Bool { presentation.visible }
     @Published var notchX: CGFloat = 150
     var height: CGFloat { CGFloat(max(1, devices.count) * 56 + 62) }
 }
@@ -195,9 +196,13 @@ final class MirrorMenuBar: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, deadline - ProcessInfo.processInfo.systemUptime), execute: work)
     }
 
+    private var statusItemFrame: NSRect? {
+        guard let button = item.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
     private func position() {
-        guard let button = item.button, let window = button.window, let screen = window.screen else { return }
-        let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+        guard let anchor = statusItemFrame, let screen = item.button?.window?.screen else { return }
         let width: CGFloat = 300, height = state.height
         let x = max(screen.frame.minX + 8, min(anchor.midX - width / 2, screen.frame.maxX - width - 8))
         state.notchX = anchor.midX - x
@@ -209,9 +214,12 @@ final class MirrorMenuBar: NSObject {
 
     func show(activate: Bool = false) {
         state.loginEnabled = isLoginEnabled()
-        state.visible = true
+        _ = state.presentation.setVisible(true)
+        panel.ignoresMouseEvents = false
+        if !panel.isVisible { panel.alphaValue = 0 }
         position()
         if activate { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }
+        animateAlpha(to: 1)
         guard localMonitor == nil else { return }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated {
@@ -219,26 +227,50 @@ final class MirrorMenuBar: NSObject {
                 if self.menuTracking { return event }
                 if event.type == .keyDown {
                     if event.keyCode == 53 { self.close(); return nil }
-                } else if event.window !== self.panel && event.window !== self.item.button?.window && event.window?.level != .popUpMenu {
-                    self.close()
+                } else if event.window?.level != .popUpMenu {
+                    self.dismissForOutsideClick()
                 }
                 return event
             }
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            DispatchQueue.main.async { if self?.menuTracking == false { self?.close() } }
+            // AppKit invokes both event monitors on the main thread. Handle the
+            // original mouse-down now; queuing it can race the button's mouse-up.
+            MainActor.assumeIsolated { self?.dismissForOutsideClick() }
         }
     }
 
-    func close() {
-        state.visible = false
-        panel.orderOut(nil)
+    private func dismissForOutsideClick() {
+        // Menu-extra events may arrive through the global monitor, even though
+        // the button belongs to this helper. Its own action owns the toggle.
+        if dismissesPopoverMouseDown(at: NSEvent.mouseLocation, panel: panel.frame,
+                                    statusItem: statusItemFrame, menuTracking: menuTracking) { close() }
+    }
+
+    private func animateAlpha(to alpha: CGFloat, completion: @escaping @MainActor () -> Void = {}) {
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = alpha
+        }, completionHandler: { MainActor.assumeIsolated { completion() } })
+    }
+
+    func close(animated: Bool = true) {
+        guard state.visible || !animated else { return }
+        let revision = state.presentation.setVisible(false)
+        panel.ignoresMouseEvents = true
         if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor); self.globalMonitor = nil }
+        if animated {
+            animateAlpha(to: 0) { [weak self] in
+                guard let self, self.state.presentation.canFinishClosing(revision) else { return }
+                self.panel.orderOut(nil)
+            }
+        } else { panel.alphaValue = 0; panel.orderOut(nil) }
     }
 
     func stop() {
-        close()
+        close(animated: false)
         expiry?.cancel()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         menuObservers.forEach(NotificationCenter.default.removeObserver)
@@ -247,12 +279,12 @@ final class MirrorMenuBar: NSObject {
 
     @objc private func clicked() {
         if NSApp.currentEvent?.type == .rightMouseUp { showSettings() }
-        else if panel.isVisible { close() }
+        else if state.visible { close() }
         else { show(activate: true) }
     }
 
     private func showSettings() {
-        close()
+        close(animated: false)
         let menu = NSMenu()
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
