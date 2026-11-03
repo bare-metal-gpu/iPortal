@@ -56,6 +56,10 @@ to replace the generated app bundle, rather than overwriting its executable in
 place. The app refreshes Service Management registration when its helper's code
 fingerprint changes.
 
+Background launches wait for watcher preparation to finish before exiting. This
+keeps the containing app alive through unregistering the old helper, waiting for
+its process to stop, and registering its replacement after an update.
+
 The installed main executable's `--watcher-status` argument prints the native
 helper registration status, legacy main-app login status and helper PIDs, then
 exits without launching a mirror. It does not request administrator access.

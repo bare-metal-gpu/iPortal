@@ -50,11 +50,11 @@ enum PortalWatcherService {
            let json = String(data: data, encoding: .utf8) { print(json) }
     }
 
-    static func prepare() {
+    static func prepare(completion: @escaping () -> Void = {}) {
         let legacy = SMAppService.mainApp.status
         let inherited = legacy == .enabled || legacy == .requiresApproval
         let desired = PortalWatcher.preferences.object(forKey: "WatcherOpenAtLogin") as? Bool ?? inherited
-        configure(enabled: desired, showDevicesAfterDisable: false, completion: {})
+        configure(enabled: desired, showDevicesAfterDisable: false, completion: completion)
     }
 
     static func setLoginEnabled(_ enabled: Bool, completion: @escaping () -> Void) {

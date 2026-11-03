@@ -1184,10 +1184,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
             }
         } else {
-            PortalWatcherService.prepare()
             if login || ProcessInfo.processInfo.arguments.contains("--background") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { NSApp.terminate(nil) }
-            } else { startMirroring() }
+                // Replacing the watcher waits for its previous process to exit.
+                // Keep this headless owner alive until registration completes.
+                PortalWatcherService.prepare { [weak self] in
+                    if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
+                }
+            } else { PortalWatcherService.prepare(); startMirroring() }
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.allSessions.forEach { $0.wake() } }
