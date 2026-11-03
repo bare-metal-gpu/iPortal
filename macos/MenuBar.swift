@@ -1,23 +1,37 @@
 import Cocoa
 import SwiftUI
 
-// The approved 20-point upper-half iPhone silhouette. Draw as a template so
-// AppKit supplies the correct menu-bar tint in light, dark and selected states.
+// Compact upper-half iPhone, with alpha shading for the rim and Dynamic Island.
+// A template lets AppKit adapt the same tonal detail to any menu-bar appearance.
 private func portalMenuIcon() -> NSImage {
     let image = NSImage(size: NSSize(width: 20, height: 20), flipped: true) { _ in
-        NSColor.black.setStroke()
-        NSColor.black.setFill()
-        let outline = NSBezierPath()
-        outline.lineWidth = 1.65
-        outline.lineCapStyle = .round
-        outline.move(to: NSPoint(x: 2, y: 18))
-        outline.line(to: NSPoint(x: 2, y: 6.4))
-        outline.curve(to: NSPoint(x: 6.4, y: 2), controlPoint1: NSPoint(x: 2, y: 3.97), controlPoint2: NSPoint(x: 3.97, y: 2))
-        outline.line(to: NSPoint(x: 13.6, y: 2))
-        outline.curve(to: NSPoint(x: 18, y: 6.4), controlPoint1: NSPoint(x: 16.03, y: 2), controlPoint2: NSPoint(x: 18, y: 3.97))
-        outline.line(to: NSPoint(x: 18, y: 18))
-        outline.stroke()
-        NSBezierPath(roundedRect: NSRect(x: 6.4, y: 4.6, width: 7.2, height: 2.1), xRadius: 1.05, yRadius: 1.05).fill()
+        guard let context = NSGraphicsContext.current?.cgContext else { return false }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setLineWidth(1.6)
+        context.setLineCap(.round)
+        let outline = CGMutablePath()
+        outline.move(to: CGPoint(x: 1.7, y: 17))
+        outline.addLine(to: CGPoint(x: 1.7, y: 6.1))
+        outline.addCurve(to: CGPoint(x: 4.8, y: 3), control1: CGPoint(x: 1.7, y: 4.39), control2: CGPoint(x: 3.09, y: 3))
+        outline.addLine(to: CGPoint(x: 15.2, y: 3))
+        outline.addCurve(to: CGPoint(x: 18.3, y: 6.1), control1: CGPoint(x: 16.91, y: 3), control2: CGPoint(x: 18.3, y: 4.39))
+        outline.addLine(to: CGPoint(x: 18.3, y: 17))
+        context.saveGState()
+        context.addPath(outline)
+        context.replacePathWithStrokedPath()
+        context.clip()
+        let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: [NSColor.black.cgColor, NSColor.black.withAlphaComponent(0.88).cgColor,
+                     NSColor.black.withAlphaComponent(0.58).cgColor] as CFArray,
+            locations: [0, 0.48, 1])!
+        context.drawLinearGradient(gradient, start: CGPoint(x: 1, y: 2.2), end: CGPoint(x: 4.6, y: 17.8),
+                                   options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        context.restoreGState()
+        context.setFillColor(NSColor.black.withAlphaComponent(0.65).cgColor)
+        context.addPath(CGPath(roundedRect: CGRect(x: 6.5, y: 5.5, width: 7, height: 1.8),
+                               cornerWidth: 0.9, cornerHeight: 0.9, transform: nil))
+        context.fillPath()
         return true
     }
     image.isTemplate = true
