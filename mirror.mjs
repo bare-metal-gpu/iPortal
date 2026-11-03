@@ -339,9 +339,9 @@ const actions = {
 // Launch failures that need the user to do something on the phone or Mac. Every launch reinstalls WDA, which
 // also hides the trust entry in Settings for a moment, so these back off instead of retrying right away.
 const WDA_PROBLEMS = [
-  [/not trusted|explicitly trusted/, "Trust the developer on your iPhone: Settings → General → VPN & Device Management → your Apple ID → Trust."],
-  [/cannot be installed on this device|doesn't include the currently selected device/, "This iPhone isn't set up yet. Keep it plugged in and run npm run setup."],
-  [/Developer Mode is (disabled|not enabled)|enable Developer Mode/i, "Turn on Developer Mode on your iPhone: Settings → Privacy & Security → Developer Mode."],
+  [/not trusted|explicitly trusted/, "On your iPhone: Settings → General → VPN & Device Management → your Apple ID → Trust."],
+  [/cannot be installed on this device|doesn't include the currently selected device/, "Finish setting up iPhone Portal on your Mac."],
+  [/Developer Mode is (disabled|not enabled)|enable Developer Mode/i, "On your iPhone, turn on Developer Mode in Settings → Privacy & Security."],
   [/device is locked|DeviceLocked/i, "Unlock your iPhone."],
 ];
 
@@ -399,9 +399,9 @@ async function status() {
   if (!MANUAL) {
     try {
       device = await pickDevice();
-      if (!device) error = "No iPhone found. Plug it in via USB and tap Trust.";
+      if (!device) error = "Connect your iPhone and tap Trust if asked.";
     } catch {
-      error = "Can't reach usbmuxd. Is this a Mac (or Linux with usbmuxd running)?";
+      error = "Reconnect your iPhone.";
     }
   }
   const up = (MANUAL || device) && (await wdaUp());
@@ -412,17 +412,17 @@ async function status() {
       if (typeof value !== "boolean") throw new Error("Invalid lock state");
       locked = value;
       if (locked) keepAwake.stop("locked");
-    } catch { error = "Waiting for iPhone state…"; }
+    } catch { error = "Waiting for your iPhone…"; }
   }
   if (up) wdaProblem = null;
   if (device && !up) {
     maybeStartWda(device.udid);
     error = wdaProblem
       ? wdaProblem
-      : wdaProcess
-      ? "Starting WebDriverAgent on your iPhone… (keep it unlocked)"
-      : "WebDriverAgent isn't running on the iPhone. Run scripts/setup-wda.sh once, then restart.";
-  } else if (MANUAL && !up) error = `Can't reach WebDriverAgent at ${WDA}`;
+      : wdaProcess || (fs.existsSync(path.join(ROOT, "vendor/build")) && !opts["no-autostart"])
+      ? null
+      : "Finish setting up iPhone Portal on your Mac.";
+  } else if (MANUAL && !up) error = "Reconnect your iPhone.";
   const lifecycle = !MANUAL && !device ? "disconnected" : locked === true ? "locked" : up && locked === false ? "ready" : "connecting";
   return { service: "iphone-mirror", apiVersion: 2, instanceId, ok: Boolean(up), device, pinnedUdid, locked, lifecycle,
     captureIdentity: { singleUsbDevice: Boolean(pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid) },
