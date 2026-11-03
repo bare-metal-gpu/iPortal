@@ -6,6 +6,7 @@
 import Cocoa
 import WebKit
 import CoreText
+import Carbon
 
 let barHeight: CGFloat = 30
 let barGap: CGFloat = 6
@@ -115,6 +116,14 @@ final class HoverView: NSView {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
+    var mirroringActive = false
+    var mirrorGeneration = 0
+    var menuBar: MirrorMenuBar?
+    let deviceNames = PhoneDeviceNames()
+    var invitations = USBInvitationGate()
+    var serverStopping = false
+    var requestedDeviceUDID: String?
+    var quitWatcherRequested = false
     var window: MirrorWindow!
     var phone: NSVisualEffectView!
     var videoHost: NSView!
@@ -171,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var trackingMagnify = false
 
     func updateLoadingBorder() {
+        guard mirroringActive else { return }
         let phase: String
         if deviceLifecycle == "locked" || deviceLifecycle == "disconnected" { phase = deviceLifecycle }
         else if deviceLifecycle != "ready" || captureLoading || waitingForVideo { phase = usbRecovery.active ? "reconnecting" : "connecting" }
@@ -293,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func checkVideoLifecycle() {
-        guard !terminating else { return }
+        guard mirroringActive, !terminating else { return }
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastServerEventAt > 12, now >= nextConnectionPollAt {
             nextConnectionPollAt = now + (deviceLifecycle == "ready" ? 1 : 0.5)
@@ -355,45 +365,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         updateLoadingBorder()
     }
 
+    private func normalizeSerial(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    var selectedSerial: String? {
+        let serials = usbMonitor?.connectedSerials ?? []
+        let preferred = captureUdid ?? UserDefaults.standard.string(forKey: "MirrorDeviceUDID")
+        if let preferred, let serial = serials.first(where: { normalizeSerial($0) == normalizeSerial(preferred) }) { return serial }
+        return serials.count == 1 ? serials.first : nil
+    }
+
+    func updateMenuBar() {
+        let devices = (usbMonitor?.connectedDevices ?? []).map {
+            PortalUSBDevice(serial: $0.serial, name: deviceNames.name(for: $0.serial, fallback: $0.name))
+        }
+        menuBar?.update(devices: devices, mirroring: mirroringActive)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let fontURL = Bundle.main.url(forResource: "InterVariable", withExtension: "ttf", subdirectory: "Fonts") {
             CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
         }
         buildMenu()
-        buildWindow()
-        installScrollMonitor()
-        usbMonitor = PhoneUSBMonitor { [weak self] serial, attached in
-            guard let self else { return }
-            let normalize: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
-            guard let udid = self.captureUdid else {
-                self.js("if (typeof poll === 'function') { void poll(); }")
-                return
-            }
-            guard normalize(serial) == normalize(udid) else { return }
-            let now = ProcessInfo.processInfo.systemUptime
-            portalTrace(attached ? "usb-attached" : "usb-detached")
-            if attached { self.usbRecovery.attached(at: now) }
-            if !attached {
-                self.freezeVideo()
-                if self.usbRecovery.detached(at: now) {
-                    self.videoGate.suspend(at: now)
-                } else {
-                    self.stopCapture()
-                    self.videoGate.disconnect(at: now)
-                }
-                self.updateLoadingBorder()
-            }
-            self.nativeCall("usbConnectionChanged", ready: attached)
-            self.nextConnectionPollAt = 0
+        menuBar = MirrorMenuBar()
+        deviceNames.onUpdate = { [weak self] in self?.updateMenuBar() }
+        menuBar?.onStart = { [weak self] serial in self?.startMirroring(serial: serial) }
+        menuBar?.onQuit = { [weak self] in
+            self?.quitWatcherRequested = true
+            NSApp.terminate(nil)
         }
-        ensureServer()
-        lifecycleTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkVideoLifecycle() }
+        usbMonitor = PhoneUSBMonitor { [weak self] serial, attached in self?.usbChanged(serial, attached: attached) }
+        for serial in usbMonitor?.connectedSerials ?? [] {
+            _ = invitations.attached(serial, at: ProcessInfo.processInfo.systemUptime)
         }
-        if let lifecycleTimer { RunLoop.main.add(lifecycleTimer, forMode: .common) }
+        updateMenuBar()
+        deviceNames.refresh(usbMonitor?.connectedSerials ?? [])
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let loginLaunch = event?.eventID == kAEOpenApplication &&
+            (event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem ||
+             event?.paramDescriptor(forKeyword: keyAELaunchedAsLogInItem)?.booleanValue == true)
+        if loginLaunch || ProcessInfo.processInfo.arguments.contains("--background") {
+            NSApp.setActivationPolicy(.accessory)
+            if usbMonitor?.connectedDevices.isEmpty == false { menuBar?.show() }
+        } else { startMirroring() }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.mirroringActive else { return }
                 self.suspendLifecycle()
                 self.stopCapture()
                 self.webNeedsReload = true
@@ -401,19 +419,151 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 self.ensureServer()
             }
         }
+    }
+
+    func usbChanged(_ serial: String, attached: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let invite: Bool
+        if attached { invite = invitations.attached(serial, at: now) }
+        else { invitations.detached(serial, at: now); invite = false }
+        updateMenuBar()
+        if attached { deviceNames.refresh(usbMonitor?.connectedSerials ?? []) }
+        guard mirroringActive else {
+            if invite { menuBar?.show() }
+            return
+        }
+        guard let udid = captureUdid else {
+            js("if (typeof poll === 'function') { void poll(); }")
+            return
+        }
+        guard normalizeSerial(serial) == normalizeSerial(udid) else { return }
+        portalTrace(attached ? "usb-attached" : "usb-detached")
+        if attached { usbRecovery.attached(at: now) }
+        if !attached {
+            freezeVideo()
+            if usbRecovery.detached(at: now) { videoGate.suspend(at: now) }
+            else { stopCapture(); videoGate.disconnect(at: now) }
+            updateLoadingBorder()
+        }
+        nativeCall("usbConnectionChanged", ready: attached)
+        nextConnectionPollAt = 0
+    }
+
+    func startMirroring(serial: String? = nil) {
+        menuBar?.close()
+        let target = serial.map { phoneUDID(fromUSBSerial: $0) }
+        if mirroringActive, let target, normalizeSerial(target) != normalizeSerial(captureUdid ?? requestedDeviceUDID ?? "") {
+            stopMirroring()
+        }
+        if mirroringActive {
+            window.deminiaturize(nil)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        mirroringActive = true
+        requestedDeviceUDID = target ?? selectedSerial.map { phoneUDID(fromUSBSerial: $0) }
+        mirrorGeneration += 1
+        videoGate = VideoReadinessGate()
+        usbRecovery = USBRecoveryWindow()
+        lastObservedLifecycle = "connecting"
+        retiredBridgeIDs.removeAll()
+        captureBudget = CaptureRetryBudget()
+        captureFailed = false
+        captureLoading = true
+        waitingForVideo = true
+        pageLoading = true
+        videoMode = "native"
+        webNeedsReload = true
+        webRetryAt = 0
+        webBackoff = 1
+        lastServerEventAt = 0
+        latestServerStatus = nil
+        serverInstance = nil
+        serverRetryAt = 0
+        serverBackoff = 1
+        serverFailures = 0
+        webHealthySince = 0
+        lastStatusAt = ProcessInfo.processInfo.systemUptime
+        serviceProbeInFlight = false
+        nextServiceProbeAt = 0
+        nextConnectionPollAt = 0
+        nextNativeAttemptAt = 0
+        NSApp.setActivationPolicy(.regular)
+        buildWindow()
+        installScrollMonitor()
+        updateLoadingBorder()
+        updateMenuBar()
+        ensureServer()
+        lifecycleTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkVideoLifecycle() }
+        }
+        if let lifecycleTimer { RunLoop.main.add(lifecycleTimer, forMode: .common) }
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func stopMirroring() {
+        guard mirroringActive else { return }
+        mirroringActive = false
+        mirrorGeneration += 1
+        statusEventTask?.cancel(); statusEventTask = nil
+        lifecycleTimer?.invalidate(); lifecycleTimer = nil
+        hideBar?.cancel(); hideBar = nil
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
+        stopCapture()
+        web?.stopLoading()
+        web?.navigationDelegate = nil
+        web?.configuration.userContentController.removeScriptMessageHandler(forName: "native")
+        window?.delegate = nil
+        window?.orderOut(nil)
+        window?.contentView = nil
+        web = nil; phone = nil; videoHost = nil; bar = nil; loadingBorder = nil; window = nil
+        barButtons.removeAll(); resizeHandles.removeAll()
+        loadingBorderState.snapshot = nil
+        latestServerStatus = nil
+        if let process = server, process.isRunning {
+            serverStopping = true
+            process.terminate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+        }
+        updateMenuBar()
+        if !terminating { NSApp.setActivationPolicy(.accessory) }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow, closing === window else { return }
+        stopMirroring()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        startMirroring()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let reason = event?.paramDescriptor(forKeyword: kAEQuitReason)
+            ?? event?.attributeDescriptor(forKeyword: kAEQuitReason)
+        // Dock Quit / Command-Q stop the mirror, while the menu-bar Quit stops
+        // everything. Always honour macOS logout, shutdown and restart requests.
+        guard keepsWatcherAfterQuit(explicitQuit: quitWatcherRequested,
+                                    systemReason: reason.map { UInt32(bitPattern: $0.int32Value) }) else { return .terminateNow }
+        menuBar?.close()
+        stopMirroring()
+        return .terminateCancel
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
-        statusEventTask?.cancel()
-        lifecycleTimer?.invalidate()
+        stopMirroring()
         usbMonitor?.stop()
-        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+        deviceNames.stop()
+        menuBar?.stop()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
-        capture?.stop()
         guard let p = server, p.isRunning else { return }
         p.terminate()
         let deadline = Date().addingTimeInterval(3)
@@ -587,6 +737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func resize() {
+        guard mirroringActive, window != nil else { return }
         phoneHeight = max(400, min(phoneHeight, maxPhoneHeight))
         let size = windowSize()
         var frame = window.frame
@@ -598,6 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func hover(_ inside: Bool) {
+        guard mirroringActive else { return }
         hideBar?.cancel()
         if inside { return fadeBar(to: 1) }
         let work = DispatchWorkItem { [weak self] in self?.fadeBar(to: 0) }
@@ -606,36 +758,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func fadeBar(to alpha: CGFloat) {
+        guard mirroringActive, let bar, let window else { return }
+        let generation = mirrorGeneration
         if alpha > 0 { bar.isHidden = false }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.18
             bar.animator().alphaValue = alpha
         }, completionHandler: { [weak self] in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                if alpha == 0 { self.bar.isHidden = true }
-                self.window.invalidateShadow()
+                guard let self, self.mirroringActive, self.mirrorGeneration == generation else { return }
+                if alpha == 0 { bar.isHidden = true }
+                window.invalidateShadow()
             }
         })
     }
 
     func setAspect(width w: CGFloat, height h: CGFloat) {
-        guard w > 0, h > 0 else { return }
+        guard mirroringActive, let window, w > 0, h > 0 else { return }
         if abs(w / h - ratio) > 0.002 { ratio = w / h; resize() }
         window.invalidateShadow()
     }
 
     // In MJPEG mode the page reports the stream's real size once the first frame arrives.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
+        guard mirroringActive, message.webView === web, message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
         if let lifecycle = d["lifecycle"] as? String, let udid = d["deviceUdid"] as? String,
            let epoch = d["videoEpoch"] as? Int, let bridgeID = d["bridgeId"] as? String,
            let instance = d["serverInstance"] as? String, let revision = d["statusRevision"] as? Int {
             guard !retiredBridgeIDs.contains(bridgeID), serverInstance == nil || serverInstance == instance else { return }
+            // An independently running server may be pinned to another phone.
+            // Never show or enable input on it after a different row was chosen.
+            if let requestedDeviceUDID, !udid.isEmpty, normalizeSerial(udid) != normalizeSerial(requestedDeviceUDID) {
+                loadingBorderState.detail = "This iPhone is unavailable"
+                return
+            }
             guard applyLifecycle(lifecycle, udid: udid, singleUsbDevice: d["singleUsbDevice"] as? Bool ?? false,
                                  usbDevicePresent: d["usbDevicePresent"] as? Bool ?? false,
                                  epoch: epoch, bridgeID: bridgeID, instance: instance, statusRevision: revision,
                                  connectionID: d["usbConnectionID"] as? String ?? "") else { return }
+            if !udid.isEmpty { UserDefaults.standard.set(udid, forKey: "MirrorDeviceUDID") }
             videoMode = d["videoMode"] as? String ?? "native"
         }
         guard d["bridgeId"] as? String == videoGate.bridgeID,
@@ -663,6 +824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: Video
 
     func startCapture(udid: String, singleUsbDevice: Bool) {
+        guard mirroringActive else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard captureBudget.beginAttempt(at: now) else {
             nextNativeAttemptAt = now + 30
@@ -719,6 +881,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // A new document must establish its own observation epoch before input can
     // resume. Old evaluateJavaScript calls cannot bless the replacement page.
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard mirroringActive, webView === web else { return }
         if !videoGate.bridgeID.isEmpty { retiredBridgeIDs.insert(videoGate.bridgeID) }
         suspendLifecycle()
         pageLoading = true
@@ -726,14 +889,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard mirroringActive, webView === web else { return }
         navigationFailed(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard mirroringActive, webView === web else { return }
         navigationFailed(error)
     }
 
     func navigationFailed(_ error: Error) {
+        guard mirroringActive else { return }
         guard (error as NSError).code != NSURLErrorCancelled, !terminating else { return }
         suspendLifecycle()
         webNeedsReload = true
@@ -742,6 +908,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard mirroringActive, webView === web else { return }
         suspendLifecycle()
         webNeedsReload = true
         webRetryAt = ProcessInfo.processInfo.systemUptime + webBackoff
@@ -749,6 +916,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard mirroringActive, webView === web else { return }
         webHealthySince = ProcessInfo.processInfo.systemUptime
         if let latestServerStatus { deliverServerStatus(latestServerStatus) }
         // poll() reports the document token and either starts capture or requests
@@ -764,10 +932,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func subscribeToStatus() {
-        guard statusEventTask == nil, !terminating else { return }
+        guard mirroringActive, statusEventTask == nil, !terminating else { return }
+        let generation = mirrorGeneration
         statusEventTask = Task { [weak self] in
             guard let self else { return }
-            while !Task.isCancelled && !self.terminating {
+            while !Task.isCancelled && !self.terminating && self.mirroringActive && self.mirrorGeneration == generation {
                 do {
                     var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/events")!)
                     request.timeoutInterval = 15
@@ -775,6 +944,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                     guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
+                        guard self.mirroringActive, self.mirrorGeneration == generation else { break }
                         guard line.hasPrefix("data: ") else { continue }
                         let json = String(line.dropFirst(6))
                         guard let data = json.data(using: .utf8),
@@ -786,7 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                         self.deliverServerStatus(json)
                     }
                 } catch { /* Native watchdog probes and reloads a replaced server. */ }
-                if Task.isCancelled || self.terminating { break }
+                if Task.isCancelled || self.terminating || !self.mirroringActive || self.mirrorGeneration != generation { break }
                 self.lastServerEventAt = 0
                 self.ensureServer()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -795,10 +965,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func ensureServer() {
-        guard !terminating, !serviceProbeInFlight else { return }
+        guard mirroringActive, !terminating, !serverStopping, !serviceProbeInFlight else { return }
+        let generation = mirrorGeneration
         serviceProbeInFlight = true
         probe { [weak self] up, instance in
-            guard let self else { return }
+            guard let self, self.mirroringActive, self.mirrorGeneration == generation else { return }
             self.serviceProbeInFlight = false
             guard !self.terminating else { return }
             let now = ProcessInfo.processInfo.systemUptime
@@ -844,11 +1015,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func startServer() {
-        guard !terminating, server?.isRunning != true else { return }
+        guard mirroringActive, !terminating, !serverStopping, server?.isRunning != true else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: nodePath)
         var arguments = ["mirror.mjs", "--no-open", "--port", "\(port)"]
-        if let captureUdid { arguments += ["--udid", captureUdid] }
+        if let target = requestedDeviceUDID ?? captureUdid { arguments += ["--udid", target] }
+        else if let serial = selectedSerial, let preferred = UserDefaults.standard.string(forKey: "MirrorDeviceUDID"), normalizeSerial(serial) == normalizeSerial(preferred) { arguments += ["--udid", preferred] }
         p.arguments = arguments
         p.currentDirectoryURL = URL(fileURLWithPath: repoPath)
         var env = ProcessInfo.processInfo.environment
@@ -866,10 +1038,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             DispatchQueue.main.async {
                 guard let self, self.server === process, !self.terminating else { return }
                 self.server = nil
+                self.serverStopping = false
+                guard self.mirroringActive else { return }
                 self.serverRetryAt = ProcessInfo.processInfo.systemUptime + self.serverBackoff
                 self.serverBackoff = min(30, self.serverBackoff * 2)
                 self.suspendLifecycle()
                 self.webNeedsReload = true
+                self.ensureServer()
             }
         }
         do {
@@ -888,7 +1063,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func installScrollMonitor() {
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
             MainActor.assumeIsolated {
-                guard let self, event.window === self.window else { return event }
+                guard let self, self.mirroringActive, event.window === self.window else { return event }
                 let point = self.web.convert(event.locationInWindow, from: nil)
                 guard self.web.bounds.contains(point) || self.trackingScroll || self.trackingMagnify else { return event }
                 // Never also pass this event to WKWebView: its DOM wheel handler
@@ -938,14 +1113,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
-    func js(_ code: String) { web.evaluateJavaScript(code, completionHandler: nil) }
+    func js(_ code: String) { guard mirroringActive else { return }; web?.evaluateJavaScript(code, completionHandler: nil) }
 
     @objc func home() { js("api('home')") }
     @objc func appSwitcher() { js("api('shortcut', { name: 'switcher' })") }
     @objc func spotlight() { js("api('shortcut', { name: 'spotlight' })") }
     @objc func notifications() { js("api('shortcut', { name: 'notifications' })") }
     @objc func controlCenter() { js("api('shortcut', { name: 'control' })") }
-    @objc func closeWindow() { window.close() }
+    @objc func closeWindow() { window?.close() }
     @objc func larger() { phoneHeight *= 1.1; resize() }
     @objc func smaller() { phoneHeight /= 1.1; resize() }
     @objc func actualSize() { phoneHeight = defaultPhoneHeight; resize() }
@@ -964,6 +1139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     @objc func toggleOnTop(_ item: NSMenuItem) {
+        guard let window else { return }
         window.level = window.level == .floating ? .normal : .floating
         item.state = window.level == .floating ? .on : .off
     }
@@ -1019,7 +1195,7 @@ struct IPhoneMirrorApp {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(.accessory)
         app.run()
     }
 }

@@ -1,5 +1,76 @@
 import Foundation
 
+// A nonzero quit reason is supplied by macOS for session-wide termination.
+// Keep ordinary Dock/menu quits lightweight without blocking logout or updates.
+func keepsWatcherAfterQuit(explicitQuit: Bool, systemReason: UInt32?) -> Bool {
+    !explicitQuit && (systemReason ?? 0) == 0
+}
+
+struct PortalUSBDevice: Identifiable, Equatable {
+    let serial: String
+    let name: String
+    var id: String { serial }
+}
+
+struct PortalDeviceRow: Identifiable, Equatable {
+    let serial: String
+    let name: String
+    var available: Bool
+    var id: String { serial }
+}
+
+// Keep the label through brief USB enumeration gaps, but disable its action
+// immediately. Repeated updates must not extend a genuinely removed row's life.
+struct USBDeviceListState {
+    private var rows: [String: PortalDeviceRow] = [:]
+    private var deadlines: [String: TimeInterval] = [:]
+    var devices: [PortalDeviceRow] { rows.values.sorted { $0.serial < $1.serial } }
+    var nextExpiry: TimeInterval? { deadlines.values.min() }
+
+    mutating func update(_ devices: [PortalUSBDevice], at now: TimeInterval) {
+        let connected = Set(devices.map(\.serial))
+        for device in devices {
+            rows[device.serial] = PortalDeviceRow(serial: device.serial, name: device.name, available: true)
+            deadlines.removeValue(forKey: device.serial)
+        }
+        for serial in rows.keys where !connected.contains(serial) {
+            rows[serial]?.available = false
+            if deadlines[serial] == nil { deadlines[serial] = now + 2 }
+        }
+        expire(at: now)
+    }
+
+    mutating func expire(at now: TimeInterval) {
+        for (serial, deadline) in deadlines where now >= deadline {
+            rows.removeValue(forKey: serial)
+            deadlines.removeValue(forKey: serial)
+        }
+    }
+}
+
+// Recent iPhones omit the UDID separator in IOKit; usbmuxd expects it.
+func phoneUDID(fromUSBSerial serial: String) -> String {
+    let compact = serial.replacingOccurrences(of: "-", with: "")
+    guard compact.count == 24, compact.allSatisfy({ $0.isHexDigit }) else { return serial }
+    return (String(compact.prefix(8)) + "-" + String(compact.suffix(16))).uppercased()
+}
+
+// A capture-mode USB bounce is one connection, not a second invitation. Closing
+// the mirror or dismissing the popover also does not re-prompt on that connection.
+struct USBInvitationGate {
+    private var announced = Set<String>()
+    private var detachedAt: [String: TimeInterval] = [:]
+
+    mutating func attached(_ serial: String, at now: TimeInterval) -> Bool {
+        if let detached = detachedAt.removeValue(forKey: serial), now - detached >= 2 {
+            announced.remove(serial)
+        }
+        return announced.insert(serial).inserted
+    }
+
+    mutating func detached(_ serial: String, at now: TimeInterval) { detachedAt[serial] = now }
+}
+
 // USB can re-enumerate while screen capture is starting. Only that recovery
 // window absorbs short removals; unplugging a working mirror is immediate.
 struct USBRecoveryWindow {

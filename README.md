@@ -31,6 +31,11 @@ npm run app     # installs "iPhone Portal" to ~/Applications
 
 Click to tap, drag to swipe, scroll to scroll, type to type.
 
+Closing the mirror, choosing Quit in the Dock, or pressing ⌘Q leaves the menu-bar
+watcher running. Connect an iPhone to see its name and press the trailing play
+button to mirror it. The menu-bar settings include **Open at Login** (starts only
+the watcher) and **Quit iPhone Portal** (stops everything).
+
 | Shortcut | Action |
 | --- | --- |
 | ⌘1 / ⌘2 / ⌘3 | Home / App Switcher / Spotlight |
