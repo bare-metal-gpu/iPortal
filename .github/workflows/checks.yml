@@ -1,0 +1,36 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.19.0"
+          cache: npm
+      # Only source is needed for patch compatibility tests; no phone/signing setup.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: appium/WebDriverAgent
+          ref: 3d6a4e03cdd673e540289c610f7e189f8ffea434
+          path: vendor/WebDriverAgent
+          persist-credentials: false
+          sparse-checkout: WebDriverAgentLib/Commands
+      - run: npm ci
+      - run: npm run verify

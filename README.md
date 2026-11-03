@@ -39,11 +39,11 @@ Keyboard shortcuts and audio controls apply to the focused window. Closing one
 mirror leaves the others running. The menu-bar settings include **Open at Login** (starts only
 the watcher) and **Quit iPhone Portal** (stops everything).
 
-| Shortcut | Action |
-| --- | --- |
+| Shortcut     | Action                          |
+| ------------ | ------------------------------- |
 | ⌘1 / ⌘2 / ⌘3 | Home / App Switcher / Spotlight |
-| ⌘V | Paste your Mac clipboard |
-| ⌘+ / ⌘− / ⌘0 | Window size |
+| ⌘V           | Paste your Mac clipboard        |
+| ⌘+ / ⌘− / ⌘0 | Window size                     |
 
 Prefer the browser? Run `npm start` and open http://localhost:7100.
 
@@ -65,3 +65,35 @@ The Mac app builds through `macos/iPhonePortal.xcodeproj` so Xcode compiles Bord
 The Effect 4 server supports validated input, selector-based taps and typing, UI/device inspection, screenshots, verified transitions, retry-safe command receipts, and timed keep-awake. Browser access checks and device selection happen automatically; no sign-in or pairing prompts are added. See [the API reference](docs/api.md) for routes, examples, errors, and real-phone verification.
 
 See [multi-device lifecycle and verification](docs/multi-device.md) for session isolation and current hardware test coverage.
+
+## Development
+
+Run `npm ci`, then `npm run verify` before submitting changes. This checks types,
+lint, formatting, and the regression suite. The full suite needs macOS and Xcode;
+it uses simulated phones and does not interact with a connected device.
+
+- `npm run typecheck` — TypeScript checks Node modules, scripts, tests, and browser code without emitting files.
+- `npm run lint` / `npm run lint:fix` — Oxlint checks correctness, imports, and promise handling; the fix command applies safe fixes only.
+- `npm run format` / `npm run format:check` — Oxfmt formats or verifies supported source, configuration, HTML/CSS, and documentation files.
+- `npm run check` — Run all three static checks.
+
+Tool versions are pinned in `package.json` and `package-lock.json`. Type checking
+uses `checkJs` and strict null checks with Node 22 types. Existing JavaScript
+parameters and caught errors remain permissive (`noImplicitAny` and
+`useUnknownInCatchVariables` are disabled); this is not a full strict-TypeScript
+migration. Add JSDoc at module boundaries and for mutable nullable state. Effect
+schemas validate API requests; existing endpoint checks validate upstream responses.
+
+Node and browser globals are checked separately. `public/mirror.js` stays a
+classic script so the Mac can call its named entry points; `web-assets.mjs`
+inlines it into the HTML response without an extra request or compilation step.
+Oxlint explicitly checks floating/misused promises, dependency cycles, duplicate
+imports, unused variables, equality, and unsafe evaluation. Intentional background
+work uses `void` after arranging its error handling. Console output and synchronous
+filesystem operations remain allowed for the CLI, installers, and receipt store.
+
+Oxfmt uses two spaces, double quotes, semicolons, trailing commas, and a 100-column
+target. Import order is preserved. Vendored code, build output, lockfiles, and
+native-language files are outside its formatting scope. See the
+[Oxlint configuration guide](https://oxc.rs/docs/guide/usage/linter/config) and
+[Oxfmt configuration guide](https://oxc.rs/docs/guide/usage/formatter/config).

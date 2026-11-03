@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "useUnknownInCatchVariables": false,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": [
+    "*.mjs",
+    "*.ts",
+    "*.mts",
+    "scripts/**/*.mjs",
+    "scripts/**/*.ts",
+    "test/**/*.mjs",
+    "test/**/*.ts"
+  ],
+  "exclude": ["node_modules", "vendor", "dist"]
+}

@@ -1,25 +1,42 @@
 #!/usr/bin/env node
 // Compile the exact pure Objective-C validators shipped in the WDA patch.
-import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdtemp, rm, mkdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import assert from "node:assert/strict";
+import { readFile, writeFile, mkdtemp, rm, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
-const root = fileURLToPath(new URL('../', import.meta.url));
-const patch = await readFile(join(root, 'scripts/wda-mirror-safety.patch'), 'utf8');
-const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n');
-const helpers = added.slice(added.indexOf('static BOOL FBMirrorFiniteNumber'), added.indexOf('static BOOL FBMirrorReadOrientation'));
-const multiPatch = await readFile(join(root, 'scripts/wda-multitouch.patch'), 'utf8');
-const multiAdded = multiPatch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n');
-const multiHelper = multiAdded.slice(multiAdded.indexOf('static BOOL FBMirrorValidFingers'), multiAdded.indexOf('\n}\n') + 3);
-const portal = await readFile(join(root, 'ios/FBPortalStatus.h'), 'utf8');
-const portalPhase = portal.slice(portal.indexOf('static NSString *FBPortalPhase'), portal.indexOf('\n}\n') + 3);
-assert(helpers.includes('FBMirrorValidPoints') && helpers.includes('FBMirrorOrientedSize'));
-const temporary = await mkdtemp(join(tmpdir(), 'iphone-mirror-native-'));
+const root = fileURLToPath(new URL("../", import.meta.url));
+const patch = await readFile(join(root, "scripts/wda-mirror-safety.patch"), "utf8");
+const added = patch
+  .split("\n")
+  .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+  .map((line) => line.slice(1))
+  .join("\n");
+const helpers = added.slice(
+  added.indexOf("static BOOL FBMirrorFiniteNumber"),
+  added.indexOf("static BOOL FBMirrorReadOrientation"),
+);
+const multiPatch = await readFile(join(root, "scripts/wda-multitouch.patch"), "utf8");
+const multiAdded = multiPatch
+  .split("\n")
+  .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+  .map((line) => line.slice(1))
+  .join("\n");
+const multiHelper = multiAdded.slice(
+  multiAdded.indexOf("static BOOL FBMirrorValidFingers"),
+  multiAdded.indexOf("\n}\n") + 3,
+);
+const portal = await readFile(join(root, "ios/FBPortalStatus.h"), "utf8");
+const portalPhase = portal.slice(
+  portal.indexOf("static NSString *FBPortalPhase"),
+  portal.indexOf("\n}\n") + 3,
+);
+assert(helpers.includes("FBMirrorValidPoints") && helpers.includes("FBMirrorOrientedSize"));
+const temporary = await mkdtemp(join(tmpdir(), "iphone-mirror-native-"));
 try {
-  if (process.platform === 'darwin') {
+  if (process.platform === "darwin") {
     const source = `#import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <math.h>
@@ -68,46 +85,74 @@ int main(void) { @autoreleasepool {
   }
   NSCAssert(FBMirrorOrientationName(0) == nil, @"unknown orientation");
 } return 0; }`;
-    const path = join(temporary, 'contract.m');
+    const path = join(temporary, "contract.m");
     await writeFile(path, source);
-    execFileSync('xcrun', ['clang', '-fobjc-arc', '-Werror', '-framework', 'Foundation', '-framework', 'CoreGraphics', path, '-o', join(temporary, 'contract')], { stdio: 'pipe' });
-    execFileSync(join(temporary, 'contract'), [], { stdio: 'inherit' });
-    console.log('Native validation and rotation contract passed.');
-  } else console.log('Native Objective-C compile requires macOS; skipped.');
+    execFileSync(
+      "xcrun",
+      [
+        "clang",
+        "-fobjc-arc",
+        "-Werror",
+        "-framework",
+        "Foundation",
+        "-framework",
+        "CoreGraphics",
+        path,
+        "-o",
+        join(temporary, "contract"),
+      ],
+      { stdio: "pipe" },
+    );
+    execFileSync(join(temporary, "contract"), [], { stdio: "inherit" });
+    console.log("Native validation and rotation contract passed.");
+  } else console.log("Native Objective-C compile requires macOS; skipped.");
 
   // Exercise fresh install, previous-helper upgrade and repeat installs against actual upstream source.
-  const vendor = join(root, 'vendor/WebDriverAgent');
+  const vendor = join(root, "vendor/WebDriverAgent");
   let upstream;
-  try { upstream = execFileSync('git', ['-C', vendor, 'show', 'HEAD:WebDriverAgentLib/Commands/FBTouchActionCommands.m'], { encoding:'utf8', stdio:['ignore','pipe','ignore'] }); }
-  catch { console.log('WDA checkout absent; patch installation check skipped.'); }
-  if (upstream) {
-    const checkout = join(temporary, 'wda');
-    await mkdir(join(checkout, 'WebDriverAgentLib/Commands'), { recursive:true });
-    execFileSync('git', ['init', '-q', checkout]);
-    const source = join(checkout, 'WebDriverAgentLib/Commands/FBTouchActionCommands.m');
-    const installer = join(root, 'scripts/apply-wda-patches.sh');
-    await writeFile(source, upstream);
-    execFileSync(installer, [checkout]);
-    const installed = await readFile(source, 'utf8');
-    execFileSync(installer, [checkout]);
-    assert.equal(await readFile(source, 'utf8'), installed);
-    await writeFile(source, upstream);
-    for (const patch of ['wda-fast-touch.patch', 'wda-mirror-safety.patch', 'wda-mirror-latency.patch'])
-      execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts', patch)]);
-    execFileSync(installer, [checkout]);
-    assert.equal(await readFile(source, 'utf8'), installed);
-    await writeFile(source, upstream);
-    execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts/wda-fast-touch.patch')]);
-    execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts/wda-mirror-safety.patch')]);
-    execFileSync(installer, [checkout]);
-    assert.equal(await readFile(source, 'utf8'), installed);
-    await writeFile(source, upstream);
-    execFileSync('git', ['-C', checkout, 'apply', join(root, 'scripts/wda-fast-touch.patch')]);
-    execFileSync(installer, [checkout]);
-    assert.equal(await readFile(source, 'utf8'), installed);
-    await writeFile(source, 'incompatible upstream');
-    assert.throws(() => execFileSync(installer, [checkout], {stdio:'pipe'}));
-    assert.equal(await readFile(source, 'utf8'), 'incompatible upstream');
-    console.log('Fresh/upgrade/repeated/incompatible WDA patch installation passed.');
+  try {
+    upstream = execFileSync(
+      "git",
+      ["-C", vendor, "show", "HEAD:WebDriverAgentLib/Commands/FBTouchActionCommands.m"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+  } catch {
+    console.log("WDA checkout absent; patch installation check skipped.");
   }
-} finally { await rm(temporary, {recursive:true, force:true}); }
+  if (upstream) {
+    const checkout = join(temporary, "wda");
+    await mkdir(join(checkout, "WebDriverAgentLib/Commands"), { recursive: true });
+    execFileSync("git", ["init", "-q", checkout]);
+    const source = join(checkout, "WebDriverAgentLib/Commands/FBTouchActionCommands.m");
+    const installer = join(root, "scripts/apply-wda-patches.sh");
+    await writeFile(source, upstream);
+    execFileSync(installer, [checkout]);
+    const installed = await readFile(source, "utf8");
+    execFileSync(installer, [checkout]);
+    assert.equal(await readFile(source, "utf8"), installed);
+    await writeFile(source, upstream);
+    for (const patch of [
+      "wda-fast-touch.patch",
+      "wda-mirror-safety.patch",
+      "wda-mirror-latency.patch",
+    ])
+      execFileSync("git", ["-C", checkout, "apply", join(root, "scripts", patch)]);
+    execFileSync(installer, [checkout]);
+    assert.equal(await readFile(source, "utf8"), installed);
+    await writeFile(source, upstream);
+    execFileSync("git", ["-C", checkout, "apply", join(root, "scripts/wda-fast-touch.patch")]);
+    execFileSync("git", ["-C", checkout, "apply", join(root, "scripts/wda-mirror-safety.patch")]);
+    execFileSync(installer, [checkout]);
+    assert.equal(await readFile(source, "utf8"), installed);
+    await writeFile(source, upstream);
+    execFileSync("git", ["-C", checkout, "apply", join(root, "scripts/wda-fast-touch.patch")]);
+    execFileSync(installer, [checkout]);
+    assert.equal(await readFile(source, "utf8"), installed);
+    await writeFile(source, "incompatible upstream");
+    assert.throws(() => execFileSync(installer, [checkout], { stdio: "pipe" }));
+    assert.equal(await readFile(source, "utf8"), "incompatible upstream");
+    console.log("Fresh/upgrade/repeated/incompatible WDA patch installation passed.");
+  }
+} finally {
+  await rm(temporary, { recursive: true, force: true });
+}

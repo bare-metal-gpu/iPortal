@@ -5,7 +5,6 @@
 import CoreMediaIO
 import Cocoa
 import CoreImage
-import IOKit
 
 // BEGIN TESTABLE CAPTURE EXECUTOR
 // Cancellation is visible immediately, even while AVFoundation is blocked in
@@ -241,9 +240,7 @@ final class PhoneCapture {
     }
 
     private func findDevice() -> AVCaptureDevice? {
-        let type: AVCaptureDevice.DeviceType
-        if #available(macOS 14, *) { type = .external } else { type = .externalUnknown }
-        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [type], mediaType: .muxed, position: .unspecified).devices
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.external], mediaType: .muxed, position: .unspecified).devices
         let connected = connectedDevices()
         let identity = captureSourceID(for: deviceUDID, devices: connected, sources: devices.map {
             CaptureSourceIdentity(id: $0.uniqueID, isIOS: $0.modelID == "iOS Device")

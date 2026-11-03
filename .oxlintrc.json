@@ -1,0 +1,53 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "oxc", "import", "promise"],
+  "categories": {
+    "correctness": "error"
+  },
+  "env": {
+    "node": true,
+    "es2024": true
+  },
+  "options": {
+    "typeAware": true,
+    "maxWarnings": 0,
+    "reportUnusedDisableDirectives": "error"
+  },
+  "rules": {
+    "eslint/no-unused-vars": [
+      "error",
+      {
+        "args": "none",
+        "caughtErrors": "none",
+        "ignoreRestSiblings": true
+      }
+    ],
+    "eslint/eqeqeq": [
+      "error",
+      "always",
+      {
+        "null": "ignore"
+      }
+    ],
+    "eslint/no-var": "error",
+    "eslint/prefer-const": "error",
+    "eslint/no-throw-literal": "error",
+    "eslint/no-eval": "error",
+    "eslint/no-implied-eval": "error",
+    "import/no-cycle": "error",
+    "import/no-duplicates": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error"
+  },
+  "ignorePatterns": ["node_modules/**", "vendor/**", "dist/**"],
+  "overrides": [
+    {
+      "files": ["public/*.js"],
+      "env": {
+        "node": false,
+        "browser": true
+      }
+    }
+  ]
+}

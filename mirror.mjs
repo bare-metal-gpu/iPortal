@@ -4,13 +4,15 @@
 // USB forwarding talks to usbmuxd directly, so no iproxy / libimobiledevice is needed.
 
 import net from "node:net";
+import { loadMirrorHTML } from "./web-assets.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { apiError, createInspection } from "./inspection.mjs";
+import { apiError } from "./errors.mjs";
+import { createInspection } from "./inspection.mjs";
 import { createKeepAwake } from "./keep-awake.mjs";
 import { createPortalStatus } from "./portal-status.mjs";
 import { randomUUID } from "node:crypto";
@@ -47,8 +49,11 @@ let WDA_PORT = +opts["wda-port"];
 let MJPEG_PORT = +opts["mjpeg-port"];
 const MANUAL = Boolean(opts.wda);
 let WDA = (opts.wda ?? `http://127.0.0.1:${WDA_PORT}`).replace(/\/$/, "");
-let MJPEG = MANUAL ? `${new URL(WDA).protocol}//${new URL(WDA).hostname}:${MJPEG_PORT}` : `http://127.0.0.1:${MJPEG_PORT}`;
-if (opts.managed && (!opts.udid || !opts.owner)) throw new Error("Managed sessions require a device and owner");
+let MJPEG = MANUAL
+  ? `${new URL(WDA).protocol}//${new URL(WDA).hostname}:${MJPEG_PORT}`
+  : `http://127.0.0.1:${MJPEG_PORT}`;
+if (opts.managed && (!opts.udid || !opts.owner))
+  throw new Error("Managed sessions require a device and owner");
 
 // ---------- usbmuxd ----------
 
@@ -57,11 +62,16 @@ const USBMUXD = process.env.USBMUXD_SOCKET_ADDRESS || "/var/run/usbmuxd";
 const plist = (d) =>
   `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>` +
   Object.entries(d)
-    .map(([k, v]) => `<key>${k}</key>` + (typeof v === "number" ? `<integer>${v}</integer>` : `<string>${v}</string>`))
+    .map(
+      ([k, v]) =>
+        `<key>${k}</key>` +
+        (typeof v === "number" ? `<integer>${v}</integer>` : `<string>${v}</string>`),
+    )
     .join("") +
   `</dict></plist>\n`;
 
-const plistValue = (xml, key) => xml.match(new RegExp(`<key>${key}</key>\\s*<(?:integer|string)>([^<]*)<`))?.[1];
+const plistValue = (xml, key) =>
+  xml.match(new RegExp(`<key>${key}</key>\\s*<(?:integer|string)>([^<]*)<`))?.[1];
 
 function muxOpen() {
   return new Promise((resolve, reject) => {
@@ -72,7 +82,9 @@ function muxOpen() {
 }
 
 function muxSend(sock, dict) {
-  const body = Buffer.from(plist({ ClientVersionString: "iphone-mirror", ProgName: "iphone-mirror", ...dict }));
+  const body = Buffer.from(
+    plist({ ClientVersionString: "iphone-mirror", ProgName: "iphone-mirror", ...dict }),
+  );
   const head = Buffer.alloc(16);
   head.writeUInt32LE(16 + body.length, 0);
   head.writeUInt32LE(1, 4); // protocol version: plist
@@ -129,33 +141,49 @@ let usbMonitor;
 let deviceLease;
 async function ensureDeviceLease() {
   if (pinnedUdid && !deviceLease) {
-    deviceLease = claimDevice(pinnedUdid).then(release => { process.on("exit", release); });
+    deviceLease = claimDevice(pinnedUdid).then((release) => {
+      process.on("exit", release);
+    });
   }
   await deviceLease;
 }
 async function pickDevice() {
-  const devices = (await (usbMonitor ? usbMonitor.devices() : listDevices())).map(d => ({ ...d, udid: canonicalUDID(d.udid) }));
-  connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
-  if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
+  const devices = (await (usbMonitor ? usbMonitor.devices() : listDevices())).map((d) => ({
+    ...d,
+    udid: canonicalUDID(d.udid),
+  }));
+  connectedUsbUdids = [
+    ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
+  ];
+  if (!pinnedUdid) pinnedUdid = devices.find((d) => d.connection === "USB")?.udid ?? null;
   await ensureDeviceLease();
-  return devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
+  return devices.find((d) => d.udid === pinnedUdid && d.connection === "USB") ?? null;
 }
 
 async function muxConnect(deviceId, port) {
   const sock = await muxOpen();
-  muxSend(sock, { MessageType: "Connect", DeviceID: deviceId, PortNumber: ((port & 0xff) << 8) | (port >> 8) });
+  muxSend(sock, {
+    MessageType: "Connect",
+    DeviceID: deviceId,
+    PortNumber: ((port & 0xff) << 8) | (port >> 8),
+  });
   const code = +plistValue(await muxRead(sock), "Number");
   if (code !== 0) {
     sock.destroy();
-    throw new Error(code === 3 ? `nothing is listening on device port ${port}` : `usbmuxd connect failed (${code})`);
+    throw new Error(
+      code === 3
+        ? `nothing is listening on device port ${port}`
+        : `usbmuxd connect failed (${code})`,
+    );
   }
   return sock;
 }
 
 // Local TCP port -> device port, like iproxy.
 const tunnels = new Set();
+/** @param {number} localPort @param {number} devicePort */
 async function forward(localPort, devicePort) {
-  const server = net.createServer(async (client) => {
+  const connect = async (client) => {
     client.pause();
     client.on("error", () => {});
     try {
@@ -163,7 +191,11 @@ async function forward(localPort, devicePort) {
       if (!dev) throw new Error("no device");
       const generation = transport.signal;
       const remote = await muxConnect(dev.id, devicePort);
-      if (generation.aborted || client.destroyed) { remote.destroy(); client.destroy(); return; }
+      if (generation.aborted || client.destroyed) {
+        remote.destroy();
+        client.destroy();
+        return;
+      }
       tunnels.add(client);
       client.on("close", () => tunnels.delete(client));
       remote.on("error", () => client.destroy());
@@ -173,12 +205,17 @@ async function forward(localPort, devicePort) {
     } catch {
       client.destroy();
     }
+  };
+  const server = net.createServer((client) => {
+    void connect(client);
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(localPort, "127.0.0.1", resolve);
+    server.listen(localPort, "127.0.0.1", () => resolve(undefined));
   });
-  return server.address().port;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing TCP listener address");
+  return address.port;
 }
 
 // ---------- WebDriverAgent ----------
@@ -187,25 +224,40 @@ async function wda(method, p, body, timeout = 8000, signal, headers = {}) {
   const context = commandContext.getStore();
   if (context?.signal) signal = signal ? AbortSignal.any([signal, context.signal]) : context.signal;
   signal?.throwIfAborted();
-  if (context?.deadline !== undefined) timeout = Math.min(timeout, Math.ceil(context.deadline - performance.now()));
+  if (context?.deadline !== undefined)
+    timeout = Math.min(timeout, Math.ceil(context.deadline - performance.now()));
   if (timeout <= 0) throw apiError("Command deadline expired", 408, "timeout");
-  if (method === "POST" && /\/(?:actions|click|value)$|\/wda\/(?:mirror\/touch|keys|homescreen|pressButton|lock|unlock|apps\/launch|siri\/activate)$/.test(p)) context?.onDispatch?.();
+  if (
+    method === "POST" &&
+    /\/(?:actions|click|value)$|\/wda\/(?:mirror\/touch|keys|homescreen|pressButton|lock|unlock|apps\/launch|siri\/activate)$/.test(
+      p,
+    )
+  )
+    context?.onDispatch?.();
   const res = await fetch(WDA + p, {
     method,
     headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(timeout)])
+      : AbortSignal.timeout(timeout),
   });
-  const json = await res.json();
+  // WDA response values vary by endpoint and are validated by their consumers.
+  const json = /** @type {{value: any, sessionId?: string}} */ (await res.json());
   if (!res.ok || json.value?.error) {
-    const err = new Error(json.value?.message || `WDA returned ${res.status}`);
-    err.code = json.value?.error;
+    const err = Object.assign(new Error(json.value?.message || `WDA returned ${res.status}`), {
+      code: json.value?.error,
+    });
     throw err;
   }
   return json;
 }
 
-const wdaUp = signal => wda("GET", "/status", null, 1500, signal, { "x-mirror-purpose": "lifecycle" }).then(() => true, () => false);
+const wdaUp = (signal) =>
+  wda("GET", "/status", null, 1500, signal, { "x-mirror-purpose": "lifecycle" }).then(
+    () => true,
+    () => false,
+  );
 
 const QUALITY = {
   low: { mjpegServerFramerate: 20, mjpegServerScreenshotQuality: 25, mjpegScalingFactor: 40 },
@@ -213,9 +265,11 @@ const QUALITY = {
   high: { mjpegServerFramerate: 60, mjpegServerScreenshotQuality: 70, mjpegScalingFactor: 75 },
 };
 let quality = "balanced";
+/** @type {string | null} */
 let sid = null;
 let transport = new AbortController();
 
+/** @param {{deadline?: number, signal?: AbortSignal}} [options] */
 async function session({ deadline, signal } = {}) {
   if (sid) return sid;
   const remaining = () => {
@@ -223,16 +277,38 @@ async function session({ deadline, signal } = {}) {
     if (ms <= 0) throw apiError("Wait timed out", 408, "timeout");
     return ms;
   };
-  const res = await wda("POST", "/session", {
-    capabilities: { alwaysMatch: { shouldWaitForQuiescence: false, shouldUseCompactResponses: false }, firstMatch: [{}] },
-  }, remaining(), signal);
+  const res = await wda(
+    "POST",
+    "/session",
+    {
+      capabilities: {
+        alwaysMatch: { shouldWaitForQuiescence: false, shouldUseCompactResponses: false },
+        firstMatch: [{}],
+      },
+    },
+    remaining(),
+    signal,
+  );
   sid = res.sessionId ?? res.value?.sessionId;
   if (!sid) throw apiError("WDA did not return a session ID", 502, "invalid response");
   try {
-    await wda("POST", `/session/${sid}/appium/settings`, {
-      settings: { ...QUALITY[quality], waitForIdleTimeout: 0, animationCoolOffTimeout: 0, snapshotMaxDepth: 50,
-        shouldUseCompactResponses: false, elementResponseAttributes: "type,label,rect,enabled,displayed,selected,attribute/name,attribute/value,attribute/accessible" },
-    }, remaining(), signal);
+    await wda(
+      "POST",
+      `/session/${sid}/appium/settings`,
+      {
+        settings: {
+          ...QUALITY[quality],
+          waitForIdleTimeout: 0,
+          animationCoolOffTimeout: 0,
+          snapshotMaxDepth: 50,
+          shouldUseCompactResponses: false,
+          elementResponseAttributes:
+            "type,label,rect,enabled,displayed,selected,attribute/name,attribute/value,attribute/accessible",
+        },
+      },
+      remaining(),
+      signal,
+    );
   } catch (e) {
     sid = null;
     throw e;
@@ -271,15 +347,31 @@ async function supportsGuardedTouch() {
     const capabilities = (await wda("GET", "/wda/mirror/capabilities")).value;
     guardedTouch = capabilities?.guardedTouch === true;
     multiTouch = guardedTouch && capabilities?.multiTouch === true;
+  } catch (e) {
+    if (e.code !== "unknown command") throw e;
+    guardedTouch = false;
+    multiTouch = false;
   }
-  catch (e) { if (e.code !== "unknown command") throw e; guardedTouch = false; multiTouch = false; }
   return guardedTouch;
 }
-async function supportsMultiTouch() { await supportsGuardedTouch(); return multiTouch === true; }
+async function supportsMultiTouch() {
+  await supportsGuardedTouch();
+  return multiTouch === true;
+}
 async function legacyGestureGuards(guards) {
-  if ((await wda("GET", "/wda/locked")).value) throw apiError("Unlock your iPhone", 409, "device locked");
-  if (guards.expectedBundleId && (await wda("GET", "/wda/activeAppInfo")).value.bundleId !== guards.expectedBundleId) throw apiError("Foreground app changed", 409, "app changed");
-  if (guards.expectedOrientation && (await withSession(s => wda("GET", `/session/${s}/orientation`))).value !== guards.expectedOrientation) throw apiError("Screen orientation changed", 409, "orientation changed");
+  if ((await wda("GET", "/wda/locked")).value)
+    throw apiError("Unlock your iPhone", 409, "device locked");
+  if (
+    guards.expectedBundleId &&
+    (await wda("GET", "/wda/activeAppInfo")).value.bundleId !== guards.expectedBundleId
+  )
+    throw apiError("Foreground app changed", 409, "app changed");
+  if (
+    guards.expectedOrientation &&
+    (await withSession((s) => wda("GET", `/session/${s}/orientation`))).value !==
+      guards.expectedOrientation
+  )
+    throw apiError("Screen orientation changed", 409, "orientation changed");
 }
 
 // points: [[x, y, ms], ...] with x/y as 0..1 fractions of the screen; end: ms when the finger lifts.
@@ -290,7 +382,9 @@ async function gesture(points, end, guards = {}) {
       return (await wda("POST", "/wda/mirror/touch", { points, end, ...guards })).value;
     } catch (e) {
       if (e.code !== "unknown command") throw e;
-      fastTouch = false; guardedTouch = false; multiTouch = false;
+      fastTouch = false;
+      guardedTouch = false;
+      multiTouch = false;
       // A helper replacement may have removed the guarded route. The fallback
       // must perform its own checks before dispatch rather than trust cached capability.
       await legacyGestureGuards(guards);
@@ -299,16 +393,29 @@ async function gesture(points, end, guards = {}) {
   }
   return withSession(async (s) => {
     const { width, height } = await screenSize(s);
-    const at = ([x, y]) => ({ x: Math.round(clamp(x) * (width - 1)), y: Math.round(clamp(y) * (height - 1)) });
-    const steps = [{ type: "pointerMove", duration: 0, ...at(points[0]) }, { type: "pointerDown", button: 0 }];
+    const at = ([x, y]) => ({
+      x: Math.round(clamp(x) * (width - 1)),
+      y: Math.round(clamp(y) * (height - 1)),
+    });
+    /** @type {{type: string, duration?: number, x?: number, y?: number, button?: number}[]} */
+    const steps = [
+      { type: "pointerMove", duration: 0, ...at(points[0]) },
+      { type: "pointerDown", button: 0 },
+    ];
     for (let i = 1; i < points.length; i++) {
-      steps.push({ type: "pointerMove", duration: Math.max(0, Math.round(points[i][2] - points[i - 1][2])), ...at(points[i]) });
+      steps.push({
+        type: "pointerMove",
+        duration: Math.max(0, Math.round(points[i][2] - points[i - 1][2])),
+        ...at(points[i]),
+      });
     }
     const hold = Math.round(end - points.at(-1)[2]);
     steps.push({ type: "pause", duration: Math.max(points.length === 1 ? 40 : 0, hold) });
     steps.push({ type: "pointerUp", button: 0 });
     await wda("POST", `/session/${s}/actions`, {
-      actions: [{ type: "pointer", id: "finger1", parameters: { pointerType: "touch" }, actions: steps }],
+      actions: [
+        { type: "pointer", id: "finger1", parameters: { pointerType: "touch" }, actions: steps },
+      ],
     });
   });
 }
@@ -316,37 +423,85 @@ async function gesture(points, end, guards = {}) {
 async function pinch(body) {
   if (body.scale === 1) return;
   if (await supportsMultiTouch()) {
-    const guards = { expectedBundleId: body.expectedApp, expectedOrientation: body.expectedOrientation };
-    try { return (await wda("POST", "/wda/mirror/touch", { ...pinchPaths(body), ...guards })).value; }
-    catch (e) {
+    const guards = {
+      expectedBundleId: body.expectedApp,
+      expectedOrientation: body.expectedOrientation,
+    };
+    try {
+      return (await wda("POST", "/wda/mirror/touch", { ...pinchPaths(body), ...guards })).value;
+    } catch (e) {
       if (e.code !== "unknown command") throw e; // Never replay an uncertain gesture.
-      fastTouch = false; guardedTouch = false; multiTouch = false;
+      fastTouch = false;
+      guardedTouch = false;
+      multiTouch = false;
       await legacyGestureGuards(guards);
     }
   }
-  return withSession(async s => (await wda("POST", `/session/${s}/actions`, {
-    actions: pinchActions(body, await screenSize(s)),
-  })).value);
+  return withSession(
+    async (s) =>
+      (
+        await wda("POST", `/session/${s}/actions`, {
+          actions: pinchActions(body, await screenSize(s)),
+        })
+      ).value,
+  );
 }
 
 const SHORTCUTS = {
-  switcher: { points: [[0.5, 0.998, 0], [0.5, 0.75, 250], [0.5, 0.6, 500]], end: 1300 },
-  control: { points: [[0.93, 0.004, 0], [0.93, 0.45, 250]], end: 300 },
-  notifications: { points: [[0.3, 0.004, 0], [0.3, 0.6, 250]], end: 300 },
-  spotlight: { points: [[0.5, 0.3, 0], [0.5, 0.55, 200]], end: 250 },
+  switcher: {
+    points: [
+      [0.5, 0.998, 0],
+      [0.5, 0.75, 250],
+      [0.5, 0.6, 500],
+    ],
+    end: 1300,
+  },
+  control: {
+    points: [
+      [0.93, 0.004, 0],
+      [0.93, 0.45, 250],
+    ],
+    end: 300,
+  },
+  notifications: {
+    points: [
+      [0.3, 0.004, 0],
+      [0.3, 0.6, 250],
+    ],
+    end: 300,
+  },
+  spotlight: {
+    points: [
+      [0.5, 0.3, 0],
+      [0.5, 0.55, 200],
+    ],
+    end: 250,
+  },
 };
 
 const actions = {
   pinch,
-  gesture: body => gesture(body.points, body.end, { expectedBundleId: body.expectedApp, expectedOrientation: body.expectedOrientation }),
-  shortcut: body => gesture(SHORTCUTS[body.name].points, SHORTCUTS[body.name].end, { expectedBundleId: body.expectedApp, expectedOrientation: body.expectedOrientation }),
-  type: (body) => body.id || body.selector ? inspection.type(body) : withSession((s) => wda("POST", `/session/${s}/wda/keys`, { value: [...body.text] })),
+  gesture: (body) =>
+    gesture(body.points, body.end, {
+      expectedBundleId: body.expectedApp,
+      expectedOrientation: body.expectedOrientation,
+    }),
+  shortcut: (body) =>
+    gesture(SHORTCUTS[body.name].points, SHORTCUTS[body.name].end, {
+      expectedBundleId: body.expectedApp,
+      expectedOrientation: body.expectedOrientation,
+    }),
+  type: (body) =>
+    body.id || body.selector
+      ? inspection.type(body)
+      : withSession((s) => wda("POST", `/session/${s}/wda/keys`, { value: [...body.text] })),
   tap: (body) => inspection.tap(body),
   home: () => wda("POST", "/wda/homescreen"),
   button: ({ name }) => withSession((s) => wda("POST", `/session/${s}/wda/pressButton`, { name })),
   lock: () => withSession((s) => wda("POST", `/session/${s}/wda/lock`)),
   unlock: () => withSession((s) => wda("POST", `/session/${s}/wda/unlock`)),
-  launch: ({ bundleId }) => withSession((s) => wda("POST", `/session/${s}/wda/apps/launch`, { bundleId })),
+  launch: ({ bundleId }) =>
+    withSession((s) => wda("POST", `/session/${s}/wda/apps/launch`, { bundleId })),
   siri: ({ text }) => withSession((s) => wda("POST", `/session/${s}/wda/siri/activate`, { text })),
   // Called when the UI opens, so opening the mirror turns automation back on if it was stopped.
   ensure: async () => {
@@ -355,7 +510,9 @@ const actions = {
   quality: ({ level }) => {
     if (!QUALITY[level]) throw new Error("unknown quality");
     quality = level;
-    return withSession((s) => wda("POST", `/session/${s}/appium/settings`, { settings: QUALITY[level] }));
+    return withSession((s) =>
+      wda("POST", `/session/${s}/appium/settings`, { settings: QUALITY[level] }),
+    );
   },
 };
 
@@ -363,32 +520,58 @@ const actions = {
 
 // Launch failures that need the user to do something on the phone or Mac. Every launch reinstalls WDA, which
 // also hides the trust entry in Settings for a moment, so these back off instead of retrying right away.
+/** @type {[RegExp, string][]} */
 const WDA_PROBLEMS = [
-  [/not trusted|explicitly trusted/, "On your iPhone: Settings → General → VPN & Device Management → your Apple ID → Trust."],
-  [/cannot be installed on this device|doesn't include the currently selected device/, "Finish setting up iPhone Portal on your Mac."],
-  [/Developer Mode is (disabled|not enabled)|enable Developer Mode/i, "On your iPhone, turn on Developer Mode in Settings → Privacy & Security."],
+  [
+    /not trusted|explicitly trusted/,
+    "On your iPhone: Settings → General → VPN & Device Management → your Apple ID → Trust.",
+  ],
+  [
+    /cannot be installed on this device|doesn't include the currently selected device/,
+    "Finish setting up iPhone Portal on your Mac.",
+  ],
+  [
+    /Developer Mode is (disabled|not enabled)|enable Developer Mode/i,
+    "On your iPhone, turn on Developer Mode in Settings → Privacy & Security.",
+  ],
   [/device is locked|DeviceLocked/i, "Unlock your iPhone."],
 ];
 
+/** @type {import("node:child_process").ChildProcessWithoutNullStreams | null} */
 let wdaProcess = null;
+/** @type {string | null} */
 let wdaProblem = null;
 let wdaRetryAt = 0;
+/** @type {string | null} */
 let launchLockedDevice = null;
 let shuttingDown = false;
 const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
 function maybeStartWda(udid, connectionID) {
-  if (shuttingDown || wdaProcess || Date.now() < wdaRetryAt || opts["no-autostart"] || MANUAL || process.platform !== "darwin") return;
+  if (
+    shuttingDown ||
+    wdaProcess ||
+    Date.now() < wdaRetryAt ||
+    opts["no-autostart"] ||
+    MANUAL ||
+    process.platform !== "darwin"
+  )
+    return;
   if (!fs.existsSync(path.join(ROOT, "vendor/build"))) return;
   const logPath = path.join(ROOT, `vendor/wda-${udid}.log`);
   const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   const log = fs.openSync(logPath, "a");
   console.log(`  starting WebDriverAgent on ${udid}`);
-  wdaProcess = spawn(process.execPath, [path.join(ROOT, "scripts/owned-process.mjs"), "bash", path.join(ROOT, "scripts/run-wda.sh")], {
-    env: { ...process.env, UDID: udid }, stdio: ["pipe", "pipe", "pipe"],
-  });
+  wdaProcess = spawn(
+    process.execPath,
+    [path.join(ROOT, "scripts/owned-process.mjs"), "bash", path.join(ROOT, "scripts/run-wda.sh")],
+    {
+      env: { ...process.env, UDID: udid },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
   wdaProcess.stdin.on("error", () => {});
   let tail = "";
-  const output = chunk => {
+  const output = (chunk) => {
     fs.writeSync(log, chunk);
     tail = (tail + chunk.toString()).slice(-4096);
     if (/device is locked|DeviceLocked/i.test(tail)) {
@@ -397,7 +580,11 @@ function maybeStartWda(udid, connectionID) {
       statusEvents.invalidate();
       tail = "";
     }
-    if (/ServerURLHere/.test(tail)) { launchLockedDevice = null; tail = ""; statusEvents.invalidate(); }
+    if (/ServerURLHere/.test(tail)) {
+      launchLockedDevice = null;
+      tail = "";
+      statusEvents.invalidate();
+    }
   };
   wdaProcess.stdout.on("data", output);
   wdaProcess.stderr.on("data", output);
@@ -405,7 +592,8 @@ function maybeStartWda(udid, connectionID) {
   wdaProcess.on("exit", () => {
     wdaProcess = null;
     sid = null;
-    guardedTouch = undefined; fastTouch = true;
+    guardedTouch = undefined;
+    fastTouch = true;
     const output = fs.readFileSync(logPath).subarray(from).toString();
     wdaProblem = WDA_PROBLEMS.find(([re]) => re.test(output))?.[1] ?? null;
     wdaRetryAt = Date.now() + (wdaProblem ? 30000 : 3000);
@@ -425,7 +613,11 @@ function restartWda() {
   if (wdaProcess) wdaProcess.kill();
   else {
     wdaRetryAt = 0;
-    void pickDevice().then(device => { if (device) maybeStartWda(device.udid, device.id); }).catch(() => {});
+    void pickDevice()
+      .then((device) => {
+        if (device) maybeStartWda(device.udid, device.id);
+      })
+      .catch(() => {});
   }
   // The next status poll sees WDA down and starts it again.
 }
@@ -442,7 +634,9 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   keepAwake.stop("mirror closed");
-  portalStatus.stop(); statusEvents.stop(); usbMonitor?.stop();
+  portalStatus.stop();
+  statusEvents.stop();
+  usbMonitor?.stop();
   transport.abort(apiError("Mirror closed", 409, "session closed"));
   for (const tunnel of tunnels) tunnel.destroy();
   // Retain the per-device lease until its owned test launcher has exited. A
@@ -453,7 +647,11 @@ async function shutdown() {
     const timer = setTimeout(() => child.kill("SIGKILL"), 2000);
     child.stdin.end();
     child.kill();
-    try { await exited; } finally { clearTimeout(timer); }
+    try {
+      await exited;
+    } finally {
+      clearTimeout(timer);
+    }
   }
   process.exit();
 }
@@ -464,7 +662,9 @@ process.on("SIGTERM", () => void shutdown());
 
 async function status(signal) {
   const observedAt = Date.now();
+  /** @type {Awaited<ReturnType<typeof pickDevice>>} */
   let device = null;
+  /** @type {string | null} */
   let error = null;
   if (!MANUAL) {
     try {
@@ -477,32 +677,68 @@ async function status(signal) {
   signal?.throwIfAborted();
   const up = (MANUAL || device) && (await wdaUp(signal));
   if (!MANUAL && process.platform === "darwin" && !up) startupLock.observe(device);
-  let locked = !MANUAL && device
-    ? launchLockedDevice === `${device.udid}:${device.id}` ? true : startupLock.value(device)
-    : null;
+  let locked =
+    !MANUAL && device
+      ? launchLockedDevice === `${device.udid}:${device.id}`
+        ? true
+        : startupLock.value(device)
+      : null;
   if (up) {
     try {
-      const value = (await wda("GET", "/wda/locked", null, 1200, signal, { "x-mirror-purpose": "lifecycle" })).value;
+      const value = (
+        await wda("GET", "/wda/locked", null, 1200, signal, { "x-mirror-purpose": "lifecycle" })
+      ).value;
       if (typeof value !== "boolean") throw new Error("Invalid lock state");
       locked = value;
       if (locked) keepAwake.stop("locked");
-    } catch { error = "Waiting for your iPhone…"; }
+    } catch {
+      error = "Waiting for your iPhone…";
+    }
   }
   signal?.throwIfAborted();
-  if (up) { wdaProblem = null; launchLockedDevice = null; startupLock.reset(); }
+  if (up) {
+    wdaProblem = null;
+    launchLockedDevice = null;
+    startupLock.reset();
+  }
   if (device && !up) {
     maybeStartWda(device.udid, device.id);
     error = wdaProblem
       ? wdaProblem
       : wdaProcess || (fs.existsSync(path.join(ROOT, "vendor/build")) && !opts["no-autostart"])
-      ? null
-      : "Finish setting up iPhone Portal on your Mac.";
+        ? null
+        : "Finish setting up iPhone Portal on your Mac.";
   } else if (MANUAL && !up) error = "Reconnect your iPhone.";
-  const lifecycle = !MANUAL && !device ? "disconnected" : locked === true ? "locked" : up && locked === false ? "ready" : "connecting";
-  if (opts["device-kind"] === "iPad" && error) error = error.replaceAll(/iPhone(?! Portal)/g, "iPad");
-  return { service: "iphone-mirror", apiVersion: 2, instanceId, observedAt, ok: Boolean(up), device, pinnedUdid, locked, lifecycle,
-    captureIdentity: { singleUsbDevice: Boolean(pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid) },
-    error, quality, queue: scheduler.stats(), keepAwake: keepAwake.status() };
+  const lifecycle =
+    !MANUAL && !device
+      ? "disconnected"
+      : locked === true
+        ? "locked"
+        : up && locked === false
+          ? "ready"
+          : "connecting";
+  if (opts["device-kind"] === "iPad" && error)
+    error = error.replaceAll(/iPhone(?! Portal)/g, "iPad");
+  return {
+    service: "iphone-mirror",
+    apiVersion: 2,
+    instanceId,
+    observedAt,
+    ok: Boolean(up),
+    device,
+    pinnedUdid,
+    locked,
+    lifecycle,
+    captureIdentity: {
+      singleUsbDevice: Boolean(
+        pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid,
+      ),
+    },
+    error,
+    quality,
+    queue: scheduler.stats(),
+    keepAwake: keepAwake.status(),
+  };
 }
 
 // ---------- CLI ----------
@@ -521,14 +757,26 @@ if (positionals[0] === "devices") {
   process.exit(0);
 }
 
-
 const inspection = createInspection({ wda, withSession, enqueue });
-const keepAwake = createKeepAwake({ wda, withSession, enqueue: fn => scheduler.maintenance(fn) });
+const keepAwake = createKeepAwake({ wda, withSession, enqueue: (fn) => scheduler.maintenance(fn) });
 const portalStatus = createPortalStatus({ wda, keepAwake: keepAwake.status });
 const statusEvents = createStatusEvents({ read: status });
 process.on("exit", () => portalStatus.stop());
 let commands;
-const commandLedger = () => commands ??= createCommands({ file: process.env.MIRROR_COMMANDS_FILE ?? path.join(ROOT, "vendor", opts.udid ? `commands-${canonicalUDID(opts.udid)}.json` : opts.port === "7100" ? "commands.json" : `commands-${opts.port}.json`) });
+const commandLedger = () =>
+  (commands ??= createCommands({
+    file:
+      process.env.MIRROR_COMMANDS_FILE ??
+      path.join(
+        ROOT,
+        "vendor",
+        opts.udid
+          ? `commands-${canonicalUDID(opts.udid)}.json`
+          : opts.port === "7100"
+            ? "commands.json"
+            : `commands-${opts.port}.json`,
+      ),
+  }));
 
 async function dispatch(name, body, signal) {
   // A command submitted before detach must never execute after reattachment.
@@ -541,51 +789,107 @@ async function dispatch(name, body, signal) {
   }
   if (name === "command-status") {
     const value = commandLedger().get(body.requestId);
-    return { status: value ? 200 : 404, body: value ? { ok: true, value } : { ok: false, code: "not found", error: "Unknown request ID" } };
+    return {
+      status: value ? 200 : 404,
+      body: value
+        ? { ok: true, value }
+        : { ok: false, code: "not found", error: "Unknown request ID" },
+    };
   }
-  if (name === "keep-awake") return { status: 200, body: { ok: true, value: await keepAwake.configure(body) } };
+  if (name === "keep-awake")
+    return { status: 200, body: { ok: true, value: await keepAwake.configure(body) } };
   const deadline = performance.now() + (body.timeoutMs ?? (name === "wait" ? 10000 : 15000));
   if (!Object.hasOwn(ActionSchemas, name)) {
-    const value = await commandContext.run({ signal, deadline }, () => inspection[name](body, signal));
-    return { status: 200, body: { ok: true, value, meta: { instanceId, observedAt: new Date().toISOString() } } };
+    const value = await commandContext.run({ signal, deadline }, () =>
+      inspection[name](body, signal),
+    );
+    return {
+      status: 200,
+      body: { ok: true, value, meta: { instanceId, observedAt: new Date().toISOString() } },
+    };
   }
   const requestId = body.requestId ?? randomUUID();
-  return commandLedger().execute(requestId, { name, body }, async mark => {
+  return commandLedger().execute(requestId, { name, body }, async (mark) => {
     if (name === "lock") keepAwake.stop("lock requested");
-    let dispatched = false, executed = false;
+    let dispatched = false,
+      executed = false;
     const timing = {};
-    const onDispatch = () => { if (!dispatched) { dispatched = true; mark("running"); inspection.invalidateObservations(); } };
+    const onDispatch = () => {
+      if (!dispatched) {
+        dispatched = true;
+        mark("running");
+        inspection.invalidateObservations();
+      }
+    };
     try {
-      await commandContext.run({ signal, deadline, onDispatch, priority: 5, operationTimeoutMs: Math.max(8000, (body.end ?? 0) + 2000) }, async () => {
-        await enqueue(async () => {
-          timing.queueMs = Math.round(performance.now() - started);
-          const nativeGuards = name === "pinch" ? await supportsMultiTouch() : ["gesture", "shortcut"].includes(name) && await supportsGuardedTouch();
-          if (!nativeGuards && !["unlock", "lock", "ensure", "quality"].includes(name)) {
-            if ((await wda("GET", "/wda/locked")).value) throw apiError("Unlock your iPhone", 409, "device locked");
-          }
-          if (!nativeGuards && body.expectedApp) {
-            const active = (await wda("GET", "/wda/activeAppInfo")).value;
-            if (active.bundleId !== body.expectedApp) throw apiError("Foreground app changed", 409, "app changed");
-          }
-          if (!nativeGuards && body.expectedOrientation && (await withSession(s => wda("GET", `/session/${s}/orientation`))).value !== body.expectedOrientation) throw apiError("Screen orientation changed", 409, "orientation changed");
-          if (body.observationId) await inspection.verifyObservation(body.observationId, signal);
-          signal?.throwIfAborted();
-          const actionStarted = performance.now();
-          timing.preflightMs = Math.round(actionStarted - started - timing.queueMs);
-          const result = await actions[name](body);
-          timing.actionMs = Math.round(performance.now() - actionStarted);
-          if (result?.timing) timing.native = result.timing;
-          executed = true;
-          if (["gesture", "pinch", "shortcut", "tap", "type", "home", "button"].includes(name)) keepAwake.activity();
-        });
-        if (body.waitFor) await inspection.wait(body.waitFor, signal);
-      });
+      await commandContext.run(
+        {
+          signal,
+          deadline,
+          onDispatch,
+          priority: 5,
+          operationTimeoutMs: Math.max(8000, (body.end ?? 0) + 2000),
+        },
+        async () => {
+          await enqueue(async () => {
+            timing.queueMs = Math.round(performance.now() - started);
+            const nativeGuards =
+              name === "pinch"
+                ? await supportsMultiTouch()
+                : ["gesture", "shortcut"].includes(name) && (await supportsGuardedTouch());
+            if (!nativeGuards && !["unlock", "lock", "ensure", "quality"].includes(name)) {
+              if ((await wda("GET", "/wda/locked")).value)
+                throw apiError("Unlock your iPhone", 409, "device locked");
+            }
+            if (!nativeGuards && body.expectedApp) {
+              const active = (await wda("GET", "/wda/activeAppInfo")).value;
+              if (active.bundleId !== body.expectedApp)
+                throw apiError("Foreground app changed", 409, "app changed");
+            }
+            if (
+              !nativeGuards &&
+              body.expectedOrientation &&
+              (await withSession((s) => wda("GET", `/session/${s}/orientation`))).value !==
+                body.expectedOrientation
+            )
+              throw apiError("Screen orientation changed", 409, "orientation changed");
+            if (body.observationId) await inspection.verifyObservation(body.observationId, signal);
+            signal?.throwIfAborted();
+            const actionStarted = performance.now();
+            timing.preflightMs = Math.round(actionStarted - started - timing.queueMs);
+            const result = await actions[name](body);
+            timing.actionMs = Math.round(performance.now() - actionStarted);
+            if (result?.timing) timing.native = result.timing;
+            executed = true;
+            if (["gesture", "pinch", "shortcut", "tap", "type", "home", "button"].includes(name))
+              keepAwake.activity();
+          });
+          if (body.waitFor) await inspection.wait(body.waitFor, signal);
+        },
+      );
       timing.totalMs = Math.round(performance.now() - started);
-      return { status: 200, body: { ok: true, requestId, outcome: body.waitFor ? "verified" : "executed", verified: Boolean(body.waitFor), timing } };
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          requestId,
+          outcome: body.waitFor ? "verified" : "executed",
+          verified: Boolean(body.waitFor),
+          timing,
+        },
+      };
     } catch (e) {
       const result = errorResponse(e);
-      result.body = { ...result.body, requestId, outcome: executed ? "executed" : dispatched ? "unknown" : "not executed", verified: false };
-      if (NOT_AUTHORIZED.test(e.message)) { keepAwake.stop("automation unavailable"); restartWda(); }
+      result.body = {
+        ...result.body,
+        requestId,
+        outcome: executed ? "executed" : dispatched ? "unknown" : "not executed",
+        verified: false,
+      };
+      if (NOT_AUTHORIZED.test(e.message)) {
+        keepAwake.stop("automation unavailable");
+        restartWda();
+      }
       return result;
     }
   });
@@ -600,36 +904,70 @@ if (!MANUAL) {
   WDA = `http://127.0.0.1:${WDA_PORT}`;
   MJPEG = `http://127.0.0.1:${MJPEG_PORT}`;
 }
-startServer({ port: +opts.port, instanceId, html: fs.readFileSync(path.join(ROOT, "public/index.html"), "utf8"), mjpeg: MJPEG, dispatch,
+startServer({
+  port: +opts.port,
+  instanceId,
+  html: loadMirrorHTML(),
+  mjpeg: MJPEG,
+  dispatch,
   statusEvents,
-  identity: opts.owner ? { owner: opts.owner, pinnedUdid } : {}, fallbackPort: opts.managed,
-  onListening: port => {
+  identity: opts.owner ? { owner: opts.owner, pinnedUdid } : {},
+  fallbackPort: opts.managed,
+  onListening: (port) => {
     const url = `http://localhost:${port}`;
-    if (opts.managed) console.log(JSON.stringify({ event: "mirror-listening", owner: opts.owner, udid: pinnedUdid, port }));
+    if (opts.managed)
+      console.log(
+        JSON.stringify({ event: "mirror-listening", owner: opts.owner, udid: pinnedUdid, port }),
+      );
     console.log(`\n  iPhone Mirror running at ${url}\n`);
-    if (process.platform === "darwin" && !opts["no-open"]) spawn("open", [url], { stdio: "ignore" });
+    if (process.platform === "darwin" && !opts["no-open"])
+      spawn("open", [url], { stdio: "ignore" });
   },
 });
 if (!MANUAL) {
   let observedDeviceID;
-  usbMonitor = createUSBMonitor({ address: USBMUXD, list: listDevices, onChange(devices) {
-    devices = devices.map(d => ({ ...d, udid: canonicalUDID(d.udid) }));
-    if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
-    connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
-    const device = devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
-    if (!device) { keepAwake.stop("disconnected"); startupLock.reset(); launchLockedDevice = null; }
-    if (observedDeviceID === (device?.id ?? null)) { statusEvents.invalidate(); return; }
-    if (observedDeviceID !== undefined) {
-      transport.abort(apiError("Device connection changed", 409, "device changed"));
-      transport = new AbortController();
-      for (const tunnel of tunnels) tunnel.destroy();
-      sid = null; guardedTouch = undefined; fastTouch = true; multiTouch = undefined;
-    }
-    observedDeviceID = device?.id ?? null;
-    statusEvents.invalidate({ device, pinnedUdid, observedAt: Date.now(), ok: false, locked: null,
-      lifecycle: device ? "connecting" : "disconnected",
-      captureIdentity: { singleUsbDevice: connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid } });
-  } });
+  usbMonitor = createUSBMonitor({
+    address: USBMUXD,
+    list: listDevices,
+    onChange(devices) {
+      devices = devices.map((d) => ({ ...d, udid: canonicalUDID(d.udid) }));
+      if (!pinnedUdid) pinnedUdid = devices.find((d) => d.connection === "USB")?.udid ?? null;
+      connectedUsbUdids = [
+        ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
+      ];
+      const device = devices.find((d) => d.udid === pinnedUdid && d.connection === "USB") ?? null;
+      if (!device) {
+        keepAwake.stop("disconnected");
+        startupLock.reset();
+        launchLockedDevice = null;
+      }
+      if (observedDeviceID === (device?.id ?? null)) {
+        statusEvents.invalidate();
+        return;
+      }
+      if (observedDeviceID !== undefined) {
+        transport.abort(apiError("Device connection changed", 409, "device changed"));
+        transport = new AbortController();
+        for (const tunnel of tunnels) tunnel.destroy();
+        sid = null;
+        guardedTouch = undefined;
+        fastTouch = true;
+        multiTouch = undefined;
+      }
+      observedDeviceID = device?.id ?? null;
+      statusEvents.invalidate({
+        device,
+        pinnedUdid,
+        observedAt: Date.now(),
+        ok: false,
+        locked: null,
+        lifecycle: device ? "connecting" : "disconnected",
+        captureIdentity: {
+          singleUsbDevice: connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid,
+        },
+      });
+    },
+  });
   process.on("exit", () => usbMonitor.stop());
 }
 void statusEvents.refresh();

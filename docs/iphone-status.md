@@ -8,18 +8,18 @@ additional controls. The foreground orb stays animated: reconnecting uses
 Motion pauses while the screen is inactive. Reduce Motion is respected on both
 platforms.
 
-| State | Phone screen |
-| --- | --- |
-| Launching | System launch transition, then the native waiting screen |
-| Opened without a viewer | Waiting for your Mac; connect by USB and open the Mac app |
-| Viewer is loading | Connecting… |
-| Video and input are ready | Connected |
-| USB host detaches | Disconnected; connect to your Mac |
-| USB host reattaches while video is loading after a connection | Reconnecting… |
-| Heartbeat missing for 3 seconds, without a host event | Disconnected (fallback) |
-| Another app is open | Portal remains in the background |
-| Phone locked | Normal iOS lock screen; the Mac asks for unlock |
-| Helper terminated | No running UI; opening the app shows the waiting screen |
+| State                                                         | Phone screen                                              |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| Launching                                                     | System launch transition, then the native waiting screen  |
+| Opened without a viewer                                       | Waiting for your Mac; connect by USB and open the Mac app |
+| Viewer is loading                                             | Connecting…                                               |
+| Video and input are ready                                     | Connected                                                 |
+| USB host detaches                                             | Disconnected; connect to your Mac                         |
+| USB host reattaches while video is loading after a connection | Reconnecting…                                             |
+| Heartbeat missing for 3 seconds, without a host event         | Disconnected (fallback)                                   |
+| Another app is open                                           | Portal remains in the background                          |
+| Phone locked                                                  | Normal iOS lock screen; the Mac asks for unlock           |
+| Helper terminated                                             | No running UI; opening the app shows the waiting screen   |
 
 An active keep-awake lease adds a small `Awake · m:ss` badge while heartbeats are
 fresh. Its countdown uses the server's actual remaining lease and advances with
@@ -126,7 +126,6 @@ attachment). These are status-screen recovery times including the presence
 heartbeat, not touch latency or a claim of instantaneous video. Native USB
 events changed the model immediately; the usual view transition still applies.
 
-
 ## Event-driven recovery (2026-11-03)
 
 Normal recovery now propagates through usbmuxd `Listen` → a shared status probe →
@@ -173,13 +172,13 @@ state recheck; the current unlock path can still wait for the shared watchdog.
 After fixing the selection-order regression, the user confirmed the final physical
 cable cycle was smooth. The native trace recorded:
 
-| Milestone | Elapsed from earliest IOKit attachment |
-| --- | ---: |
-| Earliest IOKit attachment | 0 ms |
-| Last IOKit attachment after USB mode switches | 2772 ms |
-| Control-ready bridge observation | 2861 ms |
-| Fresh video sample | 3074 ms |
-| Input enabled / live layer submitted | 3076 ms |
+| Milestone                                     | Elapsed from earliest IOKit attachment |
+| --------------------------------------------- | -------------------------------------: |
+| Earliest IOKit attachment                     |                                   0 ms |
+| Last IOKit attachment after USB mode switches |                                2772 ms |
+| Control-ready bridge observation              |                                2861 ms |
+| Fresh video sample                            |                                3074 ms |
+| Input enabled / live layer submitted          |                                3076 ms |
 
 From the final attachment to input readiness: **304 ms**. Fresh sample to input
 readiness: **1.6 ms**. The same capture session survived the final mode switch;

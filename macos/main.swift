@@ -141,7 +141,6 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var videoGate = VideoReadinessGate()
     var deviceLifecycle: String { videoGate.lifecycle }
     var captureUdid: String? { videoGate.deviceID }
-    var activeCaptureUdid: String?
     var singleUsbDevice = false
     var lifecycleTimer: Timer?
     weak var owner: AppDelegate?
@@ -230,7 +229,6 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         capture?.stop()
         capture?.layer.removeFromSuperlayer()
         capture = nil
-        activeCaptureUdid = nil
     }
 
     func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool, usbDevicePresent: Bool,
@@ -786,7 +784,6 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         let c = PhoneCapture(audioVolume: audioVolume)
         c.connectedDevices = { [weak self] in self?.owner?.devices ?? [] }
         trace("capture-requested")
-        activeCaptureUdid = udid
         c.onSize = { [weak self, weak c] size in
             guard let self, self.capture === c else { return }
             self.setAspect(width: size.width, height: size.height)

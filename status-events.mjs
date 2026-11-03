@@ -2,7 +2,13 @@
 // helper events. Timers cover silent failures and helpers with no ready event.
 export function createStatusEvents({ read, readyMs = 2000, retryMs = 500, idleMs = 10000 }) {
   const listeners = new Set();
-  let current, running, controller, timer, version = 0, sequence = 0, stopped = false;
+  let current,
+    running,
+    controller,
+    timer,
+    version = 0,
+    sequence = 0,
+    stopped = false;
   function publish(value) {
     current = { ...value, eventSequence: ++sequence };
     for (const listener of listeners) listener(current);
@@ -17,42 +23,67 @@ export function createStatusEvents({ read, readyMs = 2000, retryMs = 500, idleMs
         controller = new AbortController();
         try {
           const value = await read(controller.signal);
-          if (!stopped && generation === version) { publish(value); return current; }
-        } catch { if (generation === version) return current; }
+          if (!stopped && generation === version) {
+            publish(value);
+            return current;
+          }
+        } catch {
+          if (generation === version) return current;
+        }
       }
       return current;
     })().finally(() => {
       running = undefined;
       if (stopped) return;
-      const delay = current?.lifecycle === 'disconnected' ? idleMs : current?.lifecycle === 'connecting' ? retryMs : readyMs;
-      timer = setTimeout(refresh, delay); timer.unref?.();
+      const delay =
+        current?.lifecycle === "disconnected"
+          ? idleMs
+          : current?.lifecycle === "connecting"
+            ? retryMs
+            : readyMs;
+      timer = setTimeout(refresh, delay);
+      timer.unref?.();
     });
     return running;
   }
   return {
     refresh,
     invalidate(patch) {
-      version++; controller?.abort();
+      version++;
+      controller?.abort();
       if (patch && current) publish({ ...current, ...patch });
       void refresh();
     },
     stream() {
       let unsubscribe, pending;
-      const encode = value => new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`);
+      const encode = (value) => new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`);
       return new ReadableStream({
         start(output) {
-          const send = value => {
-            if (output.desiredSize > 0) output.enqueue(encode(value));
+          const send = (value) => {
+            if ((output.desiredSize ?? 0) > 0) output.enqueue(encode(value));
             else pending = value; // Bound slow clients to the latest observation.
           };
-          listeners.add(send); unsubscribe = () => listeners.delete(send);
+          listeners.add(send);
+          unsubscribe = () => listeners.delete(send);
           if (current) send(current);
           void refresh();
         },
-        pull(output) { if (pending) { output.enqueue(encode(pending)); pending = undefined; } },
-        cancel() { unsubscribe?.(); },
+        pull(output) {
+          if (pending) {
+            output.enqueue(encode(pending));
+            pending = undefined;
+          }
+        },
+        cancel() {
+          unsubscribe?.();
+        },
       });
     },
-    stop() { stopped = true; clearTimeout(timer); controller?.abort(); listeners.clear(); },
+    stop() {
+      stopped = true;
+      clearTimeout(timer);
+      controller?.abort();
+      listeners.clear();
+    },
   };
 }

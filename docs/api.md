@@ -22,23 +22,28 @@ cancels queued commands instead of replaying them after reconnection.
 
 ## Endpoints
 
-| Endpoint | Body | Result in `value` |
-| --- | --- | --- |
-| `state` | `{}` | Lock state, active app, orientation and logical screen dimensions |
-| `elements` | `{ "selector": { "using": "accessibility id", "value": "General" } }` | Array of `{ "id": "..." }`; empty if none match |
-| `element` | `{ "id": "...", "attributes": ["label", "enabled", "rect"] }` | ID and requested attributes |
-| `source` | `{ "format": "json" }` | UI hierarchy; formats: `json` (default), `xml`, `description` |
-| `screenshot` | `{}` | `{ "mimeType": "image/png", "encoding": "base64", "data": "..." }` |
-| `wait` | See below | Matching observation and `elapsedMs` |
-| `observe` | `{ "screenshot": true, "settleMs": 100 }` | Timestamped app/orientation/tree/screenshot observation and `stable` flag |
-| `keep-awake` | `{ "enabled": true, "durationMs": 1800000 }` | Timed keep-awake lease; `{}` reads status, `{"enabled":false}` stops |
+| Endpoint     | Body                                                                  | Result in `value`                                                         |
+| ------------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `state`      | `{}`                                                                  | Lock state, active app, orientation and logical screen dimensions         |
+| `elements`   | `{ "selector": { "using": "accessibility id", "value": "General" } }` | Array of `{ "id": "..." }`; empty if none match                           |
+| `element`    | `{ "id": "...", "attributes": ["label", "enabled", "rect"] }`         | ID and requested attributes                                               |
+| `source`     | `{ "format": "json" }`                                                | UI hierarchy; formats: `json` (default), `xml`, `description`             |
+| `screenshot` | `{}`                                                                  | `{ "mimeType": "image/png", "encoding": "base64", "data": "..." }`        |
+| `wait`       | See below                                                             | Matching observation and `elapsedMs`                                      |
+| `observe`    | `{ "screenshot": true, "settleMs": 100 }`                             | Timestamped app/orientation/tree/screenshot observation and `stable` flag |
+| `keep-awake` | `{ "enabled": true, "durationMs": 1800000 }`                          | Timed keep-awake lease; `{}` reads status, `{"enabled":false}` stops      |
 
 `element` and `screenshot` also accept a `selector` instead of an `id`. A selector must resolve to exactly one element for these calls; multiple matches produce HTTP 409. Omit both for a whole-screen screenshot. Screenshot MIME types are detected from the returned bytes (PNG, JPEG or HEIC), not assumed.
 
 Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate string`, `class chain`, and `xpath`. These are WDA strategy names. For example:
 
 ```json
-{"selector":{"using":"predicate string","value":"type == 'XCUIElementTypeButton' AND label == 'Continue'"}}
+{
+  "selector": {
+    "using": "predicate string",
+    "value": "type == 'XCUIElementTypeButton' AND label == 'Continue'"
+  }
+}
 ```
 
 Element attributes: `type`, `name`, `label`, `value`, `enabled`, `visible`, `selected`, `hittable`, `accessible`, `rect`. Defaults are all except `selected` and `accessible`. Attribute values retain WDA's JSON types, including null. Bounds use logical screen points, not screenshot pixels. IDs are temporary and can become stale after UI changes; re-run the selector to recover. An element existing does not imply it is visible or hittable.
@@ -72,7 +77,12 @@ Selectors are evaluated afresh on each poll, including after stale-element error
 A timeout returns HTTP 408:
 
 ```json
-{"ok":false,"error":"Wait timed out","code":"timeout","details":{"elapsedMs":10000,"last":{"matched":false,"count":0}}}
+{
+  "ok": false,
+  "error": "Wait timed out",
+  "code": "timeout",
+  "details": { "elapsedMs": 10000, "last": { "matched": false, "count": 0 } }
+}
 ```
 
 Invalid requests return 400; rejected origins/hosts 403; missing elements 404; stale, ambiguous or conflicting requests 409; bodies over 1 MiB 413; non-JSON mutations 415; full queues 429; upstream failures generally 502. Errors have `ok`, `error`, and `code`. Inspect HTTP status and `ok`; do not assume a completed fetch means success.
@@ -83,12 +93,16 @@ Invalid requests return 400; rejected origins/hosts 403; missing elements 404; s
 
 ```json
 {
-  "selector": { "using": "predicate string", "value": "type == 'XCUIElementTypeButton' AND label == 'Settings'" },
+  "selector": {
+    "using": "predicate string",
+    "value": "type == 'XCUIElementTypeButton' AND label == 'Settings'"
+  },
   "expectedApp": "com.apple.Preferences",
   "requestId": "navigation-001",
   "waitFor": {
     "selector": { "using": "accessibility id", "value": "General" },
-    "condition": "exists", "stableForMs": 100
+    "condition": "exists",
+    "stableForMs": 100
   }
 }
 ```
@@ -195,7 +209,6 @@ Helpers advertising `multiTouch` accept exactly two validated `fingers` paths th
 `POST /api/pinch` accepts `{ "x": 0.5, "y": 0.5, "scale": 2, "durationMs": 240 }` plus the normal action metadata. Coordinates are normalized in the current interface orientation; scale is 0.25–4 (below 1 zooms out, above 1 zooms in, 1 does nothing), and duration is 80–1000 ms, default 240. Both fingers start together, settle for 40 ms, then move for the requested duration and lift together. The center is clamped near screen edges so neither finger leaves the display. Dimensions are read for every pinch; lock/app/orientation checks, serialization and receipt recovery use the existing action pipeline. Supported behavior depends on the foreground app; Photos supports zooming an open photo.
 
 Live Photos checks on the connected iPhone verified zoom-in and zoom-out. The two fast-route requests completed in 587 ms and 580 ms, versus 4126 ms and 3922 ms through W3C actions; these are server command durations, not input-to-display measurements. Physical trackpad pinch and Command-scroll were also confirmed on the installed Mac app.
-
 
 ### Connection events
 

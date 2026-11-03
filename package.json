@@ -10,7 +10,14 @@
     "setup": "scripts/setup-wda.sh",
     "start": "node mirror.mjs",
     "test": "node --test test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs test/status-events.mjs test/portal-status.mjs test/portal-install.mjs test/startup-lock.mjs test/owned-process.mjs && node test/e2e.mjs && node test/multi-device.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
-    "app": "macos/build.sh --install"
+    "app": "macos/build.sh --install",
+    "typecheck": "tsc --noEmit && tsc --project public/tsconfig.json --noEmit",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "check": "npm run typecheck && npm run lint && npm run format:check",
+    "verify": "npm run check && npm test"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -19,5 +26,12 @@
   "dependencies": {
     "@effect/platform-node": "4.1.2",
     "effect": "4.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "oxfmt": "0.76.0",
+    "oxlint": "1.91.0",
+    "oxlint-tsgolint": "7.0.2005",
+    "typescript": "7.0.2"
   }
 }
