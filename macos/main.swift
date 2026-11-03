@@ -1159,6 +1159,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Launch Services may retain the previous icon after an in-place update.
+        // Read the bundled artwork directly so the running Dock tile stays current.
+        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = icon
+        }
         if let fontURL = Bundle.main.url(forResource: "InterVariable", withExtension: "ttf", subdirectory: "Fonts") {
             CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
         }

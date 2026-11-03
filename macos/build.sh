@@ -36,5 +36,10 @@ if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"
   rm -rf "$HOME/Applications/iPhone Portal.app"
   ditto "$APP" "$HOME/Applications/iPhone Portal.app"
+  # ditto preserves the old bundle-directory timestamp, which can leave Finder
+  # and the Dock displaying a cached icon even though AppIcon.icns changed.
+  touch "$HOME/Applications/iPhone Portal.app"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$HOME/Applications/iPhone Portal.app"
   echo "✓ Installed to ~/Applications/iPhone Portal.app"
 fi
