@@ -101,29 +101,29 @@
         <option value="com.apple.Maps">Maps</option>
         <option value="com.atebits.Tweetie2">X</option>
         <option value="net.whatsapp.WhatsApp">WhatsApp</option>
-        <option value="custom">Bundle ID…</option>
+        <option value="custom">Another app…</option>
       </select>
       <button id="launchBtn">Open</button>
     </div>
   </section>
 
   <section>
-    <h2>Stream quality</h2>
+    <h2>Picture quality</h2>
     <select id="quality">
-      <option value="low">Low: 20 fps, smallest</option>
-      <option value="balanced">Balanced: 30 fps</option>
-      <option value="high">High: 60 fps, sharpest</option>
+      <option value="low">Low</option>
+      <option value="balanced">Balanced</option>
+      <option value="high">High</option>
     </select>
   </section>
 
   <section class="hint">
     <h2>Controls</h2>
-    Click to tap, hold for a long press, drag to swipe.<br />
-    Scroll wheel or trackpad scrolls.<br />
+    Click to tap, hold to press, drag to swipe.<br />
+    Use your mouse or trackpad to scroll.<br />
     Pinch or <kbd>⌘</kbd>-scroll to zoom.<br />
-    Just start typing to type. <kbd>⌘V</kbd> pastes your Mac clipboard.<br />
+    Type with your keyboard. <kbd>⌘V</kbd> to paste.<br />
     <kbd>⌥H</kbd> Home, <kbd>⌥J</kbd> App Switcher.<br />
-    Keep the iPhone unlocked and set Auto-Lock to Never while mirroring.
+    Keep your iPhone unlocked.
   </section>
 </aside>
 
@@ -362,6 +362,26 @@ function toast(msg) {
   toast.t = setTimeout(() => $("toast").classList.remove("show"), 3000);
 }
 
+// Keep implementation details in API responses, not in the app's messages.
+function actionMessage(response) {
+  if (response.outcome === "unknown") return "Check your iPhone before trying again.";
+  if (response.outcome === "executed") return "Action sent. Check your iPhone.";
+  const messages = {
+    "device locked": "Unlock your iPhone.",
+    "app changed": "The app changed. Try again.",
+    "orientation changed": "Your iPhone rotated. Try again.",
+    "stale observation": "The screen changed. Try again.",
+    "no such element": "Couldn't find that item.",
+    "stale element reference": "That item changed. Try again.",
+    "instance changed": "Reconnecting…",
+    "unknown command": "This action isn't available.",
+    "unsupported operation": "This action isn't available.",
+    "timeout": "That took too long. Try again.",
+    "cancelled": "Cancelled.",
+  };
+  return Object.hasOwn(messages, response.code) ? messages[response.code] : "Couldn't complete that action.";
+}
+
 let outbound = Promise.resolve();
 function api(name, body = {}, fromGesture = false) {
   if (!controlOnly.has(name) && !canInteract()) return Promise.resolve();
@@ -375,14 +395,14 @@ function api(name, body = {}, fromGesture = false) {
   try {
     if (!controlOnly.has(name) && (epoch !== inputEpoch || !canInteract())) return;
     const json = await requestJSON(`/api/${name}`, { method: "POST", headers: { "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content }, body: JSON.stringify({ ...body, requestId }) });
-    if (!json.ok) toast(json.error || "Something went wrong");
+    if (!json.ok) toast(actionMessage(json));
   } catch {
     // Recover the receipt rather than sending the action again after a lost reply.
     try {
       const receipt = await requestJSON(`/api/commands/${requestId}`, {}, 3000);
       if (receipt.value?.response?.body?.ok) return;
     } catch {}
-    toast("Connection interrupted. Check the phone before repeating the action.");
+    toast("Connection lost. Check your iPhone before trying again.");
   } finally {
     pendingActions--;
     reportLoading();
@@ -408,11 +428,11 @@ async function poll() {
       return;
     }
     $("dot").classList.toggle("on", s.ok);
-    $("device").textContent = s.device ? `${s.device.udid} · ${s.device.connection}` : s.ok ? "Connected over WiFi" : "No iPhone connected";
+    $("device").textContent = s.device || s.ok ? "iPhone connected" : "No iPhone connected";
     $("quality").value = s.quality;
     singleUsbDevice = s.captureIdentity?.singleUsbDevice === true;
     setLifecycle(s.lifecycle, s.device?.udid ?? s.pinnedUdid ?? "", s.instanceId);
-    loadingDetail = !s.ok && !s.error?.startsWith("Starting WebDriverAgent") ? (s.error ?? "") : "";
+    loadingDetail = lifecycle === "locked" ? "Unlock your iPhone." : !s.ok ? (s.error ?? "") : "";
     if (lifecycle === "ready" && !connected) {
       connected = true;
       if (nativeVideo) $("overlay").hidden = true;
@@ -426,7 +446,7 @@ async function poll() {
       document.body.classList.add("unavailable");
       $("overlay").hidden = false;
       $("overlay").querySelector("b").textContent = lifecycle === "locked" ? "Locked" : lifecycle === "disconnected" ? "Disconnected" : "Connecting…";
-      $("overlayText").textContent = lifecycle === "locked" ? "Unlock your iPhone to continue" : (s.error ?? "");
+      $("overlayText").textContent = loadingDetail;
     }
   } catch {
     setLifecycle("connecting");
@@ -434,8 +454,9 @@ async function poll() {
     streamReady = false;
     $("overlay").hidden = false;
     $("dot").classList.remove("on");
-    $("overlayText").textContent = "Mirror server is not running.";
-    loadingDetail = "Reconnecting to the mirror server…";
+    $("overlay").querySelector("b").textContent = "Reconnecting…";
+    $("overlayText").textContent = "";
+    loadingDetail = "";
   }
   statusRevision++;
   reportLoading();
@@ -664,7 +685,7 @@ $("siriBtn").addEventListener("click", () => {
 
 $("launchBtn").addEventListener("click", () => {
   let bundleId = $("app").value;
-  if (bundleId === "custom") bundleId = prompt("Bundle ID (e.g. com.spotify.client):");
+  if (bundleId === "custom") bundleId = prompt("App identifier (for example, com.apple.Maps):");
   if (bundleId) api("launch", { bundleId });
 });
 
