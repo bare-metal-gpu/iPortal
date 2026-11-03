@@ -1,0 +1,461 @@
+{
+  "recordedDate": "2026-11-03",
+  "productionBase": "539cf06",
+  "scope": "Foreground UIKit recorder on one USB-connected physical iPhone; no production input changes.",
+  "result": "No observed delivery for tested indirect paths. Realtime interaction not verified.",
+  "runs": [
+    {
+      "rawFile": "iphone-indirect-input-results.json",
+      "sha256": "0de6a5d751101fa66acb05c4489f00d08daaf218dc19dc47cb6ba7bd8320d0ca",
+      "recordedAt": "2026-11-03T10:19:37.392Z",
+      "viewSize": [
+        320,
+        480
+      ],
+      "indirectInputEnabled": true,
+      "groups": [
+        {
+          "mode": "touch",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 56,
+          "nativeCompletionMs": {
+            "min": 435.66,
+            "median": 435.66,
+            "max": 435.66
+          },
+          "offsetDeltaRange": [
+            108.67,
+            108.67
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "move",
+          "attempts": 3,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 242.64,
+            "median": 245.19,
+            "max": 250.78
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "scroll/phased",
+          "attempts": 3,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 467.85,
+            "median": 469.75,
+            "max": 470.59
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "scroll/discrete",
+          "attempts": 3,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 235.81,
+            "median": 240.3,
+            "max": 240.89
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        }
+      ],
+      "finishedIdle": true
+    },
+    {
+      "rawFile": "iphone-indirect-raw-results.json",
+      "sha256": "61e0b237b669cef0c5634e1b8eef6c81ec9aab44f9fff73e3f681cf3a2ffdb6e",
+      "recordedAt": "2026-11-03T10:22:18.636Z",
+      "viewSize": [
+        320,
+        480
+      ],
+      "indirectInputEnabled": true,
+      "groups": [
+        {
+          "mode": "touch",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 53,
+          "nativeCompletionMs": {
+            "min": 436.78,
+            "median": 436.78,
+            "max": 436.78
+          },
+          "offsetDeltaRange": [
+            106.33,
+            106.33
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "raw-touch",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 52,
+          "nativeCompletionMs": {
+            "min": 536.36,
+            "median": 536.36,
+            "max": 536.36
+          },
+          "offsetDeltaRange": [
+            108,
+            108
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "pinch-baseline",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 46,
+          "nativeCompletionMs": {
+            "min": 491.85,
+            "median": 491.85,
+            "max": 491.85
+          },
+          "offsetDeltaRange": [
+            819.67,
+            819.67
+          ],
+          "zoomAfterRange": [
+            1.812,
+            1.812
+          ]
+        },
+        {
+          "mode": "raw-scroll/phased",
+          "attempts": 8,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 557.84,
+            "median": 562.68,
+            "max": 570.78
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "raw-scroll/discrete",
+          "attempts": 2,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 357.15,
+            "median": 357.24,
+            "max": 357.33
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "raw-scale",
+          "attempts": 6,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 584.07,
+            "median": 588.83,
+            "max": 590.93
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        }
+      ],
+      "finishedIdle": true
+    },
+    {
+      "rawFile": "iphone-indirect-native-size-results.json",
+      "sha256": "7db8c47f1429ba8fc7313a30b7de8bf3abc8cf1a70a7144e21d9730d09bf7332",
+      "recordedAt": "2026-11-03T10:26:20.595Z",
+      "viewSize": [
+        402,
+        874
+      ],
+      "indirectInputEnabled": true,
+      "groups": [
+        {
+          "mode": "touch",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 58,
+          "nativeCompletionMs": {
+            "min": 439.69,
+            "median": 439.69,
+            "max": 439.69
+          },
+          "offsetDeltaRange": [
+            135,
+            135
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "move",
+          "attempts": 3,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 239.88,
+            "median": 243.83,
+            "max": 245.21
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "scroll/phased",
+          "attempts": 3,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 468.59,
+            "median": 471.12,
+            "max": 471.48
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "scroll/discrete",
+          "attempts": 3,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 238.18,
+            "median": 241.33,
+            "max": 243.58
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        }
+      ],
+      "finishedIdle": true
+    },
+    {
+      "rawFile": "iphone-indirect-native-size-raw-results.json",
+      "sha256": "6f7e09844ab9a68f4767b9de86e4c6a7c7ec4af0075d6633d879a66ecd673d66",
+      "recordedAt": "2026-11-03T10:26:24.836Z",
+      "viewSize": [
+        402,
+        874
+      ],
+      "indirectInputEnabled": true,
+      "groups": [
+        {
+          "mode": "touch",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 56,
+          "nativeCompletionMs": {
+            "min": 437.34,
+            "median": 437.34,
+            "max": 437.34
+          },
+          "offsetDeltaRange": [
+            132.33,
+            132.33
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "raw-touch",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 53,
+          "nativeCompletionMs": {
+            "min": 539.84,
+            "median": 539.84,
+            "max": 539.84
+          },
+          "offsetDeltaRange": [
+            136.67,
+            136.67
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "pinch-baseline",
+          "attempts": 1,
+          "deliveryObserved": 1,
+          "recordedEvents": 53,
+          "nativeCompletionMs": {
+            "min": 495.97,
+            "median": 495.97,
+            "max": 495.97
+          },
+          "offsetDeltaRange": [
+            1206.33,
+            1206.33
+          ],
+          "zoomAfterRange": [
+            1.985,
+            1.985
+          ]
+        },
+        {
+          "mode": "raw-scroll/phased",
+          "attempts": 8,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 560.42,
+            "median": 569.63,
+            "max": 573.38
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "raw-scroll/discrete",
+          "attempts": 2,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 346.22,
+            "median": 352.43,
+            "max": 358.65
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        },
+        {
+          "mode": "raw-scale",
+          "attempts": 6,
+          "deliveryObserved": 0,
+          "recordedEvents": 0,
+          "nativeCompletionMs": {
+            "min": 579.35,
+            "median": 582.07,
+            "max": 588.62
+          },
+          "offsetDeltaRange": [
+            0,
+            0
+          ],
+          "zoomAfterRange": [
+            1,
+            1
+          ]
+        }
+      ],
+      "finishedIdle": true
+    }
+  ],
+  "totals": {
+    "indirectAttempts": 50,
+    "indirectDeliveryObserved": 0,
+    "touchControls": 8,
+    "touchControlsDelivered": 8
+  },
+  "limitations": [
+    "One phone/OS environment; small capability probe, not latency percentile benchmarking.",
+    "No real mouse/trackpad positive control. Zero indirect delivery does not identify routing, event encoding or privilege as the cause.",
+    "Before-end response, continuous contact, direction reversal, realtime pinch, cancellation and update cadence remain unverified for indirect input.",
+    "Native completion times measure daemon callback latency, not visible response. No cross-device clock subtraction."
+  ],
+  "restoration": {
+    "vendorSourceExact": true,
+    "probeHidden": true,
+    "probeIdleAssertionReleased": true,
+    "normalHelperReady": true,
+    "phoneUnlocked": true,
+    "prototypeRouteHTTPStatus": 404,
+    "keepAwakeMinutes": 30
+  }
+}
