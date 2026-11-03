@@ -20,6 +20,7 @@ import { errorResponse, startServer } from "./server.mjs";
 import { pinchActions, pinchPaths } from "./pinch.mjs";
 import { createUSBMonitor } from "./usb-events.mjs";
 import { createStatusEvents } from "./status-events.mjs";
+import { createStartupLock } from "./startup-lock.mjs";
 
 const instanceId = randomUUID();
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -352,7 +353,9 @@ const WDA_PROBLEMS = [
 let wdaProcess = null;
 let wdaProblem = null;
 let wdaRetryAt = 0;
-function maybeStartWda(udid) {
+let launchLockedDevice = null;
+const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
+function maybeStartWda(udid, connectionID) {
   if (wdaProcess || Date.now() < wdaRetryAt || opts["no-autostart"] || MANUAL || process.platform !== "darwin") return;
   if (!fs.existsSync(path.join(ROOT, "vendor/build"))) return;
   const logPath = path.join(ROOT, "vendor/wda.log");
@@ -364,7 +367,13 @@ function maybeStartWda(udid) {
   const output = chunk => {
     fs.writeSync(log, chunk);
     tail = (tail + chunk.toString()).slice(-4096);
-    if (/ServerURLHere/.test(tail)) { tail = ""; statusEvents.invalidate(); }
+    if (/device is locked|DeviceLocked/i.test(tail)) {
+      launchLockedDevice = `${udid}:${connectionID}`;
+      wdaProblem = "Unlock your iPhone.";
+      statusEvents.invalidate();
+      tail = "";
+    }
+    if (/ServerURLHere/.test(tail)) { launchLockedDevice = null; tail = ""; statusEvents.invalidate(); }
   };
   wdaProcess.stdout.on("data", output);
   wdaProcess.stderr.on("data", output);
@@ -421,7 +430,10 @@ async function status(signal) {
   }
   signal?.throwIfAborted();
   const up = (MANUAL || device) && (await wdaUp(signal));
-  let locked = null;
+  if (!MANUAL && process.platform === "darwin" && !up) startupLock.observe(device);
+  let locked = !MANUAL && device
+    ? launchLockedDevice === `${device.udid}:${device.id}` ? true : startupLock.value(device)
+    : null;
   if (up) {
     try {
       const value = (await wda("GET", "/wda/locked", null, 1200, signal, { "x-mirror-purpose": "lifecycle" })).value;
@@ -431,9 +443,9 @@ async function status(signal) {
     } catch { error = "Waiting for your iPhone…"; }
   }
   signal?.throwIfAborted();
-  if (up) wdaProblem = null;
+  if (up) { wdaProblem = null; launchLockedDevice = null; startupLock.reset(); }
   if (device && !up) {
-    maybeStartWda(device.udid);
+    maybeStartWda(device.udid, device.id);
     error = wdaProblem
       ? wdaProblem
       : wdaProcess || (fs.existsSync(path.join(ROOT, "vendor/build")) && !opts["no-autostart"])
@@ -548,7 +560,7 @@ if (!MANUAL) {
     if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
     connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
     const device = devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
-    if (!device) keepAwake.stop("disconnected");
+    if (!device) { keepAwake.stop("disconnected"); startupLock.reset(); launchLockedDevice = null; }
     if (observedDeviceID === (device?.id ?? null)) { statusEvents.invalidate(); return; }
     observedDeviceID = device?.id ?? null;
     statusEvents.invalidate({ device, pinnedUdid, observedAt: Date.now(), ok: false, locked: null,
