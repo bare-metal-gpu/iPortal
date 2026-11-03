@@ -234,7 +234,8 @@ try {
   assert.equal(receipt.response.body.outcome, "not executed");
 
   // Disconnecting the pinned device must not silently select the other phone.
-  fake.ui.devices = [{ id: 8, udid: "OTHER-PHONE", connection: "USB" }];
+  fake.ui.devices = [{ id: 8, udid: "OTHER-PHONE", connection: "USB" },
+    { id: 6, udid: "00008110-FAKEFAKEFAKE", connection: "Network" }];
   const disconnected = await (await fetch(`${base}/api/status`)).json();
   assert.equal(disconnected.device, null);
   assert.equal(disconnected.lifecycle, "disconnected");
@@ -245,6 +246,7 @@ try {
   const multiple = await (await fetch(`${base}/api/status`)).json();
   assert.equal(multiple.lifecycle, "ready");
   assert.equal(multiple.device.udid, "00008110-FAKEFAKEFAKE");
+  assert.equal(multiple.device.id, 7, "USB wins over the same phone's lingering network advertisement");
   assert.equal(multiple.captureIdentity.singleUsbDevice, false);
   fake.ui.devices = [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }];
 

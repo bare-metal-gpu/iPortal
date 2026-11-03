@@ -138,9 +138,9 @@ test("native loading tracks queued input, reconnects and the first fallback fram
 
 // Stateful browser harness: classes, canvas contents, time and network liveness
 // remain observable, so readiness tests cannot bypass CSS or native handshakes.
-function browserHarness({ fetchAction, decodeFrame } = {}) {
+function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
   const nodes = new Map(), timers = new Map(), messages = [], draws = [], calls = [], streams = [];
-  let now = 100, serial = 0, remoteLifecycle = "ready", udid = "phone-a";
+  let now = 100, serial = 0, remoteLifecycle = "ready", udid = "phone-a", usbID = 7;
   function element(key) {
     if (!nodes.has(key)) nodes.set(key, { content: "instance", width: 400, height: 800,
       classList: trackedClasses(), listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
@@ -159,8 +159,11 @@ function browserHarness({ fetchAction, decodeFrame } = {}) {
     createImageBitmap: decodeFrame ?? (async blob => ({ width: 400, height: 800, id: new Uint8Array(await blob.arrayBuffer())[0], close() {} })),
     fetch: async (url, options = {}) => {
       calls.push([url, options]);
-      if (url === "/api/status") return { json: async () => ({ service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true,
-        lifecycle: remoteLifecycle, device: { udid }, captureIdentity: { singleUsbDevice: true } }) };
+      if (url === "/api/status") {
+        await beforeStatus?.();
+        return { json: async () => ({ service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: true,
+          lifecycle: remoteLifecycle, device: { udid, id: usbID }, captureIdentity: { singleUsbDevice: true } }) };
+      }
       if (url.startsWith("/stream")) {
         let waiting;
         const stream = { push: bytes => { const pending = waiting; waiting = null; pending.resolve({ value: bytes, done: false }); },
@@ -178,11 +181,65 @@ function browserHarness({ fetchAction, decodeFrame } = {}) {
   const settle = async () => { for (let i=0; i<4; i++) await new Promise(resolve => setImmediate(resolve)); };
   return { run, settle, element, messages, draws, calls, streams, lifecycle: value => { remoteLifecycle = value; },
     device: value => { udid = value; },
+    attachment: value => { usbID = value; },
     async advance(ms) { now += ms; for (const [id,timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn(); await settle(); } };
 }
 function mjpegPart(bytes) {
   return Buffer.concat([Buffer.from(`--BoundaryString\r\nContent-Type: image/jpeg\r\nContent-Length: ${bytes.length}\r\n\r\n`), Buffer.from(bytes), Buffer.from("\r\n")]);
 }
+
+test("native refreshes wake connection polling without overlapping requests", async () => {
+  let finish;
+  const h = browserHarness({ beforeStatus: () => new Promise(resolve => { finish = resolve; }) });
+  await h.settle();
+  for (let i=0; i<10; i++) await h.run("poll()");
+  assert.equal(h.calls.filter(([url]) => url === '/api/status').length, 1);
+  finish(); await h.settle();
+  const refresh = h.run("poll()"); await h.settle();
+  assert.equal(h.calls.filter(([url]) => url === '/api/status').length, 2);
+  finish(); await refresh;
+  assert.equal(h.run("pollInFlight"), false);
+});
+
+test("USB events immediately freeze input and stale status cannot undo a detach", async () => {
+  let hold = false, finish;
+  const h = browserHarness({ beforeStatus: () => hold ? new Promise(resolve => { finish = resolve; }) : undefined });
+  await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  assert.equal(h.run("canInteract()"), true);
+  hold = true;
+  const pending = h.run("poll()"); await h.settle();
+  h.run("usbConnectionChanged(false, videoEpoch, bridgeId)");
+  assert.equal(h.run("lifecycle"), "disconnected", "no timeout/poll needed to freeze the UI");
+  assert.equal(h.run("canInteract()"), false);
+  finish(); await pending;
+  assert.equal(h.run("lifecycle"), "disconnected", "a ready response from before detach is discarded");
+  h.run("usbConnectionChanged(true, videoEpoch, 'old-page')");
+  assert.equal(h.run("lifecycle"), "disconnected");
+  h.run("usbConnectionChanged(true, videoEpoch - 1, bridgeId)");
+  assert.equal(h.run("lifecycle"), "connecting", "hardware reattach acts immediately even across video epochs");
+  assert.equal(h.run("canInteract()"), false, "attachment alone never grants input readiness");
+  finish(); await h.settle();
+});
+
+test("USB reattachment invalidates old readiness, retains the frame and bypasses stale stream cooldown", async () => {
+  const h = browserHarness(); await h.settle();
+  h.run("startStream()"); await h.settle();
+  h.streams[0].push(mjpegPart([41])); await h.settle();
+  const before = h.run("videoEpoch");
+  const draws = [...h.draws];
+  h.run("streamRetryAt = performance.now() + 5000; streamFailures = 4");
+  h.attachment(9); await h.run("poll()"); await h.settle();
+  assert.ok(h.run("videoEpoch") > before, "quick unplug/replug is detected even between status polls");
+  assert.equal(h.run("canInteract()"), false);
+  assert.equal(h.messages.at(-1).usbConnectionID, "9");
+  assert.deepEqual(h.draws, draws, "same phone keeps the frozen frame");
+  assert.equal(h.streams.length, 2, "new USB attachment gets an immediate stream attempt");
+  assert.equal(h.run(`presentStreamFrame({width:400,height:800,id:42}, 0)`), false);
+  h.streams[1].push(mjpegPart([43])); await h.settle();
+  assert.equal(h.run("canInteract()"), true);
+  assert.equal(h.draws.at(-1), 43);
+});
 
 test("MJPEG parsing handles split headers/frames and rejects unbounded or malformed parts", async () => {
   const h = browserHarness(); await h.settle();

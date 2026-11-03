@@ -1,7 +1,7 @@
 // Presence reports describe a usable viewer; they never acquire a test session,
 // synthesize input, or keep the phone awake. The phone expires them independently.
 export function createPortalStatus({ wda, keepAwake, now = () => performance.now(),
-  later = setTimeout, cancel = clearTimeout, intervalMs = 2000, ttlMs = 6000 }) {
+  later = setTimeout, cancel = clearTimeout, intervalMs = 1000, ttlMs = 6000 }) {
   const clients = new Map();
   let timer, stopped = false, pending = false, retryAt = 0;
   function prune() {

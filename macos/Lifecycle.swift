@@ -5,6 +5,7 @@ import Foundation
 struct VideoReadinessGate {
     private(set) var lifecycle = "connecting"
     private(set) var deviceID: String?
+    private(set) var connectionID = ""
     private(set) var epoch = -1
     private(set) var bridgeID = ""
     private(set) var serverInstance = ""
@@ -17,36 +18,46 @@ struct VideoReadinessGate {
         let newStatus: Bool
         let invalidated: Bool
         let deviceChanged: Bool
+        let reattached: Bool
     }
 
     mutating func observe(_ state: String, deviceID incomingID: String?, epoch: Int,
-                          bridgeID: String, serverInstance: String, statusRevision: Int, now: TimeInterval) -> Change {
+                          bridgeID: String, serverInstance: String, statusRevision: Int, now: TimeInterval,
+                          connectionID: String = "") -> Change {
         let next = ["ready", "locked", "connecting", "disconnected"].contains(state) ? state : "connecting"
         let newDocument = bridgeID != self.bridgeID
         if !newDocument && (epoch < self.epoch || statusRevision < self.statusRevision
             || (next == "ready" && statusRevision <= (suspendedRevision ?? -1))) {
-            return Change(accepted: false, newStatus: false, invalidated: false, deviceChanged: false)
+            return Change(accepted: false, newStatus: false, invalidated: false, deviceChanged: false, reattached: false)
         }
         let newStatus = newDocument || statusRevision > self.statusRevision
         if newStatus { suspendedRevision = nil }
         let deviceID = incomingID.flatMap { $0.isEmpty ? nil : $0 }
         let deviceChanged = deviceID != self.deviceID
+        let reattached = !deviceChanged && ((lifecycle == "disconnected" && next != "disconnected")
+            || (!self.connectionID.isEmpty && !connectionID.isEmpty && connectionID != self.connectionID))
         let invalidated = next != lifecycle || deviceChanged || epoch != self.epoch
-            || bridgeID != self.bridgeID || serverInstance != self.serverInstance
+            || bridgeID != self.bridgeID || serverInstance != self.serverInstance || reattached
         self.deviceID = deviceID
+        self.connectionID = connectionID
         self.epoch = epoch
         self.bridgeID = bridgeID
         self.serverInstance = serverInstance
         self.statusRevision = statusRevision
         lifecycle = next
         if invalidated { requiredFrameAfter = now }
-        return Change(accepted: true, newStatus: newStatus, invalidated: invalidated, deviceChanged: deviceChanged)
+        return Change(accepted: true, newStatus: newStatus, invalidated: invalidated, deviceChanged: deviceChanged, reattached: reattached)
     }
 
     mutating func suspend(at now: TimeInterval) {
         lifecycle = "connecting"
         suspendedRevision = statusRevision
         requiredFrameAfter = now
+    }
+
+    mutating func disconnect(at now: TimeInterval) {
+        suspend(at: now)
+        lifecycle = "disconnected"
     }
 
     mutating func requireFreshFrame(at now: TimeInterval) { requiredFrameAfter = now }

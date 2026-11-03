@@ -14,8 +14,9 @@ platforms.
 | Opened without a viewer | Waiting for your Mac; connect by USB and open the Mac app |
 | Viewer is loading | Connecting… |
 | Video and input are ready | Connected |
-| Heartbeat missing for 6 seconds | Reconnecting… |
-| Heartbeat missing for 20 seconds | Waiting for your Mac |
+| USB host detaches | Disconnected; connect to your Mac |
+| USB host reattaches while video is loading after a connection | Reconnecting… |
+| Heartbeat missing for 3 seconds, without a host event | Disconnected (fallback) |
 | Another app is open | Portal remains in the background |
 | Phone locked | Normal iOS lock screen; the Mac asks for unlock |
 | Helper terminated | No running UI; opening the app shows the waiting screen |
@@ -51,9 +52,26 @@ Xcode runner changes; it is not a general binary patcher or an App Store build p
 
 The viewer sends validated `POST /api/presence` requests with `{clientId, ready}`.
 The server expires each viewer after 6 seconds and publishes the aggregate state
-at most once every 2 seconds to `POST /wda/mirror/portal`. Requests have a 1-second
+at most once every second to `POST /wda/mirror/portal`. Requests have a 1-second
 timeout and never overlap. Old helpers back off for 30 seconds and continue working.
 The phone expires heartbeats using monotonic time independently of the Mac.
+The phone also observes lockdownd's `host_attached` / `host_detached` Darwin
+notifications and renders immediately on those events, without guessing USB
+attachment from battery charging state. These notification names are recorded in
+[libimobiledevice's notification definitions](https://github.com/libimobiledevice/libimobiledevice/blob/master/include/libimobiledevice/notification_proxy.h).
+They are not a public UIKit USB API, so the heartbeat deadline remains the fallback
+and delivery must be rechecked on major iOS updates. The fallback can take roughly
+three to four seconds including the native UI refresh. A recent host attachment or
+heartbeat is required to show an active reconnect attempt.
+
+On the Mac, IOKit notifications for the pinned phone's USB serial freeze video/input
+on removal and refresh status immediately on attachment. Responses started before
+the event cannot undo that transition. A new USB attachment invalidates video readiness and renews the capture
+retry budget even when the phone's identity is unchanged. The last frame stays
+blurred until a fresh native or fallback frame is presented. A capture failure
+waits for fresh USB status before attempting another session. Native scheduling
+also refreshes the web view's connection poll while WebKit page timers are
+suspended by window occlusion; those refreshes share one in-flight poll and timer.
 
 Status updates change only the native view model, and skip unchanged values. They do not query the accessibility tree,
 create a test session, enter the input queue, or synthesize input. Presence does
@@ -81,3 +99,12 @@ phone: connected/searching, reconnecting/solving, animated waiting, and the
 keep-awake badge through a real five-second lease expiry. The connected hint is
 gone, and adding/removing the badge leaves the status row centered. Screenshots
 after heartbeat expiry allow for the one-second native refresh and transition.
+
+USB recovery was then checked on the same phone. The first physical test recovered
+after a detach and two USB enumerations; the user confirmed that mirroring returned.
+The event-driven build also received actual iOS host-detach/attach notifications
+(recorded by the status endpoint), survived USB re-enumeration, and returned to
+connected video without restarting the app. Heartbeat expiry remains covered by
+the native phase tests. Regression tests cover a network advertisement surviving
+USB removal, reattachment between polls, stale readiness after removal, concurrent
+native/browser polling, and retaining the same phone's frame until video recovers.

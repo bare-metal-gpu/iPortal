@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var activeCaptureUdid: String?
     var singleUsbDevice = false
     var lifecycleTimer: Timer?
+    var usbMonitor: PhoneUSBMonitor?
     var lastStatusAt = ProcessInfo.processInfo.systemUptime
     var captureStartedAt: TimeInterval = 0
     var captureBudget = CaptureRetryBudget()
@@ -129,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var videoMode = "native"
     var serviceProbeInFlight = false
     var nextServiceProbeAt: TimeInterval = 0
+    var nextConnectionPollAt: TimeInterval = 0
     var serverInstance: String?
     var serverFailures = 0
     var serverStartedAt: TimeInterval = 0
@@ -190,20 +192,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool,
-                        epoch: Int, bridgeID: String, instance: String, statusRevision: Int) -> Bool {
+                        epoch: Int, bridgeID: String, instance: String, statusRevision: Int, connectionID: String) -> Bool {
         let now = ProcessInfo.processInfo.systemUptime
         self.singleUsbDevice = singleUsbDevice
         let change = videoGate.observe(next, deviceID: udid, epoch: epoch,
-                                       bridgeID: bridgeID, serverInstance: instance, statusRevision: statusRevision, now: now)
+                                       bridgeID: bridgeID, serverInstance: instance, statusRevision: statusRevision, now: now,
+                                       connectionID: connectionID)
         guard change.accepted else { return false }
         if change.newStatus { lastStatusAt = now }
         guard change.invalidated else { return true }
+        NSLog("Portal lifecycle: %@, USB %@, reattached=%d", next, connectionID, change.reattached)
         captureBudget.failed()
         freezeVideo()
-        if change.deviceChanged {
-            // Never show the old device's pixels while control targets a new one.
+        if change.deviceChanged || change.reattached {
             stopCapture()
-            loadingBorderState.snapshot = nil
+            // A new USB attachment gets a fresh capture budget, while the same
+            // phone keeps its frozen frame. Never retain another phone's pixels.
+            if change.deviceChanged { loadingBorderState.snapshot = nil }
             captureFailed = false
             captureBudget = CaptureRetryBudget()
             nextNativeAttemptAt = 0
@@ -240,6 +245,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func checkVideoLifecycle() {
         guard !terminating else { return }
         let now = ProcessInfo.processInfo.systemUptime
+        if now >= nextConnectionPollAt {
+            nextConnectionPollAt = now + (deviceLifecycle == "ready" ? 1 : 0.5)
+            // WebKit suspends page timers when the window is fully occluded.
+            // A native refresh wakes it; poll() coalesces concurrent callers.
+            js("if (typeof poll === 'function') { void poll(); }")
+        }
         if now >= nextServiceProbeAt {
             nextServiceProbeAt = now + 2
             ensureServer()
@@ -262,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             captureBudget.healthy(at: now)
             if captureLoading {
                 captureLoading = false
+                NSLog("Portal native video ready")
                 nativeCall("setNativeVideoReady", ready: true)
                 updateLoadingBorder()
             }
@@ -282,9 +294,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         freezeVideo()
         captureBudget.failed()
         stopCapture()
-        if deviceLifecycle == "ready", let captureUdid {
-            startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
-        } else { updateLoadingBorder() }
+        captureFailed = true
+        // An AVFoundation disconnect can precede the USB status poll. Wait for
+        // a fresh control-plane observation instead of spending retries on the
+        // device that has just disappeared.
+        videoGate.suspend(at: ProcessInfo.processInfo.systemUptime)
+        NSLog("Portal capture interrupted; waiting for fresh USB status")
+        updateLoadingBorder()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -294,6 +310,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         buildMenu()
         buildWindow()
         installScrollMonitor()
+        usbMonitor = PhoneUSBMonitor { [weak self] serial, attached in
+            guard let self else { return }
+            let normalize: (String) -> String = { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
+            guard let udid = self.captureUdid else {
+                self.js("if (typeof poll === 'function') { void poll(); }")
+                return
+            }
+            guard normalize(serial) == normalize(udid) else { return }
+            if !attached {
+                self.freezeVideo()
+                self.stopCapture()
+                self.videoGate.disconnect(at: ProcessInfo.processInfo.systemUptime)
+                self.updateLoadingBorder()
+            }
+            self.nativeCall("usbConnectionChanged", ready: attached)
+            self.nextConnectionPollAt = 0
+        }
         ensureServer()
         lifecycleTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkVideoLifecycle() }
@@ -317,6 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
         lifecycleTimer?.invalidate()
+        usbMonitor?.stop()
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         capture?.stop()
@@ -538,14 +572,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
            let epoch = d["videoEpoch"] as? Int, let bridgeID = d["bridgeId"] as? String,
            let instance = d["serverInstance"] as? String, let revision = d["statusRevision"] as? Int {
             guard !retiredBridgeIDs.contains(bridgeID), serverInstance == nil || serverInstance == instance else { return }
-            videoMode = d["videoMode"] as? String ?? "native"
-            if videoMode == "stream" { loadingBorderState.snapshot = nil }
             guard applyLifecycle(lifecycle, udid: udid, singleUsbDevice: d["singleUsbDevice"] as? Bool ?? false,
-                                 epoch: epoch, bridgeID: bridgeID, instance: instance, statusRevision: revision) else { return }
+                                 epoch: epoch, bridgeID: bridgeID, instance: instance, statusRevision: revision,
+                                 connectionID: d["usbConnectionID"] as? String ?? "") else { return }
+            videoMode = d["videoMode"] as? String ?? "native"
         }
         guard d["bridgeId"] as? String == videoGate.bridgeID,
               d["videoEpoch"] as? Int == videoGate.epoch else { return }
         if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
+        // Keep the native snapshot until the fallback has actually presented a
+        // fresh frame, not merely announced that it is trying to connect.
+        if videoMode == "stream", !waitingForVideo, deviceLifecycle == "ready" {
+            loadingBorderState.snapshot = nil
+        }
         if let detail = d["loadingDetail"] as? String { loadingBorderState.detail = detail }
         if let loading = d["loading"] as? Bool {
             pageLoading = loading
@@ -594,12 +633,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func fallbackToStream() {
+        freezeVideo()
         stopCapture()
         captureFailed = true
         captureLoading = false
         waitingForVideo = true
         nextNativeAttemptAt = ProcessInfo.processInfo.systemUptime + 30
-        loadingBorderState.snapshot = nil
+        NSLog("Portal video fallback; preserving last frame")
         nativeCall("startStream")
         updateLoadingBorder()
     }

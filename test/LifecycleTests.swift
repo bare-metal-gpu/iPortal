@@ -44,6 +44,26 @@ struct LifecycleTests {
         let ack = gate.observe("ready", deviceID: "A", epoch: 6, bridgeID: "page1", serverInstance: "server1", statusRevision: 7, now: 124)
         assert(ack.accepted && !ack.newStatus, "readiness acknowledgements are not control-plane heartbeats")
 
+        var cableGate = VideoReadinessGate()
+        func cable(_ state: String, _ revision: Int, _ connection: String) -> VideoReadinessGate.Change {
+            cableGate.observe(state, deviceID: "A", epoch: revision, bridgeID: "page", serverInstance: "server",
+                              statusRevision: revision, now: Double(revision), connectionID: connection)
+        }
+        _ = cable("ready", 1, "7")
+        assert(!cable("disconnected", 2, "7").deviceChanged, "unplug retains the same phone's frozen frame")
+        let replug = cable("connecting", 3, "9")
+        assert(replug.reattached && !replug.deviceChanged, "reattach resets capture retries without discarding the frame")
+        assert(!cable("ready", 4, "9").reattached, "ordinary ready polls must not reset the failure budget")
+        assert(cable("ready", 5, "10").reattached, "a quick replug between polls still invalidates the old capture")
+        assert(!cableGate.acceptsFrame(at: 4.9, now: 5.1))
+        assert(cableGate.acceptsFrame(at: 5.1, now: 5.1))
+        cableGate.disconnect(at: 6)
+        assert(cableGate.lifecycle == "disconnected")
+        assert(!cableGate.acceptsFrame(at: 6.1, now: 6.1), "hardware removal freezes before web polling")
+        let preEvent = cableGate.observe("ready", deviceID: "A", epoch: 5, bridgeID: "page", serverInstance: "server",
+                                       statusRevision: 5, now: 6.2, connectionID: "10")
+        assert(!preEvent.accepted, "pre-detach ready echo must not undo the hardware event")
+
         var budget = CaptureRetryBudget()
         assert(budget.beginAttempt(at: 0))
         budget.failed()

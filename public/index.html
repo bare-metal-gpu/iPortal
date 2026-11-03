@@ -141,6 +141,7 @@ let nativeReady = false;
 let videoEpoch = 0;
 let statusRevision = 0;
 let deviceUdid = "";
+let usbConnectionID = "";
 let singleUsbDevice = false;
 let serverInstance = document.querySelector('meta[name="mirror-instance"]').content;
 const controlOnly = new Set(["ensure", "quality", "lock", "unlock"]);
@@ -157,18 +158,21 @@ function invalidateInput() {
   touch = null; wheel = null; pinch = null; typed = "";
   clearTimeout(wheelTimer); wheelTimer = null;
 }
-function setLifecycle(next, identity = deviceUdid, instance = serverInstance) {
+function setLifecycle(next, identity = deviceUdid, instance = serverInstance, connectionID = usbConnectionID) {
   if (!["ready", "locked", "connecting", "disconnected"].includes(next)) next = "connecting";
   identity = typeof identity === "string" ? identity : "";
   const changedIdentity = identity !== deviceUdid || instance !== serverInstance;
-  if (next === lifecycle && !changedIdentity) return;
+  const reattached = (lifecycle === "disconnected" && next !== "disconnected") || connectionID !== usbConnectionID;
+  if (next === lifecycle && !changedIdentity && !reattached) return;
   lifecycle = next;
   deviceUdid = identity;
   serverInstance = instance;
+  usbConnectionID = connectionID;
   videoEpoch++;
   nativeReady = false;
   stopStream();
   invalidateInput();
+  if (reattached || changedIdentity) { streamRetryAt = 0; streamFailures = 0; }
   if (changedIdentity) {
     screen.getContext("2d").clearRect(0, 0, screen.width, screen.height);
     hasStreamFrame = false;
@@ -186,7 +190,7 @@ function reportLoading() {
   window.webkit?.messageHandlers?.native?.postMessage({
     loading: waitingForVideo || pendingActions > 0, waitingForVideo,
     loadingDetail: waitingForVideo ? loadingDetail : "", lifecycle,
-    deviceUdid, singleUsbDevice, serverInstance, videoEpoch, statusRevision, bridgeId, videoMode: nativeVideo ? "native" : "stream"
+    deviceUdid, usbConnectionID, singleUsbDevice, serverInstance, videoEpoch, statusRevision, bridgeId, videoMode: nativeVideo ? "native" : "stream"
   });
 }
 const params = new URLSearchParams(location.search);
@@ -414,9 +418,46 @@ function api(name, body = {}, fromGesture = false) {
 
 // ---------- Connection ----------
 
+let pollInFlight = false;
+let pollTimer;
+let usbRevision = 0;
+let pollController;
+let refreshPending = false;
+function usbConnectionChanged(attached, epoch, documentId) {
+  // Hardware events remain relevant across video epochs in the same document.
+  if (documentId !== bridgeId) return;
+  usbRevision++;
+  connected = false;
+  setLifecycle(attached ? "connecting" : "disconnected");
+  loadingDetail = attached ? "" : "Connect your iPhone";
+  statusRevision++;
+  reportLoading();
+  // Discard a pre-event response; it cannot resurrect the detached transport.
+  if (pollInFlight) { refreshPending = true; pollController?.abort(); }
+  else void poll();
+}
+// Native refreshes also wake an occluded WKWebView. Share one request/timer so
+// native and browser scheduling cannot overlap or multiply polling loops.
 async function poll() {
+  if (pollInFlight) return;
+  clearTimeout(pollTimer);
+  pollInFlight = true;
+  try { await pollConnection(); }
+  finally {
+    pollInFlight = false;
+    const delay = refreshPending ? 0 : lifecycle === "ready" ? 1000 : 500;
+    refreshPending = false;
+    pollTimer = setTimeout(poll, delay);
+  }
+}
+async function pollConnection() {
+  const revision = usbRevision;
+  const controller = new AbortController();
+  pollController = controller;
+  const timeout = setTimeout(() => controller.abort(), 3000);
   try {
-    const s = await (await fetch("/api/status", { signal: AbortSignal.timeout(3000) })).json();
+    const s = await (await fetch("/api/status", { signal: controller.signal })).json();
+    if (revision !== usbRevision) return;
     if (s.service !== "iphone-mirror" || s.apiVersion !== 2) throw new Error("Unexpected server");
     const fingerprint = document.querySelector('meta[name="mirror-instance"]');
     if (fingerprint.content !== s.instanceId) {
@@ -431,7 +472,8 @@ async function poll() {
     $("device").textContent = s.device || s.ok ? "iPhone connected" : "No iPhone connected";
     $("quality").value = s.quality;
     singleUsbDevice = s.captureIdentity?.singleUsbDevice === true;
-    setLifecycle(s.lifecycle, s.device?.udid ?? s.pinnedUdid ?? "", s.instanceId);
+    setLifecycle(s.lifecycle, s.device?.udid ?? s.pinnedUdid ?? "", s.instanceId,
+      s.device ? String(s.device.id ?? "") : usbConnectionID);
     loadingDetail = lifecycle === "locked" ? "Unlock your iPhone." : !s.ok ? (s.error ?? "") : "";
     if (lifecycle === "ready" && !connected) {
       connected = true;
@@ -449,6 +491,7 @@ async function poll() {
       $("overlayText").textContent = loadingDetail;
     }
   } catch {
+    if (revision !== usbRevision) return;
     setLifecycle("connecting");
     connected = false;
     streamReady = false;
@@ -457,14 +500,13 @@ async function poll() {
     $("overlay").querySelector("b").textContent = "Reconnecting…";
     $("overlayText").textContent = "";
     loadingDetail = "";
-  }
+  } finally { clearTimeout(timeout); }
   statusRevision++;
   reportLoading();
   // Independent of the input queue: report actual video + control readiness.
   void requestJSON("/api/presence", { method: "POST", headers: {
     "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content,
   }, body: JSON.stringify({ clientId: bridgeId, ready: canInteract() }) }, 1500).catch(() => {});
-  setTimeout(poll, 1000);
 }
 
 poll();

@@ -119,8 +119,8 @@ let connectedUsbUdids = [];
 async function pickDevice() {
   const devices = await listDevices();
   connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
-  if (!pinnedUdid) pinnedUdid = (devices.find(d => d.connection === "USB") ?? devices[0])?.udid ?? null;
-  return devices.find(d => d.udid === pinnedUdid) ?? null;
+  if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
+  return devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
 }
 
 async function muxConnect(deviceId, port) {
