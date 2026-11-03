@@ -368,6 +368,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "native")
+        if MirrorBenchmark.enabled {
+            config.userContentController.addUserScript(WKUserScript(source: "window.__mirrorBenchmark = true;",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            MirrorBenchmark.record("started")
+        }
         web = WKWebView(frame: .zero, configuration: config)
         web.setValue(false, forKey: "drawsBackground")
         web.navigationDelegate = self
@@ -545,6 +550,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         guard d["bridgeId"] as? String == videoGate.bridgeID,
               d["videoEpoch"] as? Int == videoGate.epoch else { return }
+        if MirrorBenchmark.enabled, let trace = d["benchmark"] as? [String: Any] {
+            MirrorBenchmark.record("browser", trace)
+            return
+        }
         if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
         if let detail = d["loadingDetail"] as? String { loadingBorderState.detail = detail }
         if let loading = d["loading"] as? Bool {
@@ -735,11 +744,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: Actions
 
     func installScrollMonitor() {
-        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .leftMouseDown, .leftMouseUp, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self, event.window === self.window else { return event }
                 let point = self.web.convert(event.locationInWindow, from: nil)
                 guard self.web.bounds.contains(point) || self.trackingScroll || self.trackingMagnify else { return event }
+                if MirrorBenchmark.enabled {
+                    var fields: [String: Any] = ["type": event.type.rawValue, "eventMs": event.timestamp * 1000]
+                    if event.type == .scrollWheel || event.type == .magnify { fields["phase"] = event.phase.rawValue }
+                    MirrorBenchmark.record("mac-input", fields)
+                }
+                guard event.type == .scrollWheel || event.type == .magnify else { return event }
                 // Never also pass this event to WKWebView: its DOM wheel handler
                 // would turn the same physical gesture into a second swipe.
                 let magnifying = event.type == .magnify

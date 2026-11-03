@@ -6,6 +6,67 @@ import CoreMediaIO
 import Cocoa
 import CoreImage
 
+// Opt-in developer trace. No screenshots, key contents, or typed text are saved.
+// The serial writer keeps file I/O off the capture and UI queues; recording is bounded.
+enum MirrorBenchmark {
+    private static let destination = ProcessInfo.processInfo.environment["IPHONE_MIRROR_BENCHMARK_TRACE"]
+    static let enabled = destination?.hasPrefix("/") == true
+    private static let writer = DispatchQueue(label: "iphone-portal.benchmark")
+    private static var bytes = 0
+    private static var handle: FileHandle? = {
+        guard enabled, let destination else { return nil }
+        guard FileManager.default.createFile(atPath: destination, contents: nil,
+            attributes: [.posixPermissions: 0o600]) else { return nil }
+        return FileHandle(forWritingAtPath: destination)
+    }()
+    static func record(_ event: String, _ fields: [String: Any] = [:], at time: Double = ProcessInfo.processInfo.systemUptime * 1000) {
+        guard enabled else { return }
+        var row = fields
+        row["event"] = event; row["hostMs"] = time
+        guard let data = try? JSONSerialization.data(withJSONObject: row) else { return }
+        writer.async {
+            guard bytes + data.count < 16 * 1024 * 1024, let handle else { return }
+            do { try handle.write(contentsOf: data + Data([10])); bytes += data.count + 1 }
+            catch { self.handle = nil }
+        }
+    }
+
+    // The recorder draws white/green sentinels followed by eight red/cyan bits.
+    // Sample the existing BGRA USB buffer directly: no image conversion or extra capture session.
+    static func marker(_ pixel: CVPixelBuffer) -> Int? {
+        guard enabled, CVPixelBufferGetPixelFormatType(pixel) == kCVPixelFormatType_32BGRA else { return nil }
+        CVPixelBufferLockBaseAddress(pixel, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixel) else { return nil }
+        let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
+        guard height > width, width > 100 else { return nil }
+        let rowBytes = CVPixelBufferGetBytesPerRow(pixel)
+        let p = base.assumingMemoryBound(to: UInt8.self)
+        // UIKit may inset/letterbox the runner view. Locate the strip rather than
+        // assuming its vertical origin, and require three agreeing scanlines.
+        var previous: Int?, agreeing = 0
+        for fraction in stride(from: 0.2, through: 0.64, by: 0.02) {
+            var code = 0, valid = true
+            for i in 0..<10 {
+                let x = Int(Double(width) * (0.1 + (Double(i) + 0.5) * 0.08))
+                let offset = Int(Double(height) * fraction) * rowBytes + x * 4
+                let b = p[offset], g = p[offset + 1], r = p[offset + 2]
+                if i == 0 { valid = r > 180 && g > 180 && b > 180 }
+                else if i == 1 { valid = r < 80 && g > 180 && b < 80 }
+                else if r < 80 && g > 180 && b > 180 { code |= 1 << (i - 2) }
+                else { valid = r > 180 && g < 80 && b < 80 }
+                if !valid { break }
+            }
+            if valid {
+                agreeing = previous == code ? agreeing + 1 : 1
+                previous = code
+                if agreeing >= 3 { return code }
+            } else { previous = nil; agreeing = 0 }
+        }
+        return nil
+    }
+}
+
 // BEGIN TESTABLE CAPTURE EXECUTOR
 // Cancellation is visible immediately, even while AVFoundation is blocked in
 // startRunning(). Every session shares this queue: replacement capture must not
@@ -51,16 +112,23 @@ private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     private let lifetime: CaptureLifetime
     private var pixel: CVPixelBuffer?
     private var timestamp: TimeInterval = 0
+    private var lastMarker: Int?
 
     init(lifetime: CaptureLifetime) { self.lifetime = lifetime }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard !lifetime.isCancelled, CMSampleBufferIsValid(sample), CMSampleBufferDataIsReady(sample),
               let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
+        let received = ProcessInfo.processInfo.systemUptime
+        if MirrorBenchmark.enabled, let code = MirrorBenchmark.marker(pixel), code != lastMarker {
+            lastMarker = code
+            MirrorBenchmark.record("usb-marker", ["sequence": code,
+                "samplePTS": CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))], at: received * 1000)
+        }
         lock.lock()
         if !lifetime.isCancelled {
             self.pixel = pixel
-            timestamp = ProcessInfo.processInfo.systemUptime
+            timestamp = received
         }
         lock.unlock()
     }

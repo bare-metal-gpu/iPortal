@@ -363,20 +363,32 @@ function toast(msg) {
 }
 
 let outbound = Promise.resolve();
+function benchmarkTrace(stage, fields = {}) {
+  if (!window.__mirrorBenchmark) return;
+  window.webkit?.messageHandlers.native.postMessage({ bridgeId, videoEpoch,
+    benchmark: { stage, jsMs: performance.now(), ...fields } });
+}
 function api(name, body = {}, fromGesture = false) {
   if (!controlOnly.has(name) && !canInteract()) return Promise.resolve();
   const epoch = inputEpoch;
   if (!fromGesture) { flushWheel(); flushPinch(); } // Keep earlier gestures ahead of later input.
   if (name !== "type") flush(true); // keep typed text in order with other actions
   const requestId = crypto.randomUUID();
+  const enqueuedAt = performance.now();
+  benchmarkTrace("enqueue", { name, requestId });
   pendingActions++;
   reportLoading();
   const task = outbound.then(async () => {
   try {
     if (!controlOnly.has(name) && (epoch !== inputEpoch || !canInteract())) return;
+    const dispatchedAt = performance.now();
+    benchmarkTrace("dispatch", { name, requestId, browserQueueMs: dispatchedAt - enqueuedAt });
     const json = await requestJSON(`/api/${name}`, { method: "POST", headers: { "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content }, body: JSON.stringify({ ...body, requestId }) });
+    benchmarkTrace("reply", { name, requestId, ok: json.ok, timing: json.timing,
+      browserQueueMs: dispatchedAt - enqueuedAt, httpMs: performance.now() - dispatchedAt });
     if (!json.ok) toast(json.error || "Something went wrong");
   } catch {
+    benchmarkTrace("error", { name, requestId });
     // Recover the receipt rather than sending the action again after a lost reply.
     try {
       const receipt = await requestJSON(`/api/commands/${requestId}`, {}, 3000);
@@ -469,6 +481,7 @@ screen.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   screen.setPointerCapture(e.pointerId);
   touch = { t0: performance.now(), last: 0, points: [[...rel(e), 0]] };
+  benchmarkTrace("pointerdown");
   ripple(e);
 });
 
@@ -492,6 +505,7 @@ screen.addEventListener("pointerup", (e) => {
     points = Array.from({ length: 40 }, (_, i) => points[Math.round(i * step)]);
   }
   touch = null;
+  benchmarkTrace("pointerup", { collectionMs: end, moved });
   api("gesture", { points, end: moved ? points.at(-1)[2] : end < 250 ? 40 : end });
 });
 
