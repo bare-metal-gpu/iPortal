@@ -9,7 +9,7 @@
   "scripts": {
     "setup": "scripts/setup-wda.sh",
     "start": "node mirror.mjs",
-    "test": "node --test test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs && node test/e2e.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
+    "test": "node --test test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs test/portal-status.mjs test/portal-install.mjs && node test/e2e.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
     "app": "macos/build.sh --install"
   },
   "engines": {

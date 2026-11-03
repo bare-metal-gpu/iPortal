@@ -460,6 +460,10 @@ async function poll() {
   }
   statusRevision++;
   reportLoading();
+  // Independent of the input queue: report actual video + control readiness.
+  void requestJSON("/api/presence", { method: "POST", headers: {
+    "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content,
+  }, body: JSON.stringify({ clientId: bridgeId, ready: canInteract() }) }, 1500).catch(() => {});
   setTimeout(poll, 1000);
 }
 

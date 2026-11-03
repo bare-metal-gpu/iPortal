@@ -6,7 +6,6 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Jakubantalik/Libraries.dev",
       "state" : {
-        "branch" : "main",
         "revision" : "bfb396bf634b664aad7c72447a3825ce09cf8878"
       }
     }

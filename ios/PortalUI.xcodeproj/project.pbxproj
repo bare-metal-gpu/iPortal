@@ -1,0 +1,34 @@
+// !$*UTF8*$!
+{
+ archiveVersion = 1; classes = {}; objectVersion = 60;
+ objects = {
+  B00000000000000000000001 = {isa = PBXProject; attributes = {LastUpgradeCheck = 2720;}; buildConfigurationList = B00000000000000000000010; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; knownRegions = (en, Base); mainGroup = B00000000000000000000002; productRefGroup = B00000000000000000000003; projectDirPath = ""; projectRoot = ""; targets = (B00000000000000000000004); packageReferences = (B00000000000000000000020); };
+  B00000000000000000000002 = {isa = PBXGroup; children = (B00000000000000000000030, B00000000000000000000031, B00000000000000000000032, B00000000000000000000033, B00000000000000000000003); sourceTree = "<group>"; };
+  B00000000000000000000003 = {isa = PBXGroup; children = (B00000000000000000000005); name = Products; sourceTree = "<group>"; };
+  B00000000000000000000004 = {isa = PBXNativeTarget; buildConfigurationList = B00000000000000000000011; buildPhases = (B00000000000000000000006, B00000000000000000000007, B00000000000000000000008); buildRules = (); dependencies = (); name = PortalUI; productName = PortalUI; productReference = B00000000000000000000005; productType = "com.apple.product-type.framework"; packageProductDependencies = (B00000000000000000000021, B00000000000000000000022); };
+  B00000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PortalUI.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+  B00000000000000000000006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000040, B00000000000000000000041, B00000000000000000000042); runOnlyForDeploymentPostprocessing = 0; };
+  B00000000000000000000007 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000043, B00000000000000000000044); runOnlyForDeploymentPostprocessing = 0; };
+  B00000000000000000000008 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000045); runOnlyForDeploymentPostprocessing = 0; };
+  B00000000000000000000010 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000012, B00000000000000000000013); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+  B00000000000000000000011 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000014, B00000000000000000000015); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+  B00000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES;}; name = Debug; };
+  B00000000000000000000013 = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES;}; name = Release; };
+  B00000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.iphoneportal.StatusUI; PRODUCT_NAME = PortalUI; SWIFT_VERSION = 5.0; DEFINES_MODULE = YES; SKIP_INSTALL = NO; TARGETED_DEVICE_FAMILY = "1,2"; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; name = Debug; };
+  B00000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.iphoneportal.StatusUI; PRODUCT_NAME = PortalUI; SWIFT_VERSION = 5.0; DEFINES_MODULE = YES; SKIP_INSTALL = NO; TARGETED_DEVICE_FAMILY = "1,2"; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_COMPILATION_MODE = wholemodule;}; name = Release; };
+  B00000000000000000000020 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/Jakubantalik/Libraries.dev"; requirement = {kind = revision; revision = bfb396bf634b664aad7c72447a3825ce09cf8878;}; };
+  B00000000000000000000021 = {isa = XCSwiftPackageProductDependency; package = B00000000000000000000020; productName = BorderBeamKit; };
+  B00000000000000000000022 = {isa = XCSwiftPackageProductDependency; package = B00000000000000000000020; productName = ThinkingOrbsKit; };
+  B00000000000000000000030 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalUI.swift; sourceTree = "<group>"; };
+  B00000000000000000000031 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PortalUI.m; sourceTree = "<group>"; };
+  B00000000000000000000032 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../shared/ConnectionAppearance.swift; sourceTree = "<group>"; };
+  B00000000000000000000033 = {isa = PBXFileReference; lastKnownFileType = folder; path = ../macos/Fonts; sourceTree = "<group>"; };
+  B00000000000000000000040 = {isa = PBXBuildFile; fileRef = B00000000000000000000030; };
+  B00000000000000000000041 = {isa = PBXBuildFile; fileRef = B00000000000000000000031; };
+  B00000000000000000000042 = {isa = PBXBuildFile; fileRef = B00000000000000000000032; };
+  B00000000000000000000043 = {isa = PBXBuildFile; productRef = B00000000000000000000021; };
+  B00000000000000000000044 = {isa = PBXBuildFile; productRef = B00000000000000000000022; };
+  B00000000000000000000045 = {isa = PBXBuildFile; fileRef = B00000000000000000000033; };
+ };
+ rootObject = B00000000000000000000001;
+}

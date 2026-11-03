@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { apiError, createInspection } from "./inspection.mjs";
 import { createKeepAwake } from "./keep-awake.mjs";
+import { createPortalStatus } from "./portal-status.mjs";
 import { randomUUID } from "node:crypto";
 import { commandContext, createScheduler } from "./scheduler.mjs";
 import { createCommands } from "./commands.mjs";
@@ -448,12 +449,18 @@ if (positionals[0] === "devices") {
 
 const inspection = createInspection({ wda, withSession, enqueue });
 const keepAwake = createKeepAwake({ wda, withSession, enqueue: fn => scheduler.maintenance(fn) });
+const portalStatus = createPortalStatus({ wda, keepAwake: keepAwake.status });
+process.on("exit", () => portalStatus.stop());
 let commands;
 const commandLedger = () => commands ??= createCommands({ file: process.env.MIRROR_COMMANDS_FILE ?? path.join(ROOT, "vendor", opts.port === "7100" ? "commands.json" : `commands-${opts.port}.json`) });
 
 async function dispatch(name, body, signal) {
   const started = performance.now();
   if (name === "status") return { status: 200, body: await status() };
+  if (name === "presence") {
+    portalStatus.receive(body);
+    return { status: 200, body: { ok: true } };
+  }
   if (name === "command-status") {
     const value = commandLedger().get(body.requestId);
     return { status: value ? 200 : 404, body: value ? { ok: true, value } : { ok: false, code: "not found", error: "Unknown request ID" } };

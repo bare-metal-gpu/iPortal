@@ -28,3 +28,4 @@ if (!source.includes(marker)) {
   fs.writeFileSync(file, source.replace(anchor, branding + anchor));
 }
 JS
+node "$ROOT/scripts/install-portal-status.mjs" "$WDA"

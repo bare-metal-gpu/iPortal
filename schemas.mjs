@@ -46,6 +46,7 @@ export const ActionSchemas = {
 };
 export const RequestSchemas = {
   ...ActionSchemas,
+  presence: Schema.Struct({ clientId: text(128), ready: Schema.Boolean }),
   state: Schema.Struct({}),
   elements: Schema.Struct({ selector: Selector }),
   element: Schema.Struct({ ...target, attributes: optional(Schema.Array(Attribute).check(Schema.isMinLength(1), Schema.isMaxLength(11))) }).check(hasTarget),

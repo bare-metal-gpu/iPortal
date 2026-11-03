@@ -26,6 +26,7 @@ fi
 
 # Apply the validated, rotation-aware touch and acknowledged keepalive endpoints.
 "$ROOT/scripts/apply-wda-patches.sh" "$WDA"
+bash "$ROOT/scripts/build-portal-ui.sh" "$WDA"
 "$ROOT/scripts/apply-wda-branding.sh" "$WDA"
 
 # Free accounts need a bundle ID nobody else has registered.
@@ -53,6 +54,9 @@ fi
 RUNNER="$BUILD/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$RUNNER/Info.plist")" = "iPhone Portal" ] || { echo "Runner branding was not embedded."; exit 1; }
 codesign --verify --strict "$RUNNER"
+[ -d "$RUNNER/PortalLaunch.storyboardc" ] || { echo "Runner launch screen was not embedded."; exit 1; }
+codesign --verify --strict "$RUNNER/Frameworks/PortalUI.framework"
+xcrun otool -L "$RUNNER/WebDriverAgentRunner-Runner" | grep -q '@executable_path/Frameworks/PortalUI.framework/PortalUI' || { echo "Runner status screen was not linked."; exit 1; }
 
 cat <<MSG
 
