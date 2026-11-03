@@ -1,13 +1,14 @@
 import UIKit
 import SwiftUI
 import CoreText
+import ThinkingOrbsKit
 
 @MainActor
 private final class PortalScreenState: ObservableObject {
     @Published var phase = "waiting"
     @Published var title = "Waiting for your Mac"
     @Published var detail = "Connect by USB and open iPhone Portal on your Mac."
-    @Published var footnote = ""
+    @Published var keepAwakeSeconds = 0
     @Published var visible = false
 }
 
@@ -15,11 +16,12 @@ private struct PortalScreen: View {
     @ObservedObject var state: PortalScreenState
     var body: some View {
         let connecting = state.phase == "connecting" || state.phase == "reconnecting"
+        let orb: OrbState = state.phase == "reconnecting" ? .solving : state.phase == "connected" ? .searching : .connecting
         ZStack {
             Color.black
             PortalConnectionBorder(active: connecting && state.visible)
-            PortalConnectionMessage(title: state.title, detail: state.detail, footnote: state.footnote,
-                                    animated: connecting && state.visible)
+            PortalConnectionMessage(title: state.title, detail: state.detail, keepAwakeSeconds: state.keepAwakeSeconds,
+                                    orb: orb, isVisible: state.visible, shimmer: connecting)
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
@@ -29,7 +31,7 @@ private struct PortalScreen: View {
 @objc(PortalViewController)
 public final class PortalViewController: UIViewController {
     private let state = PortalScreenState()
-    private var observer: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
     public override func viewDidLoad() {
         super.viewDidLoad()
         view.tag = 4102
@@ -46,19 +48,26 @@ public final class PortalViewController: UIViewController {
             host.view.topAnchor.constraint(equalTo: view.topAnchor), host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         host.didMove(toParent: self)
-        observer = NotificationCenter.default.addObserver(forName: NSNotification.Name("PortalStatusChanged"), object: nil, queue: .main) { [weak self] note in
+        observers.append(NotificationCenter.default.addObserver(forName: NSNotification.Name("PortalStatusChanged"), object: nil, queue: .main) { [weak self] note in
             guard let self, let info = note.userInfo else { return }
             let phase = info["phase"] as? String ?? "waiting"
             let title = info["message"] as? String ?? "Waiting for your Mac"
             let detail = info["detail"] as? String ?? ""
-            let footnote = info["awake"] as? String ?? ""
+            let seconds = max(0, Int(ceil((info["keepAwakeRemainingMs"] as? Double ?? 0) / 1000)))
             if self.state.phase != phase { self.state.phase = phase }
             if self.state.title != title { self.state.title = title }
             if self.state.detail != detail { self.state.detail = detail }
-            if self.state.footnote != footnote { self.state.footnote = footnote }
-        }
+            if self.state.keepAwakeSeconds != seconds { self.state.keepAwakeSeconds = seconds }
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.state.visible = false
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.state.visible = self.view.window != nil
+        })
     }
     public override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); state.visible = true }
     public override func viewWillDisappear(_ animated: Bool) { state.visible = false; super.viewWillDisappear(animated) }
-    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 }

@@ -52,12 +52,12 @@
   BOOL connected = [phase isEqual:@"connected"];
   NSString *message = connected ? @"Connected" : [phase isEqual:@"connecting"] ? @"Connecting…"
     : [phase isEqual:@"reconnecting"] ? @"Reconnecting…" : @"Waiting for your Mac";
-  NSString *detail = connected ? @"You can open another app." : [phase isEqual:@"waiting"]
+  NSString *detail = [phase isEqual:@"waiting"]
     ? @"Connect by USB and open iPhone Portal on your Mac." : @"";
-  NSTimeInterval remaining = connected ? MAX(0, self.awakeUntil - NSProcessInfo.processInfo.systemUptime) : 0;
-  NSString *awake = remaining > 0 ? [NSString stringWithFormat:@"Screen stays awake for %ld min", (long)ceil(remaining/60)] : @"";
+  BOOL fresh = self.receivedAt > 0 && NSProcessInfo.processInfo.systemUptime - self.receivedAt < 6;
+  NSTimeInterval remaining = fresh ? MAX(0, self.awakeUntil - NSProcessInfo.processInfo.systemUptime) : 0;
   UIView *root = self.root;
-  return @{@"phase":phase, @"message":message, @"detail":detail, @"awake":awake,
+  return @{@"phase":phase, @"message":message, @"detail":detail, @"keepAwakeRemainingMs":@((long long)ceil(remaining * 1000)),
     @"screenInstalled":@(root != nil), @"width":@(root.bounds.size.width), @"height":@(root.bounds.size.height),
     @"foreground":@(UIApplication.sharedApplication.applicationState == UIApplicationStateActive)};
 }

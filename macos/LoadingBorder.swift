@@ -33,7 +33,7 @@ struct LoadingBorder: View {
                     title: state.phase == "locked" ? "Locked" : state.phase == "disconnected" ? "Disconnected" : "Connecting…",
                     detail: state.detail,
                     symbol: state.phase == "locked" ? "lock.fill" : state.phase == "disconnected" ? "cable.connector.slash" : nil,
-                    animated: state.phase != "locked" && state.phase != "disconnected")
+                    shimmer: state.phase != "locked" && state.phase != "disconnected")
                 .transition(.opacity)
             }
         }
