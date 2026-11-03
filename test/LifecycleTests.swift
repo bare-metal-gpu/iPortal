@@ -3,11 +3,14 @@ import Foundation
 @main
 struct LifecycleTests {
     static func main() {
-        assert(keepsWatcherAfterQuit(explicitQuit: false, systemReason: nil), "Dock Quit must preserve the watcher")
-        assert(keepsWatcherAfterQuit(explicitQuit: false, systemReason: 0), "Command-Q must preserve the watcher")
-        assert(!keepsWatcherAfterQuit(explicitQuit: true, systemReason: nil), "menu-bar Quit must stop everything")
-        for reason: UInt32 in [0x71756974, 0x73687574, 0x72657374, 0x726c676f] {
-            assert(!keepsWatcherAfterQuit(explicitQuit: false, systemReason: reason), "system termination must never be blocked")
+        let serial = "0000814000000000000000A1"
+        for request in [PortalWatcherRequest.mirror(serial), .login(true), .login(false)] {
+            assert(PortalWatcherRequest(url: request.url) == request, "watcher commands must round-trip without losing the selected phone")
+        }
+        for malformed in ["https://mirror?serial=00008140", "iphone-portal://mirror?serial=x", "iphone-portal://login?enabled=true",
+                          "iphone-portal://login?enabled=1&enabled=0", "iphone-portal://mirror?serial=00008140;quit",
+                          "iphone-portal://login/path?enabled=1", "iphone-portal://login?enabled=1#extra"] {
+            assert(PortalWatcherRequest(url: URL(string: malformed)!) == nil, "unknown or ambiguous requests must be rejected")
         }
         var list = USBDeviceListState()
         let device = PortalUSBDevice(serial: "phone", name: "My iPhone")

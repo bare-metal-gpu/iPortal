@@ -1,9 +1,39 @@
 import Foundation
 
-// A nonzero quit reason is supplied by macOS for session-wide termination.
-// Keep ordinary Dock/menu quits lightweight without blocking logout or updates.
-func keepsWatcherAfterQuit(explicitQuit: Bool, systemReason: UInt32?) -> Bool {
-    !explicitQuit && (systemReason ?? 0) == 0
+// Delivered directly to the containing app with NSWorkspace. No global URL
+// handler, shell interpolation, or durable command queue is needed.
+enum PortalWatcherRequest: Equatable {
+    case mirror(String)
+    case login(Bool)
+
+    init?(url: URL) {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme == "iphone-portal", parts.path.isEmpty,
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              parts.fragment == nil, let items = parts.queryItems, items.count == 1 else { return nil }
+        switch (parts.host, items[0].name, items[0].value) {
+        case ("mirror", "serial", .some(let serial)):
+            guard (8...64).contains(serial.count), serial.allSatisfy({ $0.isASCII && ($0.isHexDigit || $0 == "-") }) else { return nil }
+            self = .mirror(serial)
+        case ("login", "enabled", "1"): self = .login(true)
+        case ("login", "enabled", "0"): self = .login(false)
+        default: return nil
+        }
+    }
+
+    var url: URL {
+        var parts = URLComponents()
+        parts.scheme = "iphone-portal"
+        switch self {
+        case .mirror(let serial):
+            parts.host = "mirror"
+            parts.queryItems = [URLQueryItem(name: "serial", value: serial)]
+        case .login(let enabled):
+            parts.host = "login"
+            parts.queryItems = [URLQueryItem(name: "enabled", value: enabled ? "1" : "0")]
+        }
+        return parts.url!
+    }
 }
 
 struct PortalUSBDevice: Identifiable, Equatable {

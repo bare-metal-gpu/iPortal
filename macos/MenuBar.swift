@@ -1,6 +1,5 @@
 import Cocoa
 import SwiftUI
-import ServiceManagement
 
 @MainActor
 private final class MenuBarState: ObservableObject {
@@ -136,6 +135,8 @@ final class MirrorMenuBar: NSObject {
     private var menuTracking = false
     var onStart: ((String) -> Void)?
     var onQuit: (() -> Void)?
+    var onLogin: ((Bool) -> Void)?
+    var isLoginEnabled: () -> Bool = { false }
 
     override init() {
         super.init()
@@ -207,7 +208,7 @@ final class MirrorMenuBar: NSObject {
     }
 
     func show(activate: Bool = false) {
-        state.loginEnabled = SMAppService.mainApp.status == .enabled
+        state.loginEnabled = isLoginEnabled()
         state.visible = true
         position()
         if activate { panel.makeKeyAndOrderFront(nil) } else { panel.orderFrontRegardless() }
@@ -255,7 +256,7 @@ final class MirrorMenuBar: NSObject {
         let menu = NSMenu()
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        login.state = isLoginEnabled() ? .on : .off
         menu.addItem(login)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit iPhone Portal", action: #selector(quitAll), keyEquivalent: "")
@@ -266,22 +267,10 @@ final class MirrorMenuBar: NSObject {
         item.menu = nil
     }
 
-    @objc private func toggleLogin() { setLoginEnabled(SMAppService.mainApp.status != .enabled) }
+    @objc private func toggleLogin() { setLoginEnabled(!isLoginEnabled()) }
     @objc private func quitAll() { onQuit?() }
 
-    private func setLoginEnabled(_ enabled: Bool) {
-        do {
-            if enabled && SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems(); return }
-            if !enabled { try SMAppService.mainApp.unregister() }
-            else if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
-            state.loginEnabled = SMAppService.mainApp.status == .enabled
-            if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Couldn’t update Open at Login"
-            alert.informativeText = "You can change this in System Settings → General → Login Items."
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
-    }
+    func refreshLoginStatus() { state.loginEnabled = isLoginEnabled() }
+
+    private func setLoginEnabled(_ enabled: Bool) { onLogin?(enabled) }
 }

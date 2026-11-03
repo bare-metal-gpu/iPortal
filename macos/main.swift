@@ -118,12 +118,10 @@ final class HoverView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
     var mirroringActive = false
     var mirrorGeneration = 0
-    var menuBar: MirrorMenuBar?
-    let deviceNames = PhoneDeviceNames()
-    var invitations = USBInvitationGate()
+    var didLaunch = false
+    var pendingRequests: [PortalWatcherRequest] = []
     var serverStopping = false
     var requestedDeviceUDID: String?
-    var quitWatcherRequested = false
     var window: MirrorWindow!
     var phone: NSVisualEffectView!
     var videoHost: NSView!
@@ -376,39 +374,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         return serials.count == 1 ? serials.first : nil
     }
 
-    func updateMenuBar() {
-        let devices = (usbMonitor?.connectedDevices ?? []).map {
-            PortalUSBDevice(serial: $0.serial, name: deviceNames.name(for: $0.serial, fallback: $0.name))
-        }
-        menuBar?.update(devices: devices, mirroring: mirroringActive)
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let fontURL = Bundle.main.url(forResource: "InterVariable", withExtension: "ttf", subdirectory: "Fonts") {
             CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
         }
         buildMenu()
-        menuBar = MirrorMenuBar()
-        deviceNames.onUpdate = { [weak self] in self?.updateMenuBar() }
-        menuBar?.onStart = { [weak self] serial in self?.startMirroring(serial: serial) }
-        menuBar?.onQuit = { [weak self] in
-            self?.quitWatcherRequested = true
-            NSApp.terminate(nil)
-        }
         usbMonitor = PhoneUSBMonitor { [weak self] serial, attached in self?.usbChanged(serial, attached: attached) }
-        for serial in usbMonitor?.connectedSerials ?? [] {
-            _ = invitations.attached(serial, at: ProcessInfo.processInfo.systemUptime)
-        }
-        updateMenuBar()
-        deviceNames.refresh(usbMonitor?.connectedSerials ?? [])
+        didLaunch = true
+        let requests = pendingRequests
+        pendingRequests.removeAll()
         let event = NSAppleEventManager.shared().currentAppleEvent
-        let loginLaunch = event?.eventID == kAEOpenApplication &&
-            (event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem ||
-             event?.paramDescriptor(forKeyword: keyAELaunchedAsLogInItem)?.booleanValue == true)
-        if loginLaunch || ProcessInfo.processInfo.arguments.contains("--background") {
-            NSApp.setActivationPolicy(.accessory)
-            if usbMonitor?.connectedDevices.isEmpty == false { menuBar?.show() }
-        } else { startMirroring() }
+        let legacyLoginLaunch = event?.eventID == kAEOpenApplication &&
+            event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        if !requests.isEmpty {
+            requests.forEach(handleWatcherRequest)
+        } else if ProcessInfo.processInfo.arguments.contains("--watcher-request") {
+            // NSWorkspace delivers the open-URL event separately from launch.
+            // Never flash a mirror window while changing a helper preference.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                if self?.mirroringActive == false { NSApp.terminate(nil) }
+            }
+        } else {
+            PortalWatcherService.prepare()
+            if legacyLoginLaunch || ProcessInfo.processInfo.arguments.contains("--background") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { NSApp.terminate(nil) }
+            } else { startMirroring() }
+        }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.mirroringActive else { return }
@@ -423,15 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func usbChanged(_ serial: String, attached: Bool) {
         let now = ProcessInfo.processInfo.systemUptime
-        let invite: Bool
-        if attached { invite = invitations.attached(serial, at: now) }
-        else { invitations.detached(serial, at: now); invite = false }
-        updateMenuBar()
-        if attached { deviceNames.refresh(usbMonitor?.connectedSerials ?? []) }
-        guard mirroringActive else {
-            if invite { menuBar?.show() }
-            return
-        }
+        guard mirroringActive else { return }
         guard let udid = captureUdid else {
             js("if (typeof poll === 'function') { void poll(); }")
             return
@@ -450,7 +433,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func startMirroring(serial: String? = nil) {
-        menuBar?.close()
         let target = serial.map { phoneUDID(fromUSBSerial: $0) }
         if mirroringActive, let target, normalizeSerial(target) != normalizeSerial(captureUdid ?? requestedDeviceUDID ?? "") {
             stopMirroring()
@@ -493,7 +475,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         buildWindow()
         installScrollMonitor()
         updateLoadingBorder()
-        updateMenuBar()
         ensureServer()
         lifecycleTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkVideoLifecycle() }
@@ -528,7 +509,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
         }
-        updateMenuBar()
         if !terminating { NSApp.setActivationPolicy(.accessory) }
     }
 
@@ -542,32 +522,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         return true
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let event = NSAppleEventManager.shared().currentAppleEvent
-        let reason = event?.paramDescriptor(forKeyword: kAEQuitReason)
-            ?? event?.attributeDescriptor(forKeyword: kAEQuitReason)
-        // Dock Quit / Command-Q stop the mirror, while the menu-bar Quit stops
-        // everything. Always honour macOS logout, shutdown and restart requests.
-        guard keepsWatcherAfterQuit(explicitQuit: quitWatcherRequested,
-                                    systemReason: reason.map { UInt32(bitPattern: $0.int32Value) }) else { return .terminateNow }
-        menuBar?.close()
-        stopMirroring()
-        return .terminateCancel
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for request in urls.compactMap(PortalWatcherRequest.init(url:)) {
+            if didLaunch { handleWatcherRequest(request) }
+            else { pendingRequests.append(request) }
+        }
+    }
+
+    private func handleWatcherRequest(_ request: PortalWatcherRequest) {
+        switch request {
+        case .mirror(let serial):
+            PortalWatcherService.prepare()
+            startMirroring(serial: serial)
+        case .login(let enabled):
+            PortalWatcherService.setLoginEnabled(enabled) { [weak self] in
+                if self?.mirroringActive == false { NSApp.terminate(nil) }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
         stopMirroring()
         usbMonitor?.stop()
-        deviceNames.stop()
-        menuBar?.stop()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         guard let p = server, p.isRunning else { return }
         p.terminate()
         let deadline = Date().addingTimeInterval(3)
         while p.isRunning && Date() < deadline { usleep(50_000) }
+        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
     }
 
     // MARK: Window
@@ -1192,6 +1177,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 @main
 struct IPhoneMirrorApp {
     @MainActor static func main() {
+        if ProcessInfo.processInfo.arguments.contains("--watcher-status") {
+            PortalWatcherService.printStatus()
+            return
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

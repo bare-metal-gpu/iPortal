@@ -4,7 +4,13 @@ import Foundation
 // launch a test runner. Query only on USB arrivals; cached names render immediately.
 @MainActor
 final class PhoneDeviceNames {
-    private var names = UserDefaults.standard.dictionary(forKey: "PhoneDeviceNames") as? [String: String] ?? [:]
+    private let defaults: UserDefaults
+    private var names: [String: String]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        names = defaults.dictionary(forKey: "PhoneDeviceNames") as? [String: String] ?? [:]
+    }
     private var process: Process?
     private var requested = Set<String>()
     private var again = false
@@ -46,7 +52,7 @@ final class PhoneDeviceNames {
                 guard let self, self.process === task else { return }
                 self.process = nil
                 self.names.merge(discovered) { _, new in new }
-                UserDefaults.standard.set(self.names, forKey: "PhoneDeviceNames")
+                self.defaults.set(self.names, forKey: "PhoneDeviceNames")
                 self.onUpdate?()
                 if self.again { self.again = false; self.refresh(self.requested) }
             }

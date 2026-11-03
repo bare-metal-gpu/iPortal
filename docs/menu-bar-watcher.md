@@ -1,15 +1,25 @@
 # Menu-bar watcher
 
-The native Mac process keeps an IOKit USB observer and status item alive after
-the mirror window closes. Dock Quit and Command-Q stop mirroring and return to
-that lightweight state. The settings menu's **Quit iPhone Portal** exits the
-whole app. System logout, restart and shutdown requests are allowed through.
+The bundled `iPhone Portal Watcher.app` owns the status item and IOKit USB
+observer. It is a separate `LSUIElement` app registered with
+`SMAppService.loginItem(identifier:)`. The main app owns the mirror, server and
+capture. Closing its last window, Dock Quit and Command-Q terminate that process
+normally. The helper remains alive. The menu-bar settings' **Quit iPhone Portal**
+terminates both processes; logout and shutdown follow normal macOS behavior.
 
-Open at Login uses `SMAppService.mainApp`. Login launches and `--background`
-start only the watcher; normal launches still open the mirror. No Node server,
-XCTest runner, video capture, lifecycle polling or WebKit view is kept for the
-watcher. Closing mirroring stops its owned server; an independently started
-server is left alone.
+Open at Login applies only to the helper. Existing main-app login registration
+is migrated after the helper registration succeeds. The helper opens the exact
+containing app with an explicit selected-device request. Settings requests can
+start the main process briefly without opening a window or starting the server.
+Disabling Open at Login unregisters the helper, waits for its termination, then
+relaunches it for the current session. Registration is refreshed after helper
+code changes, and a process-lifetime file lock prevents concurrent launches from
+creating duplicate status items.
+
+No Node server, XCTest runner, video capture, lifecycle polling or WebKit view
+runs inside the helper. Main-app termination stops its owned server; an
+independently started server is left alone. Both processes share local device
+name preferences, and workspace notifications track main-app launch/termination.
 
 USB arrivals open an anchored list of attached iPhones. Each play action carries
 the selected USB serial through to the server's UDID argument. The list retains
@@ -27,18 +37,51 @@ including the top notch. It is positioned from the status button's screen
 coordinates, clamped to the display edge, and dismissed on outside click or
 Escape. Reduce Motion uses a static border.
 
+## Building and diagnostics
+
+The Xcode project embeds and signs the helper as a target dependency. For stable
+local development signing, set `IM_CODE_SIGN_IDENTITY` and `IM_DEVELOPMENT_TEAM`
+when running `macos/build.sh --install`; a successful build caches those public
+identifiers under ignored `vendor/` files for subsequent builds. Without a
+selected identity, the default remains ad-hoc signing. Use the install command
+to replace the generated app bundle, rather than overwriting its executable in
+place. The app refreshes Service Management registration when its helper's code
+fingerprint changes.
+
+The installed main executable's `--watcher-status` argument prints the native
+helper registration status, legacy main-app login status and helper PIDs, then
+exits without launching a mirror. It does not request administrator access.
+Native status values are 0 = unregistered, 1 = enabled, 2 = approval required,
+3 = not found. A new bundled helper can report 3 before initial registration.
+
 ## Verification
 
-- macOS Release build and strict signature verification pass.
-- `npm test`: 45 unit tests plus e2e, guarded input, native contract, helper patch,
+- Release build and deep, strict signature verification pass for both apps.
+- `npm test`: 48 unit tests plus e2e, guarded input, native contract, helper patch,
   capture lifecycle and native lifecycle checks pass.
-- Native lifecycle tests cover row retention/expiry, reattachment, multiple
-  device rows, modern/legacy UDIDs, invitation suppression, and quit routing.
-- On the connected iPhone, the panel displays its configured Unicode name and
-  the play action opens native mirroring. The installed panel's gray play button
-  and beam around the notch were visually checked.
-- Open at Login was enabled and its menu checkmark verified. Actual logout/login
-  and multiple physical iPhones were not exercised.
-- Command-Q was checked on the installed build: the same native process remains,
-  the mirror closes, and its Node server, XCTest runner and port 7100 listener
-  stop. Dock Quit uses the same termination delegate.
+- Native lifecycle tests cover request validation, selected-phone round trips,
+  USB row retention/expiry, reattachment, multiple rows and invitation suppression.
+- The installed helper is registered and running as the native launchd job;
+  the legacy main-app login registration is disabled. A second helper launch
+  exits without creating another watcher.
+- Dock Quit was exercised by the user and confirmed successful. Process checks
+  afterward found the same watcher PID still running under launchd with no exit,
+  while the main app, its Node server, XCTest runner and port 7100 listener were
+  gone. Command-Q independently produced the same result.
+- Play has reopened the main app with the selected phone's UDID. The popup uses
+  the existing name, gray play button and notched border-beam view unchanged.
+- Actual logout/login and multiple physical iPhones have not been exercised.
+
+## Locked-phone startup
+
+The server makes one bounded CoreDevice lock-state query per USB connection
+while the phone helper is unavailable. It publishes the result asynchronously
+without blocking status updates. Live Xcode launch output also reports a locked
+phone immediately instead of waiting for the launch process to exit. A healthy
+phone helper supplies the authoritative ongoing state. Results from an old USB
+connection are discarded, and probe errors stay unknown.
+
+On the connected locked phone, the installed server reported `locked: true` and
+`lifecycle: locked` even while the helper was unavailable; the native app displayed
+**Locked — Unlock your iPhone to continue**. Regression tests cover nonblocking
+publication, one query per attachment, stale-result rejection and probe failures.
