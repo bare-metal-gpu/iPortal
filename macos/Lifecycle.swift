@@ -1,5 +1,28 @@
 import Foundation
 
+// USB can re-enumerate while screen capture is starting. Only that recovery
+// window absorbs short removals; unplugging a working mirror is immediate.
+struct USBRecoveryWindow {
+    private var startedAt: TimeInterval?
+    private var detachedUntil: TimeInterval?
+    var active: Bool { startedAt != nil }
+    mutating func attached(at now: TimeInterval) {
+        if startedAt == nil { startedAt = now }
+        // usbmuxd may publish the reattached device just after IOKit does.
+        detachedUntil = now + 1.2
+    }
+    mutating func detached(at now: TimeInterval) -> Bool {
+        guard let startedAt, now - startedAt < 8 else { finish(); return false }
+        detachedUntil = now + 1.2
+        return true
+    }
+    func holdsDisconnect(at now: TimeInterval) -> Bool {
+        guard let startedAt, now - startedAt < 8 else { return false }
+        return now < (detachedUntil ?? startedAt + 1.2)
+    }
+    mutating func finish() { startedAt = nil; detachedUntil = nil }
+}
+
 // Native readiness belongs to a specific web document, observation epoch and
 // device. A new observation must receive a frame after its own transition.
 struct VideoReadinessGate {

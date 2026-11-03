@@ -63,6 +63,11 @@ They are not a public UIKit USB API, so the heartbeat deadline remains the fallb
 and delivery must be rechecked on major iOS updates. The fallback can take roughly
 three to four seconds including the native UI refresh. A recent host attachment or
 heartbeat is required to show an active reconnect attempt.
+During the first eight seconds of reattachment, a brief USB mode-switch removal
+gets a 1.2-second grace period and remains `Reconnecting…`. A longer removal still
+becomes disconnected, and once video is ready a subsequent unplug is immediate.
+This prevents `Disconnected → Reconnecting → Disconnected → Reconnecting` flashes
+when iOS re-enumerates USB to bring up screen capture.
 
 On the Mac, IOKit notifications for the pinned phone's USB serial freeze video/input
 on removal and refresh status immediately on attachment. Responses started before
@@ -72,6 +77,9 @@ blurred until a fresh native or fallback frame is presented. A capture failure
 waits for fresh USB status before attempting another session. Native scheduling
 also refreshes the web view's connection poll while WebKit page timers are
 suspended by window occlusion; those refreshes share one in-flight poll and timer.
+An in-flight capture is retained through a short re-enumeration during recovery.
+Capture discovery also listens for AVFoundation device arrival instead of waiting
+for the next discovery timer tick.
 
 Status updates change only the native view model, and skip unchanged values. They do not query the accessibility tree,
 create a test session, enter the input queue, or synthesize input. Presence does
@@ -108,3 +116,12 @@ connected video without restarting the app. Heartbeat expiry remains covered by
 the native phase tests. Regression tests cover a network advertisement surviving
 USB removal, reattachment between polls, stale readiness after removal, concurrent
 native/browser polling, and retaining the same phone's frame until video recovers.
+
+The subsequent recovery-window build was confirmed by the user on two physical
+cable cycles. The phone's recorded rendered phases were exactly `Connected →
+Disconnected → Reconnecting → Connected` for both, despite each attachment
+containing another USB detach/attach pair. Connected returned 1.66 and 1.75 seconds
+after the final USB host attachment (3.28 and 3.22 seconds after the initial host
+attachment). These are status-screen recovery times including the presence
+heartbeat, not touch latency or a claim of instantaneous video. Native USB
+events changed the model immediately; the usual view transition still applies.

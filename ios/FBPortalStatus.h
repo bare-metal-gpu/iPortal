@@ -21,7 +21,11 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
 @property(nonatomic) BOOL ready;
 @property(nonatomic) BOOL wasConnected;
 @property(nonatomic) BOOL hostDetached;
+@property(nonatomic) NSTimeInterval recoveringUntil;
+@property(nonatomic) NSTimeInterval detachGraceUntil;
 @property(nonatomic,strong) NSMutableArray *usbEvents;
+@property(nonatomic,strong) NSMutableArray *phaseEvents;
+@property(nonatomic,copy) NSString *lastRenderedPhase;
 @property(nonatomic,strong) NSTimer *timer;
 + (instancetype)shared;
 - (NSDictionary *)snapshot;
@@ -38,12 +42,17 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
   dispatch_async(dispatch_get_main_queue(), ^{
     FBPortalStatus *status = self.shared;
     status.usbEvents = [NSMutableArray new];
+    status.phaseEvents = [NSMutableArray new];
     // lockdownd's host notifications also work when no heartbeat can cross the
     // removed cable. Keep the deadline as a fallback on systems that omit them.
     for (NSString *name in @[@"com.apple.mobile.lockdown.host_detached", @"com.apple.mobile.lockdown.host_attached"]) {
       int token;
       notify_register_dispatch(name.UTF8String, &token, dispatch_get_main_queue(), ^(int notification) {
         BOOL detached = [name hasSuffix:@"host_detached"];
+        NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+        BOOL recovering = !status.ready && now < status.recoveringUntil;
+        status.detachGraceUntil = detached && recovering ? now + 1.2 : 0;
+        if (!detached && !recovering) status.recoveringUntil = now + 8;
         status.hostDetached = detached;
         status.ready = NO;
         status.awakeUntil = 0;
@@ -61,7 +70,7 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
   });
 }
 - (NSString *)phase {
-  if (self.hostDetached) return @"disconnected";
+  if (self.hostDetached) return NSProcessInfo.processInfo.systemUptime < self.detachGraceUntil ? @"reconnecting" : @"disconnected";
   return FBPortalPhase(self.receivedAt, NSProcessInfo.processInfo.systemUptime, self.ready, self.wasConnected);
 }
 - (UIView *)root {
@@ -85,12 +94,17 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
   return @{@"phase":phase, @"message":message, @"detail":detail, @"keepAwakeRemainingMs":@((long long)ceil(remaining * 1000)),
     @"screenInstalled":@(root != nil), @"width":@(root.bounds.size.width), @"height":@(root.bounds.size.height),
     @"foreground":@(UIApplication.sharedApplication.applicationState == UIApplicationStateActive),
-    @"usbEvents":self.usbEvents ?: @[]};
+    @"usbEvents":self.usbEvents ?: @[], @"phaseEvents":self.phaseEvents ?: @[]};
 }
 - (void)render {
   if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
   UIView *root = self.root; if (!root) return;
   NSDictionary *state = self.snapshot;
+  if (![self.lastRenderedPhase isEqual:state[@"phase"]]) {
+    self.lastRenderedPhase = state[@"phase"];
+    [self.phaseEvents addObject:@{@"phase":self.lastRenderedPhase, @"uptime":@(NSProcessInfo.processInfo.systemUptime)}];
+    if (self.phaseEvents.count > 24) [self.phaseEvents removeObjectAtIndex:0];
+  }
   [NSNotificationCenter.defaultCenter postNotificationName:@"PortalStatusChanged" object:nil userInfo:state];
 }
 @end
@@ -118,6 +132,7 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
   status.receivedAt = NSProcessInfo.processInfo.systemUptime;
   status.hostDetached = NO;
   status.ready = [ready boolValue];
+  if (status.ready) { status.recoveringUntil = 0; status.detachGraceUntil = 0; }
   status.wasConnected |= status.ready;
   status.awakeUntil = status.receivedAt + [remaining doubleValue]/1000;
   [status render];

@@ -30,9 +30,11 @@ struct LoadingBorder: View {
             PortalConnectionBorder(active: state.active, radius: state.radius)
             if state.showMessage {
                 PortalConnectionMessage(
-                    title: state.phase == "locked" ? "Locked" : state.phase == "disconnected" ? "Disconnected" : "Connecting…",
+                    title: state.phase == "locked" ? "Locked" : state.phase == "disconnected" ? "Disconnected"
+                        : state.phase == "reconnecting" ? "Reconnecting…" : "Connecting…",
                     detail: state.detail,
                     symbol: state.phase == "locked" ? "lock.fill" : state.phase == "disconnected" ? "cable.connector.slash" : nil,
+                    orb: state.phase == "reconnecting" ? .solving : .connecting,
                     shimmer: state.phase != "locked" && state.phase != "disconnected")
                 .transition(.opacity)
             }

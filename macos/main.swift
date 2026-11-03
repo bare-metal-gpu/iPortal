@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var singleUsbDevice = false
     var lifecycleTimer: Timer?
     var usbMonitor: PhoneUSBMonitor?
+    var usbRecovery = USBRecoveryWindow()
     var lastStatusAt = ProcessInfo.processInfo.systemUptime
     var captureStartedAt: TimeInterval = 0
     var captureBudget = CaptureRetryBudget()
@@ -150,16 +151,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func updateLoadingBorder() {
         let phase: String
         if deviceLifecycle == "locked" || deviceLifecycle == "disconnected" { phase = deviceLifecycle }
-        else if deviceLifecycle != "ready" || captureLoading || waitingForVideo { phase = "connecting" }
+        else if deviceLifecycle != "ready" || captureLoading || waitingForVideo { phase = usbRecovery.active ? "reconnecting" : "connecting" }
         else { phase = "live" }
         if videoMode == "native", phase != "live", loadingBorderState.phase == "live" {
             loadingBorderState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
         }
         loadingBorderState.phase = phase
         loadingBorderState.showMessage = phase != "live"
-        loadingBorderState.active = phase == "connecting" || (phase == "live" && pageLoading)
+        loadingBorderState.active = phase == "connecting" || phase == "reconnecting" || (phase == "live" && pageLoading)
         if phase == "locked" { loadingBorderState.detail = "Unlock your iPhone to continue" }
         if phase == "disconnected" { loadingBorderState.detail = "Connect your iPhone" }
+        if phase == "reconnecting" { loadingBorderState.detail = "" }
         capture?.layer.isHidden = phase != "live"
     }
 
@@ -195,7 +197,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                         epoch: Int, bridgeID: String, instance: String, statusRevision: Int, connectionID: String) -> Bool {
         let now = ProcessInfo.processInfo.systemUptime
         self.singleUsbDevice = singleUsbDevice
-        let change = videoGate.observe(next, deviceID: udid, epoch: epoch,
+        let observed = next == "disconnected" && usbRecovery.holdsDisconnect(at: now) ? "connecting" : next
+        let change = videoGate.observe(observed, deviceID: udid, epoch: epoch,
                                        bridgeID: bridgeID, serverInstance: instance, statusRevision: statusRevision, now: now,
                                        connectionID: connectionID)
         guard change.accepted else { return false }
@@ -205,7 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         captureBudget.failed()
         freezeVideo()
         if change.deviceChanged || change.reattached {
-            stopCapture()
+            // Keep an in-flight capture through the USB mode switch it caused.
+            // AVFoundation failure/fresh-frame checks still govern its lifetime.
+            if change.deviceChanged || !usbRecovery.active { stopCapture() }
             // A new USB attachment gets a fresh capture budget, while the same
             // phone keeps its frozen frame. Never retain another phone's pixels.
             if change.deviceChanged { loadingBorderState.snapshot = nil }
@@ -214,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             nextNativeAttemptAt = 0
         }
         if deviceLifecycle != "ready" {
-            if deviceLifecycle == "disconnected" { stopCapture() }
+            if deviceLifecycle == "disconnected" { usbRecovery.finish(); stopCapture() }
         } else {
             captureStartedAt = now
             loadingBorderState.detail = ""
@@ -271,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let fresh = videoGate.acceptsFrame(at: frameAt, now: ProcessInfo.processInfo.systemUptime)
         if fresh {
             captureBudget.healthy(at: now)
+            usbRecovery.finish()
             if captureLoading {
                 captureLoading = false
                 NSLog("Portal native video ready")
@@ -318,10 +324,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 return
             }
             guard normalize(serial) == normalize(udid) else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            if attached { self.usbRecovery.attached(at: now) }
             if !attached {
                 self.freezeVideo()
-                self.stopCapture()
-                self.videoGate.disconnect(at: ProcessInfo.processInfo.systemUptime)
+                if self.usbRecovery.detached(at: now) {
+                    self.videoGate.suspend(at: now)
+                } else {
+                    self.stopCapture()
+                    self.videoGate.disconnect(at: now)
+                }
                 self.updateLoadingBorder()
             }
             self.nativeCall("usbConnectionChanged", ready: attached)
@@ -583,6 +595,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         // Keep the native snapshot until the fallback has actually presented a
         // fresh frame, not merely announced that it is trying to connect.
         if videoMode == "stream", !waitingForVideo, deviceLifecycle == "ready" {
+            usbRecovery.finish()
             loadingBorderState.snapshot = nil
         }
         if let detail = d["loadingDetail"] as? String { loadingBorderState.detail = detail }

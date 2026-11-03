@@ -152,6 +152,7 @@ final class PhoneCapture {
     private let frameQueue = DispatchQueue(label: "iphone-portal.capture-frames", qos: .userInitiated)
     private var completion: (@MainActor (Bool) -> Void)?
     private var started = false
+    private var configuring = false
     private var stopped = false
     private var failureReported = false
     private(set) var startupTimeoutAt: TimeInterval? = nil
@@ -188,7 +189,11 @@ final class PhoneCapture {
                         guard !self.stopped else { return }
                         self.startupTimeoutAt = ProcessInfo.processInfo.systemUptime + 10
                         guard video else { return self.finish(false) }
-                        self.waitForDevice(until: ProcessInfo.processInfo.systemUptime + timeout, withAudio: audio)
+                        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+                        self.observe(AVCaptureDevice.wasConnectedNotification, object: nil) { [weak self] in
+                            self?.waitForDevice(until: deadline, withAudio: audio)
+                        }
+                        self.waitForDevice(until: deadline, withAudio: audio)
                     }
                 }
             }
@@ -244,8 +249,11 @@ final class PhoneCapture {
 
     // The device appears a second or two after screen capture devices are allowed.
     private func waitForDevice(until deadline: TimeInterval, withAudio: Bool) {
-        guard !stopped else { return }
-        if let device = findDevice() { return run(device, withAudio: withAudio) }
+        guard !stopped, !configuring else { return }
+        if let device = findDevice() {
+            configuring = true
+            return run(device, withAudio: withAudio)
+        }
         if ProcessInfo.processInfo.systemUptime > deadline { return finish(false) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             MainActor.assumeIsolated { self?.waitForDevice(until: deadline, withAudio: withAudio) }

@@ -3,6 +3,20 @@ import Foundation
 @main
 struct LifecycleTests {
     static func main() {
+        var usb = USBRecoveryWindow()
+        assert(!usb.detached(at: 1), "unplugging a stable connection is immediate")
+        usb.attached(at: 2)
+        assert(usb.detached(at: 2.2), "capture startup can briefly re-enumerate USB")
+        assert(usb.holdsDisconnect(at: 3))
+        assert(!usb.holdsDisconnect(at: 3.5), "a real removal during recovery is still bounded")
+        usb.attached(at: 3.5)
+        assert(usb.holdsDisconnect(at: 3.55), "allow usbmuxd to catch up after each attachment")
+        assert(usb.detached(at: 3.6))
+        assert(usb.holdsDisconnect(at: 3.7))
+        usb.finish()
+        assert(!usb.detached(at: 3.8), "once video is ready, removal becomes immediate again")
+        usb.attached(at: 4)
+        assert(!usb.detached(at: 12.1), "continuous flapping cannot mask disconnection forever")
         var gate = VideoReadinessGate()
         func observe(_ state: String, _ epoch: Int, _ now: Double, device: String = "A", document: String = "page1", server: String = "server1") -> VideoReadinessGate.Change {
             gate.observe(state, deviceID: device, epoch: epoch, bridgeID: document, serverInstance: server, statusRevision: epoch, now: now)
