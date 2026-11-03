@@ -26,6 +26,12 @@ try {
   assert.equal(status.ok, true, JSON.stringify(status));
   assert.equal(status.device.udid, "00008110-FAKEFAKEFAKE");
   assert.equal(status.captureIdentity.singleUsbDevice, true);
+  assert.equal((await fetch(`${base}/api/events`, { headers: { origin: 'https://foreign.example' } })).status, 403);
+  const eventResponse = await fetch(`${base}/api/events`, { signal: AbortSignal.timeout(1000) });
+  assert.match(eventResponse.headers.get('content-type'), /text\/event-stream/);
+  const events = eventResponse.body.getReader();
+  assert.match(new TextDecoder().decode((await events.read()).value), /"eventSequence":\d+/);
+  await events.cancel();
 
   // Startup probes must answer while XCTest is slow or wedged. They must not
   // multiply device requests, nor claim that a healthy process means unlocked.
@@ -242,7 +248,7 @@ try {
   assert.equal(disconnected.locked, null);
   assert.equal(disconnected.pinnedUdid, "00008110-FAKEFAKEFAKE");
   assert.equal(disconnected.captureIdentity.singleUsbDevice, false);
-  fake.ui.devices.push({ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" });
+  fake.ui.devices = [...fake.ui.devices, { id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }];
   const multiple = await (await fetch(`${base}/api/status`)).json();
   assert.equal(multiple.lifecycle, "ready");
   assert.equal(multiple.device.udid, "00008110-FAKEFAKEFAKE");

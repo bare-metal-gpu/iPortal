@@ -211,6 +211,7 @@ test("USB events immediately freeze input and stale status cannot undo a detach"
   const pending = h.run("poll()"); await h.settle();
   h.run("usbConnectionChanged(false, videoEpoch, bridgeId)");
   assert.equal(h.run("lifecycle"), "disconnected", "no timeout/poll needed to freeze the UI");
+  assert.equal(h.messages.at(-1).usbDevicePresent, false, 'a hardware event cannot reuse the previous USB identity');
   assert.equal(h.run("canInteract()"), false);
   finish(); await pending;
   assert.equal(h.run("lifecycle"), "disconnected", "a ready response from before detach is discarded");
@@ -558,4 +559,41 @@ test("receipts deduplicate concurrent/retried commands, survive restart and reje
     assert.equal((await afterCrash.execute("one", input, run)).body.code, "outcome unknown");
     assert.equal(calls, 1);
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('pushed status wakes readiness without a poll and rejects old events/documents', async () => {
+  const h = browserHarness(); await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)"); await h.settle();
+  const presence = h.calls.filter(([url]) => url === '/api/presence');
+  assert.equal(JSON.parse(presence.at(-1)[1].body).ready, true, 'first frame publishes presence immediately');
+  const count = h.calls.filter(([url]) => url === '/api/status').length;
+  const event = sequence => `({service:'iphone-mirror',apiVersion:2,instanceId:'instance',eventSequence:${sequence},observedAt:Date.now(),ok:false,lifecycle:'disconnected',pinnedUdid:'phone-a'})`;
+  h.run(`receiveServerStatus(${event(20)}, 'retired-page')`);
+  assert.equal(h.run('canInteract()'), true);
+  h.run(`receiveServerStatus(${event(20)}, bridgeId)`);
+  assert.equal(h.run('canInteract()'), false);
+  assert.equal(h.run('lifecycle'), 'disconnected');
+  h.run(`receiveServerStatus({...${event(19)},lifecycle:'ready',ok:true}, bridgeId)`);
+  assert.equal(h.run('lifecycle'), 'disconnected');
+  await h.advance(2000);
+  assert.equal(h.calls.filter(([url]) => url === '/api/status').length, count, 'healthy events suppress the fallback timer');
+  await h.advance(13000);
+  assert.ok(h.calls.filter(([url]) => url === '/api/status').length > count, 'silence restores polling');
+});
+
+test('physical attachment waits for fresh USB selection data before native capture preparation', async () => {
+  let hold = false, finish;
+  const h = browserHarness({ beforeStatus: () => hold ? new Promise(resolve => { finish = resolve; }) : undefined });
+  await h.settle();
+  assert.equal(h.messages.at(-1).usbDevicePresent, true);
+  hold = true;
+  h.run('usbConnectionChanged(false, videoEpoch, bridgeId)'); await h.settle();
+  h.run('usbConnectionChanged(true, videoEpoch, bridgeId)');
+  assert.equal(h.messages.at(-1).lifecycle, 'connecting');
+  assert.equal(h.messages.at(-1).usbDevicePresent, false, 'attach cannot reuse the old USB presence/fallback policy');
+  finish(); await h.settle();
+  hold = false; h.attachment(20); await h.advance(0);
+  assert.equal(h.messages.at(-1).usbDevicePresent, true);
+  assert.equal(h.messages.at(-1).usbConnectionID, '20');
+  assert.equal(h.messages.at(-1).singleUsbDevice, true);
 });

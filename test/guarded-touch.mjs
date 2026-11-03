@@ -21,7 +21,7 @@ try {
   }
   const body = { points: [[.5, .5, 0]], end: 40, expectedApp: fake.ui.app, expectedOrientation: "PORTRAIT" };
   assert.equal((await post("gesture", body)).ok, true);
-  const first = fake.log.filter(l => l.path?.startsWith("/wda/"));
+  const first = fake.log.filter(l => !l.monitor && l.path?.startsWith("/wda/"));
   assert.deepEqual(first.map(l => l.path), ["/wda/mirror/capabilities", "/wda/mirror/touch"]);
   assert.equal(first[1].body.expectedBundleId, fake.ui.app);
   assert.equal((await post("gesture", { ...body, expectedApp: "wrong" })).status, 409);
@@ -34,7 +34,7 @@ try {
   const pinchBody = { x: 0.5, y: 0.5, scale: 2, expectedApp: fake.ui.app };
   const beforePinch = fake.log.length;
   assert.equal((await post("pinch", pinchBody)).timing.native.confirmationMs, 50);
-  const pinchCalls = fake.log.slice(beforePinch);
+  const pinchCalls = fake.log.slice(beforePinch).filter(l => !l.monitor);
   assert.deepEqual(pinchCalls.map(l => l.path), ["/wda/mirror/touch"], "two fingers share one guarded on-device dispatch");
   assert.equal(pinchCalls[0].body.fingers.length, 2);
   assert.equal(pinchCalls[0].body.expectedBundleId, fake.ui.app);

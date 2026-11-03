@@ -18,6 +18,8 @@ import { createCommands } from "./commands.mjs";
 import { ActionSchemas } from "./schemas.mjs";
 import { errorResponse, startServer } from "./server.mjs";
 import { pinchActions, pinchPaths } from "./pinch.mjs";
+import { createUSBMonitor } from "./usb-events.mjs";
+import { createStatusEvents } from "./status-events.mjs";
 
 const instanceId = randomUUID();
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -116,8 +118,9 @@ async function listDevices() {
 
 let pinnedUdid = opts.udid ?? null;
 let connectedUsbUdids = [];
+let usbMonitor;
 async function pickDevice() {
-  const devices = await listDevices();
+  const devices = await (usbMonitor ? usbMonitor.devices() : listDevices());
   connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
   if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
   return devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
@@ -160,7 +163,7 @@ function forward(localPort, devicePort) {
 
 // ---------- WebDriverAgent ----------
 
-async function wda(method, p, body, timeout = 8000, signal) {
+async function wda(method, p, body, timeout = 8000, signal, headers = {}) {
   const context = commandContext.getStore();
   if (context?.signal) signal = signal ? AbortSignal.any([signal, context.signal]) : context.signal;
   signal?.throwIfAborted();
@@ -169,7 +172,7 @@ async function wda(method, p, body, timeout = 8000, signal) {
   if (method === "POST" && /\/(?:actions|click|value)$|\/wda\/(?:mirror\/touch|keys|homescreen|pressButton|lock|unlock|apps\/launch|siri\/activate)$/.test(p)) context?.onDispatch?.();
   const res = await fetch(WDA + p, {
     method,
-    headers: body ? { "content-type": "application/json" } : {},
+    headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
   });
@@ -182,7 +185,7 @@ async function wda(method, p, body, timeout = 8000, signal) {
   return json;
 }
 
-const wdaUp = () => wda("GET", "/status", null, 1500).then(() => true, () => false);
+const wdaUp = signal => wda("GET", "/status", null, 1500, signal, { "x-mirror-purpose": "lifecycle" }).then(() => true, () => false);
 
 const QUALITY = {
   low: { mjpegServerFramerate: 20, mjpegServerScreenshotQuality: 25, mjpegScalingFactor: 40 },
@@ -356,7 +359,16 @@ function maybeStartWda(udid) {
   const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   const log = fs.openSync(logPath, "a");
   console.log(`  starting WebDriverAgent on ${udid} (log: vendor/wda.log)`);
-  wdaProcess = spawn("bash", [path.join(ROOT, "scripts/run-wda.sh")], { env: { ...process.env, UDID: udid }, stdio: ["ignore", log, log] });
+  wdaProcess = spawn("bash", [path.join(ROOT, "scripts/run-wda.sh")], { env: { ...process.env, UDID: udid }, stdio: ["ignore", "pipe", "pipe"] });
+  let tail = "";
+  const output = chunk => {
+    fs.writeSync(log, chunk);
+    tail = (tail + chunk.toString()).slice(-4096);
+    if (/ServerURLHere/.test(tail)) { tail = ""; statusEvents.invalidate(); }
+  };
+  wdaProcess.stdout.on("data", output);
+  wdaProcess.stderr.on("data", output);
+  wdaProcess.on("close", () => fs.closeSync(log));
   wdaProcess.on("exit", () => {
     wdaProcess = null;
     sid = null;
@@ -365,6 +377,7 @@ function maybeStartWda(udid) {
     wdaProblem = WDA_PROBLEMS.find(([re]) => re.test(output))?.[1] ?? null;
     wdaRetryAt = Date.now() + (wdaProblem ? 30000 : 3000);
     if (wdaProblem) console.log(`  ${wdaProblem} (retrying in 30 s)`);
+    statusEvents.invalidate();
   });
 }
 process.on("exit", () => wdaProcess?.kill());
@@ -394,7 +407,8 @@ process.on("SIGTERM", () => process.exit()); // the Mac app stops the server thi
 
 // ---------- HTTP server ----------
 
-async function status() {
+async function status(signal) {
+  const observedAt = Date.now();
   let device = null;
   let error = null;
   if (!MANUAL) {
@@ -405,16 +419,18 @@ async function status() {
       error = "Reconnect your iPhone.";
     }
   }
-  const up = (MANUAL || device) && (await wdaUp());
+  signal?.throwIfAborted();
+  const up = (MANUAL || device) && (await wdaUp(signal));
   let locked = null;
   if (up) {
     try {
-      const value = (await wda("GET", "/wda/locked", null, 1200)).value;
+      const value = (await wda("GET", "/wda/locked", null, 1200, signal, { "x-mirror-purpose": "lifecycle" })).value;
       if (typeof value !== "boolean") throw new Error("Invalid lock state");
       locked = value;
       if (locked) keepAwake.stop("locked");
     } catch { error = "Waiting for your iPhone…"; }
   }
+  signal?.throwIfAborted();
   if (up) wdaProblem = null;
   if (device && !up) {
     maybeStartWda(device.udid);
@@ -425,7 +441,7 @@ async function status() {
       : "Finish setting up iPhone Portal on your Mac.";
   } else if (MANUAL && !up) error = "Reconnect your iPhone.";
   const lifecycle = !MANUAL && !device ? "disconnected" : locked === true ? "locked" : up && locked === false ? "ready" : "connecting";
-  return { service: "iphone-mirror", apiVersion: 2, instanceId, ok: Boolean(up), device, pinnedUdid, locked, lifecycle,
+  return { service: "iphone-mirror", apiVersion: 2, instanceId, observedAt, ok: Boolean(up), device, pinnedUdid, locked, lifecycle,
     captureIdentity: { singleUsbDevice: Boolean(pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid) },
     error, quality, queue: scheduler.stats(), keepAwake: keepAwake.status() };
 }
@@ -450,13 +466,14 @@ if (positionals[0] === "devices") {
 const inspection = createInspection({ wda, withSession, enqueue });
 const keepAwake = createKeepAwake({ wda, withSession, enqueue: fn => scheduler.maintenance(fn) });
 const portalStatus = createPortalStatus({ wda, keepAwake: keepAwake.status });
+const statusEvents = createStatusEvents({ read: status });
 process.on("exit", () => portalStatus.stop());
 let commands;
 const commandLedger = () => commands ??= createCommands({ file: process.env.MIRROR_COMMANDS_FILE ?? path.join(ROOT, "vendor", opts.port === "7100" ? "commands.json" : `commands-${opts.port}.json`) });
 
 async function dispatch(name, body, signal) {
   const started = performance.now();
-  if (name === "status") return { status: 200, body: await status() };
+  if (name === "status") return { status: 200, body: await statusEvents.refresh() };
   if (name === "presence") {
     portalStatus.receive(body);
     return { status: 200, body: { ok: true } };
@@ -518,6 +535,7 @@ if (!MANUAL) {
   forward(MJPEG_PORT, 9100);
 }
 startServer({ port: +opts.port, instanceId, html: fs.readFileSync(path.join(ROOT, "public/index.html"), "utf8"), mjpeg: MJPEG, dispatch,
+  statusEvents,
   onListening: () => {
     const url = `http://localhost:${opts.port}`;
     console.log(`\n  iPhone Mirror running at ${url}\n`);
@@ -525,6 +543,19 @@ startServer({ port: +opts.port, instanceId, html: fs.readFileSync(path.join(ROOT
   },
 });
 if (!MANUAL) {
-  const monitor = setInterval(() => pickDevice().then(device => { if (!device) keepAwake.stop("disconnected"); }).catch(() => keepAwake.stop("disconnected")), 2000);
-  monitor.unref();
+  let observedDeviceID;
+  usbMonitor = createUSBMonitor({ address: USBMUXD, list: listDevices, onChange(devices) {
+    if (!pinnedUdid) pinnedUdid = devices.find(d => d.connection === "USB")?.udid ?? null;
+    connectedUsbUdids = [...new Set(devices.filter(d => d.connection === "USB").map(d => d.udid))];
+    const device = devices.find(d => d.udid === pinnedUdid && d.connection === "USB") ?? null;
+    if (!device) keepAwake.stop("disconnected");
+    if (observedDeviceID === (device?.id ?? null)) { statusEvents.invalidate(); return; }
+    observedDeviceID = device?.id ?? null;
+    statusEvents.invalidate({ device, pinnedUdid, observedAt: Date.now(), ok: false, locked: null,
+      lifecycle: device ? "connecting" : "disconnected",
+      captureIdentity: { singleUsbDevice: connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid } });
+  } });
+  process.on("exit", () => usbMonitor.stop());
 }
+void statusEvents.refresh();
+process.on("exit", () => statusEvents.stop());

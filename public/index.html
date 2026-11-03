@@ -143,6 +143,7 @@ let statusRevision = 0;
 let deviceUdid = "";
 let usbConnectionID = "";
 let singleUsbDevice = false;
+let usbDevicePresent = false;
 let serverInstance = document.querySelector('meta[name="mirror-instance"]').content;
 const controlOnly = new Set(["ensure", "quality", "lock", "unlock"]);
 function canInteract() { return lifecycle === "ready" && connected && (nativeVideo ? nativeReady : streamReady); }
@@ -183,14 +184,24 @@ function setLifecycle(next, identity = deviceUdid, instance = serverInstance, co
 let streamReady = false;
 let pendingActions = 0;
 let loadingDetail = "";
+let lastPresenceAt = -Infinity, lastPresenceReady;
+function reportPresence() {
+  const ready = canInteract();
+  if (ready === lastPresenceReady && performance.now() - lastPresenceAt < 2000) return;
+  lastPresenceReady = ready; lastPresenceAt = performance.now();
+  void requestJSON("/api/presence", { method: "POST", headers: {
+    "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content,
+  }, body: JSON.stringify({ clientId: bridgeId, ready }) }, 1500).catch(() => { lastPresenceAt = -Infinity; });
+}
 function reportLoading() {
+  reportPresence();
   const waitingForVideo = lifecycle !== "ready" || !connected || (nativeVideo ? !nativeReady : !streamReady);
   document.body.classList.toggle("loading", waitingForVideo);
   document.body.classList.toggle("unavailable", waitingForVideo);
   window.webkit?.messageHandlers?.native?.postMessage({
     loading: waitingForVideo || pendingActions > 0, waitingForVideo,
     loadingDetail: waitingForVideo ? loadingDetail : "", lifecycle,
-    deviceUdid, usbConnectionID, singleUsbDevice, serverInstance, videoEpoch, statusRevision, bridgeId, videoMode: nativeVideo ? "native" : "stream"
+    deviceUdid, usbConnectionID, singleUsbDevice, usbDevicePresent, serverInstance, videoEpoch, statusRevision, bridgeId, videoMode: nativeVideo ? "native" : "stream"
   });
 }
 const params = new URLSearchParams(location.search);
@@ -423,10 +434,24 @@ let pollTimer;
 let usbRevision = 0;
 let pollController;
 let refreshPending = false;
+let lastServerEventAt = -Infinity, lastServerSequence = -1, usbEventAt = 0;
+function receiveServerStatus(s, documentId) {
+  if (documentId !== undefined && documentId !== bridgeId) return;
+  if (s.service !== "iphone-mirror" || s.apiVersion !== 2) return;
+  if (s.instanceId === serverInstance && s.eventSequence <= lastServerSequence) return;
+  if (s.observedAt < usbEventAt) return;
+  lastServerEventAt = performance.now();
+  lastServerSequence = s.eventSequence ?? lastServerSequence;
+  applyServerStatus(s);
+  statusRevision++;
+  reportLoading();
+}
 function usbConnectionChanged(attached, epoch, documentId) {
   // Hardware events remain relevant across video epochs in the same document.
   if (documentId !== bridgeId) return;
   usbRevision++;
+  usbEventAt = Date.now();
+  usbDevicePresent = false;
   connected = false;
   setLifecycle(attached ? "connecting" : "disconnected");
   loadingDetail = attached ? "" : "Connect your iPhone";
@@ -438,6 +463,10 @@ function usbConnectionChanged(attached, epoch, documentId) {
 }
 // Native refreshes also wake an occluded WKWebView. Share one request/timer so
 // native and browser scheduling cannot overlap or multiply polling loops.
+function pollFallback() {
+  if (performance.now() - lastServerEventAt < 12000) { pollTimer = setTimeout(pollFallback, 2000); return; }
+  void poll();
+}
 async function poll() {
   if (pollInFlight) return;
   clearTimeout(pollTimer);
@@ -445,9 +474,10 @@ async function poll() {
   try { await pollConnection(); }
   finally {
     pollInFlight = false;
-    const delay = refreshPending ? 0 : lifecycle === "ready" ? 1000 : 500;
+    const again = refreshPending;
+    const delay = again ? 0 : performance.now() - lastServerEventAt < 12000 ? 10000 : lifecycle === "ready" ? 1000 : 500;
     refreshPending = false;
-    pollTimer = setTimeout(poll, delay);
+    pollTimer = setTimeout(again ? poll : pollFallback, delay);
   }
 }
 async function pollConnection() {
@@ -458,6 +488,25 @@ async function pollConnection() {
   try {
     const s = await (await fetch("/api/status", { signal: controller.signal })).json();
     if (revision !== usbRevision) return;
+    if (s.observedAt < usbEventAt) { refreshPending = true; return; }
+    if (s.instanceId === serverInstance && s.eventSequence <= lastServerSequence) return;
+    lastServerSequence = s.eventSequence ?? lastServerSequence;
+    applyServerStatus(s);
+  } catch {
+    if (revision !== usbRevision) return;
+    setLifecycle("connecting");
+    connected = false;
+    streamReady = false;
+    $("overlay").hidden = false;
+    $("dot").classList.remove("on");
+    $("overlay").querySelector("b").textContent = "Reconnecting…";
+    $("overlayText").textContent = "";
+    loadingDetail = "";
+  } finally { clearTimeout(timeout); }
+  statusRevision++;
+  reportLoading();
+}
+function applyServerStatus(s) {
     if (s.service !== "iphone-mirror" || s.apiVersion !== 2) throw new Error("Unexpected server");
     const fingerprint = document.querySelector('meta[name="mirror-instance"]');
     if (fingerprint.content !== s.instanceId) {
@@ -472,6 +521,7 @@ async function pollConnection() {
     $("device").textContent = s.device || s.ok ? "iPhone connected" : "No iPhone connected";
     $("quality").value = s.quality;
     singleUsbDevice = s.captureIdentity?.singleUsbDevice === true;
+    usbDevicePresent = Boolean(s.device);
     setLifecycle(s.lifecycle, s.device?.udid ?? s.pinnedUdid ?? "", s.instanceId,
       s.device ? String(s.device.id ?? "") : usbConnectionID);
     loadingDetail = lifecycle === "locked" ? "Unlock your iPhone." : !s.ok ? (s.error ?? "") : "";
@@ -490,23 +540,13 @@ async function pollConnection() {
       $("overlay").querySelector("b").textContent = lifecycle === "locked" ? "Locked" : lifecycle === "disconnected" ? "Disconnected" : "Connecting…";
       $("overlayText").textContent = loadingDetail;
     }
-  } catch {
-    if (revision !== usbRevision) return;
-    setLifecycle("connecting");
-    connected = false;
-    streamReady = false;
-    $("overlay").hidden = false;
-    $("dot").classList.remove("on");
-    $("overlay").querySelector("b").textContent = "Reconnecting…";
-    $("overlayText").textContent = "";
-    loadingDetail = "";
-  } finally { clearTimeout(timeout); }
-  statusRevision++;
-  reportLoading();
-  // Independent of the input queue: report actual video + control readiness.
-  void requestJSON("/api/presence", { method: "POST", headers: {
-    "content-type": "application/json", "x-mirror-instance": document.querySelector('meta[name="mirror-instance"]').content,
-  }, body: JSON.stringify({ clientId: bridgeId, ready: canInteract() }) }, 1500).catch(() => {});
+}
+// The native app owns its subscription so occluded WebKit pages still wake.
+// Standalone browsers use the same stream and retain poll() as their fallback.
+if (!window.webkit?.messageHandlers?.native && typeof EventSource !== "undefined") {
+  const events = new EventSource("/api/events");
+  events.onmessage = event => { try { receiveServerStatus(JSON.parse(event.data)); } catch {} };
+  events.onerror = () => { lastServerEventAt = -Infinity; void poll(); };
 }
 
 poll();

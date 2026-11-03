@@ -15,6 +15,24 @@ let info = Bundle.main.infoDictionary ?? [:]
 let repoPath = info["IMRepoPath"] as? String ?? FileManager.default.currentDirectoryPath
 let nodePath = info["IMNodePath"] as? String ?? "/opt/homebrew/bin/node"
 let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/iPhoneMirror.log")
+// Opt-in, monotonic milestones; never log frames or input contents.
+private let traceQueue = DispatchQueue(label: "iphone-portal.reconnect-trace")
+func portalTrace(_ event: String, _ fields: [String: Any] = [:]) {
+    guard FileManager.default.fileExists(atPath: repoPath + "/vendor/trace-reconnect") else { return }
+    var record = fields
+    record["event"] = event; record["uptime"] = ProcessInfo.processInfo.systemUptime
+    record["wallMs"] = Date().timeIntervalSince1970 * 1000
+    guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
+    data.append(10)
+    let payload = data
+    traceQueue.async {
+        let path = repoPath + "/vendor/reconnect-trace.jsonl"
+        if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+        guard let file = FileHandle(forWritingAtPath: path) else { return }
+        defer { try? file.close() }
+        _ = try? file.seekToEnd(); try? file.write(contentsOf: payload)
+    }
+}
 
 final class MirrorWindow: NSWindow {
     // Borderless windows can't become key by default, which would block keyboard input.
@@ -123,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var lifecycleTimer: Timer?
     var usbMonitor: PhoneUSBMonitor?
     var usbRecovery = USBRecoveryWindow()
+    var lastObservedLifecycle = "connecting"
     var lastStatusAt = ProcessInfo.processInfo.systemUptime
     var captureStartedAt: TimeInterval = 0
     var captureBudget = CaptureRetryBudget()
@@ -132,6 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var serviceProbeInFlight = false
     var nextServiceProbeAt: TimeInterval = 0
     var nextConnectionPollAt: TimeInterval = 0
+    var statusEventTask: Task<Void, Never>?
+    var lastServerEventAt: TimeInterval = 0
+    var latestServerStatus: String?
     var serverInstance: String?
     var serverFailures = 0
     var serverStartedAt: TimeInterval = 0
@@ -183,6 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         captureLoading = true
         waitingForVideo = true
+        capture?.awaitFreshFrame()
         nativeCall("setNativeVideoReady", ready: false)
     }
 
@@ -193,10 +216,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         activeCaptureUdid = nil
     }
 
-    func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool,
+    func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool, usbDevicePresent: Bool,
                         epoch: Int, bridgeID: String, instance: String, statusRevision: Int, connectionID: String) -> Bool {
         let now = ProcessInfo.processInfo.systemUptime
         self.singleUsbDevice = singleUsbDevice
+        // Either IOKit or usbmuxd may arrive first. Establish the same recovery
+        // window from a fresh transport observation before interpreting state.
+        if statusRevision > videoGate.statusRevision || bridgeID != videoGate.bridgeID {
+            let samePhone = udid == videoGate.deviceID
+            if next != "disconnected", samePhone,
+               lastObservedLifecycle == "disconnected" || (!connectionID.isEmpty && !videoGate.connectionID.isEmpty && connectionID != videoGate.connectionID) {
+                usbRecovery.attached(at: now)
+            } else if next == "disconnected", lastObservedLifecycle != "disconnected", usbRecovery.active {
+                _ = usbRecovery.detached(at: now)
+            }
+            lastObservedLifecycle = next
+        }
         let observed = next == "disconnected" && usbRecovery.holdsDisconnect(at: now) ? "connecting" : next
         let change = videoGate.observe(observed, deviceID: udid, epoch: epoch,
                                        bridgeID: bridgeID, serverInstance: instance, statusRevision: statusRevision, now: now,
@@ -205,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         if change.newStatus { lastStatusAt = now }
         guard change.invalidated else { return true }
         NSLog("Portal lifecycle: %@, USB %@, reattached=%d", next, connectionID, change.reattached)
+        portalTrace("lifecycle", ["state": observed, "usb": connectionID])
         captureBudget.failed()
         freezeVideo()
         if change.deviceChanged || change.reattached {
@@ -220,6 +256,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         if deviceLifecycle != "ready" {
             if deviceLifecycle == "disconnected" { usbRecovery.finish(); stopCapture() }
+            else if deviceLifecycle == "connecting", usbDevicePresent, capture == nil, !captureFailed,
+                    let captureUdid, !connectionID.isEmpty, now >= nextNativeAttemptAt {
+                // Prepare video in parallel with control readiness, once the
+                // USB service supplies current identity/multiplicity. IOKit
+                // alone still carries the old attachment's selection policy.
+                // Input requires a fresh frame AND a verified unlocked helper.
+                startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+            }
         } else {
             captureStartedAt = now
             loadingBorderState.detail = ""
@@ -233,6 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 }
             } else {
                 captureLoading = true
+                capture?.awaitFreshFrame()
                 nativeCall("useNativeVideo")
             }
         }
@@ -250,13 +295,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func checkVideoLifecycle() {
         guard !terminating else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        if now >= nextConnectionPollAt {
+        if now - lastServerEventAt > 12, now >= nextConnectionPollAt {
             nextConnectionPollAt = now + (deviceLifecycle == "ready" ? 1 : 0.5)
             // WebKit suspends page timers when the window is fully occluded.
             // A native refresh wakes it; poll() coalesces concurrent callers.
             js("if (typeof poll === 'function') { void poll(); }")
         }
-        if now >= nextServiceProbeAt {
+        if (webNeedsReload || now - lastServerEventAt > 12), now >= nextServiceProbeAt {
             nextServiceProbeAt = now + 2
             ensureServer()
         }
@@ -279,6 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             usbRecovery.finish()
             if captureLoading {
                 captureLoading = false
+                portalTrace("video-ready", ["sampleAt": frameAt])
                 NSLog("Portal native video ready")
                 nativeCall("setNativeVideoReady", ready: true)
                 updateLoadingBorder()
@@ -325,6 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             }
             guard normalize(serial) == normalize(udid) else { return }
             let now = ProcessInfo.processInfo.systemUptime
+            portalTrace(attached ? "usb-attached" : "usb-detached")
             if attached { self.usbRecovery.attached(at: now) }
             if !attached {
                 self.freezeVideo()
@@ -361,6 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
+        statusEventTask?.cancel()
         lifecycleTimer?.invalidate()
         usbMonitor?.stop()
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
@@ -585,6 +633,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
            let instance = d["serverInstance"] as? String, let revision = d["statusRevision"] as? Int {
             guard !retiredBridgeIDs.contains(bridgeID), serverInstance == nil || serverInstance == instance else { return }
             guard applyLifecycle(lifecycle, udid: udid, singleUsbDevice: d["singleUsbDevice"] as? Bool ?? false,
+                                 usbDevicePresent: d["usbDevicePresent"] as? Bool ?? false,
                                  epoch: epoch, bridgeID: bridgeID, instance: instance, statusRevision: revision,
                                  connectionID: d["usbConnectionID"] as? String ?? "") else { return }
             videoMode = d["videoMode"] as? String ?? "native"
@@ -592,6 +641,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard d["bridgeId"] as? String == videoGate.bridgeID,
               d["videoEpoch"] as? Int == videoGate.epoch else { return }
         if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
+        if !waitingForVideo, captureLoading == false, loadingBorderState.phase != "live", deviceLifecycle == "ready" {
+            portalTrace("input-ready")
+        }
         // Keep the native snapshot until the fallback has actually presented a
         // fresh frame, not merely announced that it is trying to connect.
         if videoMode == "stream", !waitingForVideo, deviceLifecycle == "ready" {
@@ -624,6 +676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         captureStartedAt = now
         videoGate.requireFreshFrame(at: now)
         let c = PhoneCapture(audioVolume: audioVolume)
+        portalTrace("capture-requested")
         activeCaptureUdid = udid
         c.onSize = { [weak self, weak c] size in
             guard let self, self.capture === c else { return }
@@ -633,6 +686,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             guard let self, self.capture === c else { return }
             self.recoverCapture()
         }
+        c.onFrame = { [weak self, weak c] in
+            guard let self, let c, self.capture === c else { return }
+            portalTrace("fresh-frame", ["sampleAt": c.lastFrameAt])
+            self.checkVideoLifecycle()
+        }
+        c.awaitFreshFrame()
         videoHost.layer?.addSublayer(c.layer)
         c.layer.frame = videoHost.bounds
         capture = c
@@ -691,11 +750,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webHealthySince = ProcessInfo.processInfo.systemUptime
+        if let latestServerStatus { deliverServerStatus(latestServerStatus) }
         // poll() reports the document token and either starts capture or requests
         // a fresh frame from the existing session. Do not bypass that handshake.
     }
 
     // MARK: Server
+
+    func deliverServerStatus(_ json: String) {
+        guard let token = try? JSONSerialization.data(withJSONObject: [videoGate.bridgeID]),
+              let argument = String(data: token, encoding: .utf8), !videoGate.bridgeID.isEmpty else { return }
+        js("if (typeof receiveServerStatus === 'function') { receiveServerStatus(\(json), ...\(argument)); }")
+    }
+
+    func subscribeToStatus() {
+        guard statusEventTask == nil, !terminating else { return }
+        statusEventTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled && !self.terminating {
+                do {
+                    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/events")!)
+                    request.timeoutInterval = 15
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        guard line.hasPrefix("data: ") else { continue }
+                        let json = String(line.dropFirst(6))
+                        guard let data = json.data(using: .utf8),
+                              let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              status["service"] as? String == "iphone-mirror", status["apiVersion"] as? Int == 2 else { continue }
+                        self.lastServerEventAt = ProcessInfo.processInfo.systemUptime
+                        if let instance = status["instanceId"] as? String, instance != self.serverInstance { self.ensureServer(); continue }
+                        self.latestServerStatus = json
+                        self.deliverServerStatus(json)
+                    }
+                } catch { /* Native watchdog probes and reloads a replaced server. */ }
+                if Task.isCancelled || self.terminating { break }
+                self.lastServerEventAt = 0
+                self.ensureServer()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
 
     func ensureServer() {
         guard !terminating, !serviceProbeInFlight else { return }
@@ -710,6 +807,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 self.serverBackoff = 1
                 let newInstance = self.serverInstance != instance
                 self.serverInstance = instance
+                self.subscribeToStatus()
                 if self.webHealthySince > 0, now - self.webHealthySince > 30 { self.webBackoff = 1 }
                 if (newInstance || self.webNeedsReload), now >= self.webRetryAt {
                     self.suspendLifecycle()

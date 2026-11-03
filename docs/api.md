@@ -181,3 +181,16 @@ Helpers advertising `multiTouch` accept exactly two validated `fingers` paths th
 `POST /api/pinch` accepts `{ "x": 0.5, "y": 0.5, "scale": 2, "durationMs": 240 }` plus the normal action metadata. Coordinates are normalized in the current interface orientation; scale is 0.25–4 (below 1 zooms out, above 1 zooms in, 1 does nothing), and duration is 80–1000 ms, default 240. Both fingers start together, settle for 40 ms, then move for the requested duration and lift together. The center is clamped near screen edges so neither finger leaves the display. Dimensions are read for every pinch; lock/app/orientation checks, serialization and receipt recovery use the existing action pipeline. Supported behavior depends on the foreground app; Photos supports zooming an open photo.
 
 Live Photos checks on the connected iPhone verified zoom-in and zoom-out. The two fast-route requests completed in 587 ms and 580 ms, versus 4126 ms and 3922 ms through W3C actions; these are server command durations, not input-to-display measurements. Physical trackpad pinch and Command-scroll were also confirmed on the installed Mac app.
+
+
+### Connection events
+
+`GET /api/events` returns `text/event-stream`. Each `data:` record contains the same
+connection snapshot as `/api/status`, plus an increasing `eventSequence` and
+`observedAt` (Unix milliseconds). Subscribe once per viewer; do not poll status while
+the stream is healthy. The server shares helper probes across subscribers and pushes
+USB/helper transitions immediately. Intermediate snapshots may be coalesced for slow
+readers. On a broken/silent stream, reconnect or use `/api/status` as a fallback.
+Reject events from obsolete server instances and observations preceding a local USB
+transition. Readiness still requires both a verified unlocked helper and fresh video;
+receiving an event alone does not enable input. Existing local host/origin checks apply.

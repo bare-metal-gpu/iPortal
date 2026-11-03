@@ -74,9 +74,9 @@ on removal and refresh status immediately on attachment. Responses started befor
 the event cannot undo that transition. A new USB attachment invalidates video readiness and renews the capture
 retry budget even when the phone's identity is unchanged. The last frame stays
 blurred until a fresh native or fallback frame is presented. A capture failure
-waits for fresh USB status before attempting another session. Native scheduling
-also refreshes the web view's connection poll while WebKit page timers are
-suspended by window occlusion; those refreshes share one in-flight poll and timer.
+waits for fresh USB status before attempting another session. A native URLSession event subscription wakes the web view even while WebKit page
+timers are suspended by window occlusion. Native/browser status polling is a
+fallback when that stream is silent; requests still share one in-flight poll.
 An in-flight capture is retained through a short re-enumeration during recovery.
 Capture discovery also listens for AVFoundation device arrival instead of waiting
 for the next discovery timer tick.
@@ -125,3 +125,82 @@ after the final USB host attachment (3.28 and 3.22 seconds after the initial hos
 attachment). These are status-screen recovery times including the presence
 heartbeat, not touch latency or a claim of instantaneous video. Native USB
 events changed the model immediately; the usual view transition still applies.
+
+
+## Event-driven recovery (2026-11-03)
+
+Normal recovery now propagates through usbmuxd `Listen` → a shared status probe →
+`GET /api/events` → the native/browser bridge → AVFoundation device/frame callbacks
+→ immediate viewer presence. The native app owns its event subscription so WebKit
+occlusion does not suspend recovery. Standalone browsers use EventSource. Sequence
+numbers, server/document identity, and observation timestamps reject obsolete events.
+The existing origin/host checks protect the event endpoint as well.
+
+IOKit matching must put the vendor in `IOPropertyMatch`. A read-only registry check
+on this Mac returned zero devices with the previous top-level vendor key and one
+with the corrected dictionary. Either IOKit or usbmuxd may arrive first; both enter
+the same recovery window. Hardware attachment changes the UI immediately, but
+capture preparation waits for current USB identity/multiplicity from usbmuxd.
+Reusing the old attachment's selection policy caused an eight-second discovery
+wait in a test build; the final build explicitly gates that path and has regression
+coverage. Capture and helper readiness then proceed concurrently, with input still
+gated on an unlocked helper and a fresh frame.
+
+Other polling costs removed or reduced:
+
+- USB forwards use the event-maintained device cache instead of `ListDevices` on
+  every new socket. A 30-second reconciliation and subscription-failure fallback
+  repair missed events.
+- First-frame callbacks release readiness immediately; the 250 ms timer checks
+  stalls, deadlines and retry budgets.
+- Presence changes publish immediately and coalesce while a request is in flight.
+  The one-second phone heartbeat remains a liveness lease, not a readiness delay.
+- Capture discovery has one fallback timer, not a new retry chain per notification.
+- Server health probes and browser/native status polling run on event-stream failure,
+  startup, navigation failure or wake. A shared helper watchdog remains: 2 seconds
+  when ready/locked, 500 ms while connecting, 10 seconds disconnected. Helper start
+  output and exit events also request immediate checks. Lock/unlock and silent helper
+  failures still need the watchdog because there is no lock event channel here.
+
+Kept intentionally: keep-awake pulses, countdown rendering, MJPEG idle deadlines,
+retry backoff, gesture-end debounce and explicit XCTest element waits. These enforce
+leases/deadlines or wait for conditions without an available reliable event source.
+A possible follow-up is using resumed capture frames to request an immediate lock
+state recheck; the current unlock path can still wait for the shared watchdog.
+
+### Final physical measurement
+
+After fixing the selection-order regression, the user confirmed the final physical
+cable cycle was smooth. The native trace recorded:
+
+| Milestone | Elapsed from earliest IOKit attachment |
+| --- | ---: |
+| Earliest IOKit attachment | 0 ms |
+| Last IOKit attachment after USB mode switches | 2772 ms |
+| Control-ready bridge observation | 2861 ms |
+| Fresh video sample | 3074 ms |
+| Input enabled / live layer submitted | 3076 ms |
+
+From the final attachment to input readiness: **304 ms**. Fresh sample to input
+readiness: **1.6 ms**. The same capture session survived the final mode switch;
+there was no discovery timeout or capture restart during that recovery. Both the
+native trace and phone phase history remained reconnecting through the mode switch.
+The phone's phase history was `Connected → Disconnected → Reconnecting → Connected`;
+its final attach-to-Connected interval was 764 ms, including the presence relay.
+
+These are one final cycle's software milestones, not a high-speed-camera measurement
+of displayed pixels or a statistically established median. Earlier 3.2-second figures
+measured the phone status label from a different event source, so they are not a
+like-for-like video benchmark. The remaining multi-second cost is primarily USB
+enumeration and capture-mode switching; removing polling cannot remove those steps.
+
+To record native milestones, create `vendor/trace-reconnect` before a test and read
+`vendor/reconnect-trace.jsonl`. Remove the marker afterward. The log contains only
+timestamps/state milestones, not frames or input contents. Record `/api/events`
+alongside it for the server's USB identifiers, and read `/wda/mirror/portal` once after
+a cycle for the phone's bounded phase history. Avoid high-frequency helper polling.
+
+Validation: full Node/e2e/native-contract/capture/lifecycle suite, release Mac build
+and code-signature verification, plus real phone recovery. Tests cover split/coalesced
+USB messages, cache reuse, listener failure, status cancellation/coalescing, bounded
+slow event clients, stale events, fallback polling, origin checks and immediate presence.

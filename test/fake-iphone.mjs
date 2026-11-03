@@ -29,6 +29,19 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
     removeTouch: false,
     devices: [{ id: 7, udid: "00008110-FAKEFAKEFAKE", connection: "USB" }],
   };
+  const subscribers = new Set();
+  const attached = d => `<key>MessageType</key><string>Attached</string><key>DeviceID</key><integer>${d.id}</integer><key>Properties</key><dict><key>ConnectionType</key><string>${d.connection}</string><key>DeviceID</key><integer>${d.id}</integer><key>SerialNumber</key><string>${d.udid}</string></dict>`;
+  let devices = ui.devices;
+  Object.defineProperty(ui, 'devices', {
+    get: () => devices,
+    set(next) {
+      const previous = devices; devices = next;
+      for (const send of subscribers) {
+        for (const d of previous) if (!next.some(n => n.id === d.id)) send(`<key>MessageType</key><string>Detached</string><key>DeviceID</key><integer>${d.id}</integer>`);
+        for (const d of next) if (!previous.some(p => p.id === d.id)) send(attached(d));
+      }
+    },
+  });
   let sessionId = "S1";
   let generation = 1;
 
@@ -37,7 +50,7 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       const json = body ? JSON.parse(body) : null;
-      log.push({ method: req.method, path: req.url, body: json });
+      log.push({ method: req.method, path: req.url, body: json, monitor: req.headers['x-mirror-purpose'] === 'lifecycle' });
       const reply = (value, extra = {}, status = 200) => {
         const send = () => {
           res.writeHead(status, { "content-type": "application/json" });
@@ -127,6 +140,14 @@ export function startFakeIphone({ frame, wdaPort = 18100, mjpegPort = 19100, gua
       };
       if (xml.includes("<string>ListDevices</string>")) {
         msg(`<key>DeviceList</key><array>${ui.devices.map(d => `<dict><key>DeviceID</key><integer>${d.id}</integer><key>MessageType</key><string>Attached</string><key>Properties</key><dict><key>ConnectionType</key><string>${d.connection}</string><key>DeviceID</key><integer>${d.id}</integer><key>SerialNumber</key><string>${d.udid}</string></dict></dict>`).join("")}</array>`);
+        return;
+      }
+      if (xml.includes("<string>Listen</string>")) {
+        sock.off('data', onData);
+        msg('<key>MessageType</key><string>Result</string><key>Number</key><integer>0</integer>');
+        subscribers.add(msg);
+        ui.devices.forEach(d => msg(attached(d)));
+        sock.on('close', () => subscribers.delete(msg));
         return;
       }
       if (xml.includes("<string>Connect</string>")) {

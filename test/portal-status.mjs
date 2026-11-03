@@ -66,3 +66,19 @@ test('presence schema rejects malformed or unexpected fields', async () => {
   for (const body of [{}, { clientId: '', ready: false }, { clientId: 'a', ready: 1 }, { clientId: 'a', ready: true, keepAwakeMs: 999 }])
     await assert.rejects(Effect.runPromise(decodeRequest('presence', body)));
 });
+
+test('readiness transitions publish immediately and changes during a send are coalesced', async () => {
+  let finish;
+  const h = harness(() => new Promise(resolve => { finish = resolve; }));
+  h.portal.receive({ clientId: 'a', ready: false });
+  h.portal.receive({ clientId: 'a', ready: true });
+  assert.equal(h.calls.length, 1);
+  finish(); await h.flush();
+  assert.equal(h.calls.length, 2, 'changed readiness is sent before the heartbeat');
+  assert.equal(h.calls[1][2].ready, true);
+  finish(); await h.flush();
+  h.portal.receive({ clientId: 'a', ready: false });
+  assert.equal(h.calls.length, 3, 'disconnect cancels the scheduled heartbeat');
+  assert.equal(h.calls[2][2].ready, false);
+  h.portal.stop(); finish(); await h.flush();
+});

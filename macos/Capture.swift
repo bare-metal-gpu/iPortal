@@ -25,7 +25,7 @@ final class PhoneUSBMonitor {
         let context = Unmanaged.passUnretained(self).toOpaque()
         func matching() -> CFDictionary {
             let match = IOServiceMatching("IOUSBHostDevice") as NSMutableDictionary
-            match["idVendor"] = 0x05ac
+            match[kIOPropertyMatchKey] = ["idVendor": 0x05ac]
             return match
         }
         IOServiceAddMatchingNotification(port, kIOMatchedNotification, matching(), { context, iterator in
@@ -107,6 +107,11 @@ private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     private let lifetime: CaptureLifetime
     private var pixel: CVPixelBuffer?
     private var timestamp: TimeInterval = 0
+    private var notification: (@Sendable () -> Void)?
+
+    func arm(_ callback: @escaping @Sendable () -> Void) {
+        lock.lock(); notification = callback; lock.unlock()
+    }
 
     init(lifetime: CaptureLifetime) { self.lifetime = lifetime }
 
@@ -114,11 +119,15 @@ private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         guard !lifetime.isCancelled, CMSampleBufferIsValid(sample), CMSampleBufferDataIsReady(sample),
               let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
         lock.lock()
+        var callback: (@Sendable () -> Void)?
         if !lifetime.isCancelled {
             self.pixel = pixel
             timestamp = ProcessInfo.processInfo.systemUptime
+            callback = notification
+            notification = nil
         }
         lock.unlock()
+        callback?()
     }
 
     func clear() {
@@ -145,6 +154,8 @@ final class PhoneCapture {
     let audio = AVCaptureAudioPreviewOutput()
     var onSize: ((CGSize) -> Void)?
     var onFailure: (() -> Void)?
+    var onFrame: (() -> Void)?
+    private var discoveryRetry: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
     private let lifetime = CaptureLifetime()
     private let frames: FrameStore
@@ -158,6 +169,14 @@ final class PhoneCapture {
     private(set) var startupTimeoutAt: TimeInterval? = nil
     var lastFrameAt: TimeInterval { frames.lastFrameAt }
     func snapshot() -> NSImage? { frames.snapshot() }
+    func awaitFreshFrame() {
+        frames.arm { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, !self.stopped else { return }
+                self.onFrame?()
+            }
+        }
+    }
     private var deviceUDID = ""
     private var allowSingleDeviceFallback = false
 
@@ -171,6 +190,7 @@ final class PhoneCapture {
     /// Calls done(true) once video is running, or done(false) if access is denied or no iPhone shows up.
     func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, _ done: @escaping @MainActor (Bool) -> Void) {
         guard !started, !stopped else { return done(false) }
+        portalTrace("capture-start-entered")
         started = true
         completion = done
         deviceUDID = udid
@@ -181,9 +201,12 @@ final class PhoneCapture {
             mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
         var allow: UInt32 = 1
         CMIOObjectSetPropertyData(CMIOObjectID(kCMIOObjectSystemObject), &prop, 0, nil, UInt32(MemoryLayout<UInt32>.size), &allow)
+        portalTrace("capture-devices-enabled")
 
         AVCaptureDevice.requestAccess(for: .video) { video in
+            portalTrace("capture-video-permission", ["allowed": video])
             AVCaptureDevice.requestAccess(for: .audio) { audio in
+                portalTrace("capture-audio-permission", ["allowed": audio])
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         guard !self.stopped else { return }
@@ -203,6 +226,7 @@ final class PhoneCapture {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        discoveryRetry?.cancel()
         completion = nil
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
@@ -217,11 +241,13 @@ final class PhoneCapture {
             session.outputs.forEach(session.removeOutput)
             session.commitConfiguration()
             frames.clear()
+            portalTrace("capture-stopped")
         }
     }
 
     private func finish(_ ok: Bool) {
         guard !stopped else { return }
+        portalTrace("capture-completion", ["ok": ok])
         let callback = completion
         completion = nil
         callback?(ok)
@@ -250,14 +276,18 @@ final class PhoneCapture {
     // The device appears a second or two after screen capture devices are allowed.
     private func waitForDevice(until deadline: TimeInterval, withAudio: Bool) {
         guard !stopped, !configuring else { return }
+        discoveryRetry?.cancel()
         if let device = findDevice() {
             configuring = true
+            portalTrace("capture-device-available")
             return run(device, withAudio: withAudio)
         }
         if ProcessInfo.processInfo.systemUptime > deadline { return finish(false) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+        let retry = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.waitForDevice(until: deadline, withAudio: withAudio) }
         }
+        discoveryRetry = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: retry)
     }
 
     private func run(_ device: AVCaptureDevice, withAudio: Bool) {
@@ -273,6 +303,7 @@ final class PhoneCapture {
         let frames = self.frames
         let frameQueue = self.frameQueue
         CaptureSessionExecutor.start(lifetime, operation: {
+            portalTrace("capture-configure")
             guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return false }
             session.beginConfiguration()
             session.addInput(input)
@@ -284,6 +315,7 @@ final class PhoneCapture {
             if withAudio, session.canAddOutput(audio) { session.addOutput(audio) }
             session.commitConfiguration()
             session.startRunning() // blocks until the stream is up
+            portalTrace("capture-start-returned")
             return session.isRunning
         }, completion: { [weak self] ok in
             DispatchQueue.main.async {

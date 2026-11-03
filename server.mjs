@@ -75,7 +75,7 @@ export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 
   });
 }
 
-export function startServer({ port, instanceId, html, mjpeg, dispatch, onListening }) {
+export function startServer({ port, instanceId, html, mjpeg, dispatch, statusEvents, onListening }) {
   const headers = { "cache-control": "no-store", "x-mirror-instance": instanceId, "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin", "referrer-policy": "no-referrer" };
   const json = response => HttpServerResponse.jsonUnsafe(response.body, { status: response.status, headers });
   const handler = request => Effect.gen(function*() {
@@ -87,6 +87,11 @@ export function startServer({ port, instanceId, html, mjpeg, dispatch, onListeni
     if (request.method === "GET" && url.pathname === "/api/health") {
       // Process liveness must not depend on USB, XCTest, lock state or a session.
       return json({ status: 200, body: { service: "iphone-mirror", apiVersion: 2, instanceId, ok: true } });
+    }
+    if (request.method === "GET" && url.pathname === "/api/events" && statusEvents) {
+      return HttpServerResponse.stream(Stream.fromReadableStream({ evaluate: () => statusEvents.stream(), onError: e => e }), {
+        headers: { ...headers, "content-type": "text/event-stream", "x-accel-buffering": "no" },
+      });
     }
     if (request.method === "GET" && url.pathname === "/stream") {
       const video = yield* openVideoStream(mjpeg);
