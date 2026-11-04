@@ -72,15 +72,6 @@ enum IPortalWatcher {
 enum IPortalWatcherService {
     private static var service: SMAppService { .loginItem(identifier: IPortalWatcher.helperID) }
 
-    static var currentStatus: (running: Bool, login: SMAppService.Status) {
-        let running = NSRunningApplication.runningApplications(withBundleIdentifier: IPortalWatcher.helperID).contains {
-            !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath() == IPortalWatcher.helperURL.resolvingSymlinksInPath()
-        }
-        return (running, service.status)
-    }
-
-    static func openSettings() { SMAppService.openSystemSettingsLoginItems() }
-
     static func printStatus() {
         let status: [String: Any] = ["helperStatus": service.status.rawValue,
             "legacyMainAppStatus": SMAppService.mainApp.status.rawValue,

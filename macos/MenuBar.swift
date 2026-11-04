@@ -42,11 +42,10 @@ private func portalMenuIcon() -> NSImage {
 private final class MenuBarState: ObservableObject {
     @Published var devices: [IPortalDeviceRow] = []
     @Published var sessions: [String: IPortalMirrorSession] = [:]
-    @Published var loginEnabled = false
     @Published var presentation = PopoverPresentation()
     var visible: Bool { presentation.visible }
     @Published var notchX: CGFloat = 150
-    var height: CGFloat { CGFloat(max(1, devices.count) * 56 + 62) }
+    var height: CGFloat { CGFloat(max(1, devices.count) * 56 + 30) }
 }
 
 private final class NotchedMaterialView: NSVisualEffectView {
@@ -130,8 +129,6 @@ private struct MirrorPopover: View {
     @ObservedObject var state: MenuBarState
     var start: (String) -> Void
     var pause: (IPortalMirrorSession) -> Void
-    var setLogin: (Bool) -> Void
-    var quit: () -> Void
     private var outline: NotchedOutline { NotchedOutline(notchX: state.notchX) }
 
     var body: some View {
@@ -166,20 +163,8 @@ private struct MirrorPopover: View {
                     .padding(.horizontal, 18).frame(height: 56)
                 }
             }
-            Divider().overlay(.white.opacity(0.04)).padding(.horizontal, 14)
-            HStack {
-                Spacer()
-                Menu {
-                    Toggle("Open at Login", isOn: Binding(get: { state.loginEnabled }, set: setLogin))
-                    Divider()
-                    Button("Quit iPortal", action: quit)
-                } label: { Image(systemName: "gearshape").frame(width: 24, height: 24) }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .help("Settings").accessibilityLabel("Settings")
-            }
-            .padding(.horizontal, 12).frame(height: 34)
         }
-        .padding(.top, 18).padding(.bottom, 10)
+        .padding(.top, 20).padding(.bottom, 10)
         .frame(width: 300, height: state.height)
         .background { NotchedBackdrop(notchX: state.notchX).allowsHitTesting(false) }
         .overlay(outline.stroke(.white.opacity(0.12), lineWidth: 0.7))
@@ -233,9 +218,7 @@ final class MirrorMenuBar: NSObject {
         panel.appearance = NSAppearance(named: .darkAqua)
         host = NSHostingView(rootView: MirrorPopover(state: state,
             start: { [weak self] serial in self?.close(); self?.onStart?(serial) },
-            pause: { [weak self] session in self?.onPause?(session) },
-            setLogin: { [weak self] enabled in self?.setLoginEnabled(enabled) },
-            quit: { [weak self] in self?.onQuit?() }))
+            pause: { [weak self] session in self?.onPause?(session) }))
         host.sizingOptions = []
         panel.contentView = host
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
@@ -300,7 +283,6 @@ final class MirrorMenuBar: NSObject {
 
     func show(activate: Bool = false) {
         onShow?()
-        state.loginEnabled = isLoginEnabled()
         _ = state.presentation.setVisible(true)
         panel.ignoresMouseEvents = false
         if !panel.isVisible { panel.alphaValue = 0 }
@@ -388,8 +370,6 @@ final class MirrorMenuBar: NSObject {
 
     @objc private func toggleLogin() { setLoginEnabled(!isLoginEnabled()) }
     @objc private func quitAll() { onQuit?() }
-
-    func refreshLoginStatus() { state.loginEnabled = isLoginEnabled() }
 
     private func setLoginEnabled(_ enabled: Bool) { onLogin?(enabled) }
 }

@@ -18,8 +18,14 @@ The menu-bar watcher's Open at Login setting is independent of capture permissio
 ## State and lifecycle
 
 - Every displayed permission state comes from AVFoundation, not a saved preference.
-- **Allow** requests an undecided permission. **Manage** opens its macOS Privacy &
-  Security page; an app cannot grant or revoke its own system authorization.
+- The top-aligned overlay contains only Camera and Microphone switches. Each is
+  on only when macOS reports authorization; no optimistic state is stored.
+- Enabling an undecided permission shows the system prompt. Changing a previously
+  decided permission opens its macOS Privacy & Security page; an app cannot grant
+  or revoke its own system authorization. Restricted/unavailable switches are disabled.
+- Watcher controls remain at the app level (right-click the menu-bar icon).
+  Clipboard transfers remain in Edit; connecting/reconnecting never reads the
+  clipboard or requests Paste access.
 - Foreground, wake, request completion, opening Settings and capture errors refresh
   state. AVFoundation offers no public permission-change event, so a one-second
   fallback runs only while at least one Settings overlay is open.

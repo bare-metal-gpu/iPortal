@@ -8,7 +8,6 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
     private let names = PhoneDeviceNames(defaults: IPortalWatcher.preferences)
     private var invitations = USBInvitationGate()
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var settingsObserver: NSObjectProtocol?
     private var sessionsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -46,10 +45,6 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         // Subscribe before reading: launches or closes during startup cannot
         // leave the watcher with a permanently missed transition.
         updateMenu()
-        settingsObserver = DistributedNotificationCenter.default().addObserver(forName: IPortalWatcher.settingsChanged,
-            object: IPortalWatcher.appURL.path, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.menuBar?.refreshLoginStatus() }
-            }
         if ProcessInfo.processInfo.arguments.contains("--show-devices") ||
             (IPortalWatcher.mainApplications.isEmpty && usbMonitor?.connectedDevices.isEmpty == false) {
             menuBar?.show()
@@ -85,7 +80,6 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         names.stop()
         menuBar?.stop()
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
-        if let settingsObserver { DistributedNotificationCenter.default().removeObserver(settingsObserver) }
         if let sessionsObserver { DistributedNotificationCenter.default().removeObserver(sessionsObserver) }
     }
 }

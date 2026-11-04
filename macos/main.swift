@@ -197,7 +197,6 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func updateLoadingBorder() {
-        clipboard.available = clipboardTarget != nil
         guard mirroringActive else { return }
         let phase: String
         if deviceLifecycle == "locked" || deviceLifecycle == "disconnected" { phase = deviceLifecycle }
@@ -505,7 +504,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         permissionObserver = nil
         clipboard.cancel()
         CapturePermissions.shared.inspect(sessionID, visible: false)
-        settingsVisible = false; settingsState.visible = false; settingsGeneration += 1
+        settingsVisible = false; settingsGeneration += 1
         settingsState.snapshot = nil; settingsHost = nil
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
         stopCapture()
@@ -615,11 +614,11 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         barButtons.forEach(bar.addSubview)
         clipboard.target = { [weak self] in self?.clipboardTarget }
         clipboard.reportError = { [weak self] message in
-            guard let self, self.mirroringActive, !self.settingsVisible, let window = self.window else { return }
+            guard let self, self.mirroringActive, let window = self.window else { return }
             let alert = NSAlert(); alert.messageText = "Clipboard"; alert.informativeText = message
             alert.beginSheetModal(for: window)
         }
-        settingsHost = SettingsOverlayHost(rootView: SettingsOverlay(state: settingsState, permissions: .shared, clipboard: clipboard,
+        settingsHost = SettingsOverlayHost(rootView: SettingsOverlay(state: settingsState, permissions: .shared,
             close: { [weak self] in self?.setSettingsVisible(false) }))
         settingsHost.isHidden = true
         settingsHost.alphaValue = 0
@@ -827,7 +826,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func setSettingsVisible(_ visible: Bool) {
         guard mirroringActive, settingsVisible != visible, let settingsHost else { return }
-        settingsVisible = visible; settingsState.visible = visible; settingsGeneration += 1
+        settingsVisible = visible; settingsGeneration += 1
         let generation = settingsGeneration
         CapturePermissions.shared.inspect(sessionID, visible: visible)
         if visible { nativeCall("setNativeSettingsVisible", ready: true) }

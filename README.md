@@ -36,11 +36,12 @@ reflects macOS’s current state across all device windows. Without Camera acces
 mirroring uses basic video from the phone helper; without Microphone access,
 video continues silently. See [permission behavior](docs/permissions.md).
 
-Settings also shows whether the menu-bar watcher is running and starts at login.
-Use **Clipboard → To Mac / To Device** (or the Edit menu) to transfer text, links,
-or an image. Transfers happen only when requested; the phone briefly opens iPortal,
-then returns to the previous app. iOS may ask you to allow Paste. Sending a clipboard
-item makes it available to Paste on the device; ⌘V still inserts text directly.
+Settings shows Camera and Microphone as native switches that reflect macOS authorization.
+Use the Edit menu to transfer clipboard text, links, or an image. Transfers happen
+only when requested; connecting never reads the clipboard or asks for Paste access.
+The phone briefly opens iPortal for a transfer, then returns to the previous app.
+iOS may ask you to allow Paste. Sending a clipboard item makes it available to Paste
+on the device; ⌘V still inserts text directly.
 
 Closing the mirror, choosing Quit in the Dock, or pressing ⌘Q leaves the menu-bar
 watcher running in a separate native helper. Connect an iPhone to see its name and press the trailing play
@@ -48,7 +49,7 @@ button to mirror it. iPads work the same way. Press Play for another connected
 device to open its own mirror. An open mirror shows Pause for that device; Pause closes only its window and
 stops its session. Play returns once that session has finished stopping.
 Keyboard shortcuts and audio controls apply to the focused window. Closing one
-mirror leaves the others running. The menu-bar settings include **Open at Login** (starts only
+mirror leaves the others running. Right-click the menu-bar icon for **Open at Login** (starts only
 the watcher) and **Quit iPortal** (stops everything).
 
 | Shortcut            | Action                                                      |

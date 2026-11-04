@@ -1,5 +1,4 @@
 import Cocoa
-import Combine
 
 struct ClipboardTarget: Equatable {
     let port: Int
@@ -63,10 +62,8 @@ struct ClipboardFailure: LocalizedError {
 }
 
 @MainActor
-final class ClipboardBridge: ObservableObject {
-    @Published private(set) var busy = false
-    @Published var available = false
-    @Published private(set) var message = "Text, links, and images."
+final class ClipboardBridge {
+    private(set) var busy = false
     var target: () -> ClipboardTarget? = { nil }
     var reportError: (String) -> Void = { _ in }
     private var task: Task<Void, Never>?
@@ -75,7 +72,7 @@ final class ClipboardBridge: ObservableObject {
         self.send = send
     }
 
-    func cancel() { task?.cancel(); task = nil; available = false }
+    func cancel() { task?.cancel(); task = nil }
     func transfer(toDevice: Bool, pasteboard: NSPasteboard = .general) {
         guard !busy, let selected = target() else { return }
         let revision = pasteboard.changeCount
@@ -83,7 +80,6 @@ final class ClipboardBridge: ObservableObject {
         do { body = toDevice ? try JSONEncoder().encode(ClipboardPayload.read(pasteboard)) : Data("{}".utf8) }
         catch { fail(error.localizedDescription); return }
         busy = true
-        message = "Transferring…"
         task = Task { [weak self] in
             guard let self else { return }
             defer { busy = false; task = nil }
@@ -119,13 +115,11 @@ final class ClipboardBridge: ObservableObject {
                     pasteboard.clearContents()
                     guard pasteboard.writeObjects([item]) else { throw ClipboardFailure("Couldn’t update the Mac clipboard.") }
                 }
-                message = toDevice ? "Copied to device." : "Copied to Mac."
-            } catch is CancellationError { message = "Transfer cancelled." }
+            } catch is CancellationError { }
             catch {
-                if Task.isCancelled { message = "Transfer cancelled." }
-                else { fail(error.localizedDescription) }
+                if !Task.isCancelled { fail(error.localizedDescription) }
             }
         }
     }
-    private func fail(_ text: String) { message = text; reportError(text) }
+    private func fail(_ text: String) { reportError(text) }
 }

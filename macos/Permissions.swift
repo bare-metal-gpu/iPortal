@@ -53,6 +53,7 @@ final class CapturePermissions: ObservableObject {
     @Published private(set) var requesting: Set<CapturePermission> = []
     private let readStatus: (CapturePermission) -> CaptureAuthorization
     private let ask: (CapturePermission) async -> Void
+    private let showSettings: (CapturePermission) -> Void
     private var pending: [CapturePermission: Task<CaptureAuthorization, Never>] = [:]
     private var observers: [NSObjectProtocol] = []
     private var wakeObserver: NSObjectProtocol?
@@ -63,8 +64,13 @@ final class CapturePermissions: ObservableObject {
         CaptureAuthorization(AVCaptureDevice.authorizationStatus(for: $0.mediaType))
     }, ask: @escaping (CapturePermission) async -> Void = {
         _ = await AVCaptureDevice.requestAccess(for: $0.mediaType)
+    }, showSettings: @escaping (CapturePermission) -> Void = { permission in
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?" + permission.settingsPane)!
+        if !NSWorkspace.shared.open(url) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+        }
     }, monitorSystem: Bool = true) {
-        self.readStatus = readStatus; self.ask = ask
+        self.readStatus = readStatus; self.ask = ask; self.showSettings = showSettings
         snapshot = CapturePermissionSnapshot(camera: readStatus(.camera), microphone: readStatus(.microphone))
         guard monitorSystem else { return }
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
@@ -114,12 +120,23 @@ final class CapturePermissions: ObservableObject {
         }
     }
 
-    func openSettings(_ permission: CapturePermission) {
+    func setEnabled(_ enabled: Bool, for permission: CapturePermission) async {
         refresh()
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?" + permission.settingsPane)!
-        if !NSWorkspace.shared.open(url) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+        guard enabled != (snapshot[permission] == .authorized) else { return }
+        // A switch expresses intent, never a saved permission bit. macOS owns
+        // grants and revocations; denied permissions cannot be prompted again.
+        switch snapshot[permission] {
+        case .notDetermined:
+            if enabled { await request(permission) }
+        case .authorized, .denied:
+            showSettings(permission)
+        case .restricted, .unavailable:
+            break
         }
+        refresh()
+        // Reconcile AppKit's switch even when opening System Settings leaves
+        // authorization unchanged. Do not show an optimistic fake permission.
+        objectWillChange.send()
     }
 
     deinit {

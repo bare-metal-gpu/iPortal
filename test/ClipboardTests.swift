@@ -7,8 +7,10 @@ import Cocoa
         let target = ClipboardTarget(port: 7100, instance: "instance", device: "phone-a", generation: 1, epoch: 1)
         var current: ClipboardTarget? = target
         var outcome = "success"
+        var requests = 0
         let payload = try ClipboardPayload.make("text", Data("iPortal 👋 café\n日本語".utf8))
         let bridge = ClipboardBridge { request in
+            requests += 1
             assert(request.value(forHTTPHeaderField: "x-iportal-instance") == "instance")
             if outcome == "changed clipboard" { pasteboard.clearContents(); pasteboard.setString("newer copy", forType: .string) }
             if outcome == "changed target" { current = nil }
@@ -19,6 +21,12 @@ import Cocoa
             return (json, HTTPURLResponse(url:request.url!, statusCode:200, httpVersion:nil, headerFields:["x-iportal-instance":"instance"])!)
         }
         bridge.target = { current }
+        for _ in 0..<20 { await Task.yield() }
+        current = nil
+        bridge.cancel()
+        current = target
+        for _ in 0..<20 { await Task.yield() }
+        assert(requests == 0, "connecting or reconnecting must never read the clipboard or trigger Paste permission")
         for mode in ["success", "empty", "disconnect", "changed clipboard", "changed target"] {
             current = target; outcome = mode
             pasteboard.clearContents(); pasteboard.setString("previous copy", forType: .string)
