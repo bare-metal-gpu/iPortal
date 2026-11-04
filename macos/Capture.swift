@@ -79,34 +79,45 @@ private enum CapturePermissions {
     }
 }
 
-// Retain one pixel buffer, not a history of frames. The capture queue never
-// performs image conversion; snapshots are made only on lifecycle transitions.
+// Retain only the newest frame. Presentation and its geometry consume the same
+// sample; a busy main queue drops superseded frames instead of adding latency.
 // BEGIN TESTABLE FRAME STORE
+struct CapturedFrame {
+    let sample: CMSampleBuffer
+    let size: CGSize
+    let timestamp: TimeInterval
+
+    func immediateSample() -> CMSampleBuffer? {
+        var copy: CMSampleBuffer?
+        guard CMSampleBufferCreateCopy(allocator: nil, sampleBuffer: sample, sampleBufferOut: &copy) == noErr,
+              let copy, let attachments = CMSampleBufferGetSampleAttachmentsArray(copy, createIfNecessary: true) else { return nil }
+        let values = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+        CFDictionarySetValue(values, Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                             Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+        return copy
+    }
+}
+
 final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private let lifetime: CaptureLifetime
     private var pixel: CVPixelBuffer?
-    private var timestamp: TimeInterval = 0
+    private var latest: CapturedFrame?
+    private var pending = false
     private var notification: (@Sendable () -> Void)?
-    private var geometry = CGSize.zero
-    private var geometryPending = false
-    private var geometryNotification: (@Sendable () -> Void)?
 
-    func observeGeometry(_ callback: @escaping @Sendable () -> Void) {
-        lock.lock(); geometryNotification = callback; lock.unlock()
-    }
+    init(lifetime: CaptureLifetime) { self.lifetime = lifetime }
 
-    func takeGeometry() -> CGSize {
-        lock.lock(); defer { lock.unlock() }
-        geometryPending = false
-        return geometry
-    }
-
-    func arm(_ callback: @escaping @Sendable () -> Void) {
+    func observeFrames(_ callback: @escaping @Sendable () -> Void) {
         lock.lock(); notification = callback; lock.unlock()
     }
 
-    init(lifetime: CaptureLifetime) { self.lifetime = lifetime }
+    func takeFrame() -> CapturedFrame? {
+        lock.lock(); defer { lock.unlock() }
+        pending = false
+        defer { latest = nil }
+        return lifetime.isCancelled ? nil : latest
+    }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
         consume(sample)
@@ -121,35 +132,25 @@ final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, 
         } else {
             dimensions = CGSize(width: CVPixelBufferGetWidth(pixel), height: CVPixelBufferGetHeight(pixel))
         }
+        guard dimensions.width > 0, dimensions.height > 0 else { return }
         lock.lock()
         var callback: (@Sendable () -> Void)?
-        var geometryCallback: (@Sendable () -> Void)?
         if !lifetime.isCancelled {
             self.pixel = pixel
-            timestamp = ProcessInfo.processInfo.systemUptime
-            callback = notification
-            notification = nil
-            if dimensions.width > 0, dimensions.height > 0, dimensions != geometry {
-                geometry = dimensions
-                if !geometryPending {
-                    geometryPending = true
-                    geometryCallback = geometryNotification
-                }
+            latest = CapturedFrame(sample: sample, size: dimensions, timestamp: ProcessInfo.processInfo.systemUptime)
+            if !pending {
+                pending = true
+                callback = notification
             }
         }
         lock.unlock()
-        geometryCallback?()
         callback?()
     }
 
     func clear() {
-        lock.lock(); pixel = nil; timestamp = 0; geometry = .zero; geometryPending = false; lock.unlock()
+        lock.lock(); pixel = nil; latest = nil; pending = false; lock.unlock()
     }
 
-    var lastFrameAt: TimeInterval {
-        lock.lock(); defer { lock.unlock() }
-        return timestamp
-    }
     func snapshot() -> NSImage? {
         lock.lock(); let pixel = self.pixel; lock.unlock()
         guard let pixel else { return nil }
@@ -167,7 +168,7 @@ final class PhoneCapture {
     private var sourceID: String?
     var connectedDevices: () -> [IPortalUSBDevice] = { [] }
     let session = AVCaptureSession()
-    let layer: AVCaptureVideoPreviewLayer
+    let layer: AVSampleBufferDisplayLayer
     let audio = AVCaptureAudioPreviewOutput()
     var onSize: ((CGSize) -> Void)?
     var onFailure: (() -> Void)?
@@ -184,16 +185,11 @@ final class PhoneCapture {
     private var stopped = false
     private var failureReported = false
     private(set) var startupTimeoutAt: TimeInterval? = nil
-    var lastFrameAt: TimeInterval { frames.lastFrameAt }
+    private(set) var lastFrameAt: TimeInterval = 0
+    private var presentedSize = CGSize.zero
+    private var waitingForFreshFrame = false
     func snapshot() -> NSImage? { frames.snapshot() }
-    func awaitFreshFrame() {
-        frames.arm { [weak self] in
-            DispatchQueue.main.async {
-                guard let self, !self.stopped else { return }
-                self.onFrame?()
-            }
-        }
-    }
+    func awaitFreshFrame() { waitingForFreshFrame = true }
     private var deviceUDID = ""
     private var allowSingleDeviceFallback = false
     private(set) var identityAmbiguous = false
@@ -201,18 +197,36 @@ final class PhoneCapture {
 
     init(audioVolume: Float = 1) {
         frames = FrameStore(lifetime: lifetime)
-        layer = AVCaptureVideoPreviewLayer(session: session)
-        // Never stretch a newly rotated frame while the window catches up.
+        layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
         audio.volume = min(1, max(0, audioVolume))
-        frames.observeGeometry { [weak self] in
+        frames.observeFrames { [weak self] in
             DispatchQueue.main.async {
-                guard let self, !self.stopped else { return }
-                // Read the latest geometry, not a stale size queued before a rapid rotation.
-                let size = self.frames.takeGeometry()
-                iportalTrace("capture-geometry", ["width": size.width, "height": size.height])
-                self.onSize?(size)
+                guard let self, !self.stopped, let frame = self.frames.takeFrame() else { return }
+                self.present(frame)
             }
+        }
+    }
+
+    private func present(_ frame: CapturedFrame) {
+        let renderer = layer.sampleBufferRenderer
+        guard renderer.status != .failed else { failed(); return }
+        guard renderer.isReadyForMoreMediaData, let sample = frame.immediateSample() else { return }
+        // Frame dimensions and pixels advance in one transaction. A separate
+        // AVCaptureVideoPreviewLayer can apply the new format to its old image.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if frame.size != presentedSize {
+            presentedSize = frame.size
+            iportalTrace("capture-geometry", ["width": frame.size.width, "height": frame.size.height])
+            onSize?(frame.size)
+        }
+        renderer.enqueue(sample)
+        CATransaction.commit()
+        lastFrameAt = frame.timestamp
+        if waitingForFreshFrame {
+            waitingForFreshFrame = false
+            onFrame?()
         }
     }
 
@@ -248,6 +262,7 @@ final class PhoneCapture {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        layer.sampleBufferRenderer.flush()
         discoveryRetry?.cancel()
         completion = nil
         observers.forEach(NotificationCenter.default.removeObserver)

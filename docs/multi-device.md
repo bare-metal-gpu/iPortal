@@ -54,9 +54,13 @@ helper and embedded status framework already target iPhone and iPad; each physic
 device still needs provisioning, Developer Mode and trust.
 
 Rotation follows the presentation dimensions of incoming frames, not the capture
-device's configured format. Geometry notifications coalesce to the newest frame
-and belong to that capture session; retired captures and fallback streams cannot
-resize a replacement native session. The window preserves the user's preferred
+device's configured format. An `AVSampleBufferDisplayLayer` presents the same
+sample whose dimensions resize the window, within one disabled-animation layer
+transaction. The separate capture preview could briefly apply a new format to old
+pixels, producing stretched frames during rotation. Presentation keeps only the
+newest pending sample and marks it for immediate display, avoiding a frame backlog.
+Retired captures and fallback streams cannot resize a replacement native session.
+The window preserves the user's preferred
 long-edge size, centers around its previous position and fits the current display.
 Returning to portrait restores that preferred scale. Native video and fallback
 frames preserve their aspect ratio while the window catches up. Buffered gestures
@@ -73,9 +77,17 @@ while the other device remains live. Native tests exercise registry ownership,
 late-close rejection, iPad classification/geometry, ambiguous capture rejection,
 USB row independence and per-source capture concurrency. Existing single-device
 tests remain in the suite.
-Frame tests also exercise rapid rotation coalescing, unchanged-frame suppression,
-capture restart and cancellation. Window geometry tests cover scale restoration
-and display bounds; browser tests cover gesture cancellation and stale callbacks.
+Frame tests also exercise pixel/geometry pairing, latest-frame coalescing, immediate
+display attachments, capture clearing and cancellation of already-queued work.
+Window geometry tests cover scale restoration and display bounds; browser tests
+cover gesture cancellation and stale callbacks.
+
+Physical iPhone rotation was checked in Photos. Frame-by-frame inspection of the
+original recording showed stretched intermediate frames and exposed material;
+captured source buffers retained their proportions. After switching presentation
+paths, the user confirmed clean transitions in both directions. This verifies
+single-device display rotation, not physical iPad behavior or an end-to-end latency
+measurement.
 
 The connected physical iPhone has been checked for startup, live native video,
 menu shortcut targeting, keep-awake and locked startup. Quit stopped the main app,

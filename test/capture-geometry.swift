@@ -20,27 +20,41 @@ private func sample(_ width: Int, _ height: Int) -> CMSampleBuffer {
 struct CaptureGeometryTests {
     static func main() {
         let lifetime = CaptureLifetime(), store = FrameStore(lifetime: CaptureLifetime())
-        let events = Counter(), fresh = Counter()
-        store.observeGeometry { events.value += 1 }
-        store.arm { fresh.value += 1 }
-        store.consume(sample(40, 80))
-        assert(events.value == 1 && fresh.value == 1)
-        assert(store.takeGeometry() == CGSize(width: 40, height: 80))
-        store.consume(sample(40, 80))
-        assert(events.value == 1, "steady frames must not flood the main queue")
-        store.consume(sample(80, 40))
-        store.consume(sample(40, 80))
-        store.consume(sample(80, 40))
-        assert(events.value == 2, "rapid rotations coalesce while the main queue is busy")
-        assert(store.takeGeometry() == CGSize(width: 80, height: 40), "the event reports the newest frame, not the first queued size")
+        let events = Counter()
+        store.observeFrames { events.value += 1 }
+        let portrait = sample(40, 80), landscape = sample(80, 40)
+        store.consume(portrait)
+        assert(events.value == 1)
+        let first = store.takeFrame()!
+        assert(first.size == CGSize(width: 40, height: 80))
+        assert(first.sample === portrait && first.timestamp > 0)
+        assert(store.takeFrame() == nil, "a consumed frame must not be replayed")
+        store.consume(portrait)
+        store.consume(landscape)
+        store.consume(portrait)
+        store.consume(landscape)
+        assert(events.value == 2, "a busy main queue receives one wakeup, not a frame backlog")
+        let newest = store.takeFrame()!
+        assert(newest.size == CGSize(width: 80, height: 40) && newest.sample === landscape,
+               "geometry and pixels must come from the same newest sample")
+        assert(CVPixelBufferGetWidth(CMSampleBufferGetImageBuffer(newest.sample)!) == 80)
+        let immediate = newest.immediateSample()!
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(immediate, createIfNecessary: false)! as NSArray
+        assert((attachments[0] as! NSDictionary)[kCMSampleAttachmentKey_DisplayImmediately] as? Bool == true,
+               "live presentation cannot accumulate timestamp latency")
+        store.consume(portrait)
         store.clear()
-        store.consume(sample(80, 40))
-        assert(events.value == 3, "a fresh capture reports geometry even in the same orientation")
+        assert(store.takeFrame() == nil, "clearing a capture drops any queued frame")
+        store.consume(landscape)
+        assert(store.takeFrame()?.size == CGSize(width: 80, height: 40))
         let cancelled = FrameStore(lifetime: lifetime)
-        cancelled.observeGeometry { events.value += 1 }
+        let cancelledEvents = Counter()
+        cancelled.observeFrames { cancelledEvents.value += 1 }
+        cancelled.consume(portrait)
         lifetime.cancel()
-        cancelled.consume(sample(40, 80))
-        assert(events.value == 3 && cancelled.lastFrameAt == 0, "retired capture cannot rotate a replacement window")
-        print("Frame geometry events, coalescing, restart and cancellation tests passed.")
+        assert(cancelled.takeFrame() == nil, "already-queued work cannot present after retirement")
+        cancelled.consume(landscape)
+        assert(cancelledEvents.value == 1, "retired capture cannot enqueue more presentation work")
+        print("Frame/geometry pairing, coalescing, immediate display and cancellation tests passed.")
     }
 }
