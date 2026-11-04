@@ -98,8 +98,11 @@ export async function readBody(req, signal, limit = 1024 * 1024) {
 
 // The handshake and each idle read are bounded independently. A permanent
 // timeout on fetch's signal would also kill healthy long-running video.
-/** @param {string} url @param {{connectTimeoutMs?: number, idleTimeoutMs?: number, unix?: string}} [options] */
-export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 5000, unix } = {}) {
+/** @param {string} url @param {{connectTimeoutMs?: number, idleTimeoutMs?: number, unix?: string, authentication?: ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>}} [options] */
+export function openVideoStream(
+  url,
+  { connectTimeoutMs = 3000, idleTimeoutMs = 5000, unix, authentication } = {},
+) {
   return Effect.gen(function* () {
     const controller = new AbortController();
     const upstream = yield* Effect.tryPromise(async (signal) => {
@@ -113,8 +116,9 @@ export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 
           ...(unix ? { unix } : {}),
           redirect: "error",
           signal: AbortSignal.any([signal, controller.signal]),
-          headers: { connection: "close" },
+          headers: { connection: "close", ...authentication?.headers },
         });
+        authentication?.verify(response);
         if (!response.ok || !response.body)
           throw apiError("Video stream unavailable", 502, "video unavailable");
         return { body: response.body, headers: response.headers };
@@ -141,6 +145,7 @@ export function startServer({
   html,
   mjpeg,
   mjpegSocket,
+  helperAuth,
   dispatch,
   statusEvents,
   onListening,
@@ -191,7 +196,10 @@ export function startServer({
         );
       }
       if (request.method === "GET" && url.pathname === "/stream") {
-        const video = yield* openVideoStream(mjpeg, { unix: mjpegSocket });
+        const video = yield* openVideoStream(mjpeg, {
+          unix: mjpegSocket,
+          authentication: helperAuth,
+        });
         return HttpServerResponse.stream(video.stream, {
           // WebKit's multipart response loader rejects fetch().body reads.
           // Our canvas decoder needs the original framed bytes, without the

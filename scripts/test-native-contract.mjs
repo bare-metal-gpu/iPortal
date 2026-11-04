@@ -167,11 +167,27 @@ int main(void) { @autoreleasepool {
     execFileSync("git", ["init", "-q", checkout]);
     const source = join(checkout, "WebDriverAgentLib/Commands/FBTouchActionCommands.m");
     const installer = join(root, "scripts/apply-wda-patches.sh");
+    const authSources = [
+      "Routing/FBHTTPServer.m",
+      "Routing/FBWebServer.m",
+      "Utilities/FBMjpegServer.m",
+    ];
+    for (const file of authSources) {
+      await mkdir(join(checkout, "WebDriverAgentLib", file, ".."), { recursive: true });
+      await writeFile(
+        join(checkout, "WebDriverAgentLib", file),
+        execFileSync("git", ["-C", vendor, "show", `HEAD:WebDriverAgentLib/${file}`]),
+      );
+    }
     await writeFile(source, upstream);
     execFileSync(installer, [checkout]);
     const installed = await readFile(source, "utf8");
     execFileSync(installer, [checkout]);
     assert.equal(await readFile(source, "utf8"), installed);
+    for (const file of authSources) {
+      const installedAuth = await readFile(join(checkout, "WebDriverAgentLib", file), "utf8");
+      assert.match(installedAuth, /FBIPortal|X-iPortal-Helper-Auth/);
+    }
     await writeFile(source, upstream);
     for (const patch of [
       "wda-fast-touch.patch",
@@ -207,6 +223,11 @@ int main(void) { @autoreleasepool {
     await writeFile(source, "incompatible upstream");
     assert.throws(() => execFileSync(installer, [checkout], { stdio: "pipe" }));
     assert.equal(await readFile(source, "utf8"), "incompatible upstream");
+    await writeFile(source, installed);
+    const authSource = join(checkout, "WebDriverAgentLib/Routing/FBHTTPServer.m");
+    await writeFile(authSource, "incompatible authentication source");
+    assert.throws(() => execFileSync(installer, [checkout], { stdio: "pipe" }));
+    assert.equal(await readFile(authSource, "utf8"), "incompatible authentication source");
     console.log("Fresh/upgrade/repeated/incompatible WDA patch installation passed.");
   }
 } finally {

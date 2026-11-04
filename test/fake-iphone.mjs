@@ -1,8 +1,10 @@
 // A fake iPhone for development without a device: a fake usbmuxd socket plus a fake WebDriverAgent.
-// Usage: bun test/fake-iphone.mjs [frame.jpg]   then   USBMUXD_SOCKET_ADDRESS=/tmp/fake-usbmuxd.sock bun start
+// Set the same IPORTAL_HELPER_TOKEN in both shells, then run:
+// bun test/fake-iphone.mjs [frame.jpg]; USBMUXD_SOCKET_ADDRESS=/tmp/fake-usbmuxd.sock bun start
 import http from "node:http";
 import net from "node:net";
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 
 export const SOCKET = "/tmp/fake-usbmuxd.sock";
 const TINY_JPEG = Buffer.from(
@@ -10,7 +12,7 @@ const TINY_JPEG = Buffer.from(
   "base64",
 );
 
-/** @param {{frame?: string, frameTag?: string, wdaPort?: number, mjpegPort?: number, socketPath?: string, guardedTouch?: boolean, multiTouch?: boolean}} [options] */
+/** @param {{frame?: string, frameTag?: string, wdaPort?: number, mjpegPort?: number, socketPath?: string, guardedTouch?: boolean, multiTouch?: boolean, helperToken?: string}} [options] */
 export function startFakeIphone({
   frame,
   frameTag,
@@ -19,6 +21,7 @@ export function startFakeIphone({
   socketPath = SOCKET,
   guardedTouch = false,
   multiTouch = guardedTouch,
+  helperToken = randomBytes(32).toString("hex"),
 } = {}) {
   const log = [];
   let jpeg = frame ? fs.readFileSync(frame) : TINY_JPEG;
@@ -29,6 +32,8 @@ export function startFakeIphone({
     jpeg = Buffer.concat([jpeg.subarray(0, 2), header, comment, jpeg.subarray(2)]);
   }
   const ui = {
+    helperToken,
+    authMarker: true,
     elements: [
       {
         id: "button-1",
@@ -81,6 +86,18 @@ export function startFakeIphone({
   let generation = 1;
 
   const wda = http.createServer((req, res) => {
+    if (ui.authMarker) res.setHeader("x-iportal-helper-auth", "1");
+    if (
+      req.headers.authorization !== `Bearer ${ui.helperToken}` ||
+      req.headers.origin ||
+      req.headers["sec-fetch-site"]
+    ) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({ value: { error: "unauthorized", message: "Authentication required" } }),
+      );
+      return;
+    }
     const url = req.url ?? "/";
     let body = "";
     req.on("data", (c) => (body += c));
@@ -226,19 +243,29 @@ export function startFakeIphone({
     });
   });
 
-  const mjpeg = net.createServer((sock) => {
-    sock.on("error", () => {});
-    sock.write(
-      "HTTP/1.0 200 OK\r\nServer: WDA MJPEG Server\r\nConnection: close\r\nContent-Type: multipart/x-mixed-replace; boundary=--BoundaryString\r\n\r\n",
-    );
+  const mjpeg = http.createServer((req, res) => {
+    if (
+      req.headers.authorization !== `Bearer ${ui.helperToken}` ||
+      req.headers.origin ||
+      req.headers["sec-fetch-site"]
+    ) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "multipart/x-mixed-replace; boundary=--BoundaryString",
+      ...(ui.authMarker ? { "x-iportal-helper-auth": "1" } : {}),
+    });
+    res.flushHeaders();
     const tick = setInterval(() => {
-      sock.write(
+      res.write(
         `--BoundaryString\r\nContent-type: image/jpg\r\nContent-Length: ${jpeg.length}\r\n\r\n`,
       );
-      sock.write(jpeg);
-      sock.write("\r\n\r\n");
+      res.write(jpeg);
+      res.write("\r\n\r\n");
     }, 100);
-    sock.on("close", () => clearInterval(tick));
+    res.on("close", () => clearInterval(tick));
   });
 
   // Speaks enough of the usbmuxd plist protocol for ListDevices and Connect.
@@ -303,11 +330,16 @@ export function startFakeIphone({
   wda.listen(wdaPort, "127.0.0.1");
   mjpeg.listen(mjpegPort, "127.0.0.1");
   mux.listen(socketPath);
-  return { log, ui, close: () => [wda, mjpeg, mux].forEach((s) => s.close()) };
+  return { log, ui, helperToken, close: () => [wda, mjpeg, mux].forEach((s) => s.close()) };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { log } = startFakeIphone({ frame: process.argv[2] });
+  if (!/^[a-f0-9]{64}$/.test(process.env.IPORTAL_HELPER_TOKEN ?? ""))
+    throw new Error("Set IPORTAL_HELPER_TOKEN to the same 64-character hex value as the server.");
+  const { log } = startFakeIphone({
+    frame: process.argv[2],
+    helperToken: process.env.IPORTAL_HELPER_TOKEN,
+  });
   console.log(`fake iPhone up. Run: USBMUXD_SOCKET_ADDRESS=${SOCKET} bun start`);
   setInterval(() => {
     while (log.length) console.log(JSON.stringify(log.shift()));

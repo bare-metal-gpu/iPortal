@@ -40,6 +40,7 @@ const server = spawn(
     cwd: scratch,
     env: {
       ...runtimeEnvironment(scratch),
+      IPORTAL_HELPER_TOKEN: fake.helperToken,
       USBMUXD_SOCKET_ADDRESS: SOCKET,
       IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
     },
@@ -520,6 +521,35 @@ try {
   const count = fake.log.length;
   await new Promise((r) => setTimeout(r, 160));
   assert.equal(fake.log.length, count, "disconnected waits must stop polling");
+
+  // Credentials stay within the USB transport, never in the browser document
+  // or public status. A restarted/foreign helper must not receive input or leak
+  // video, and an old helper must be discovered through read-only status first.
+  for (const route of ["/", "/api/status", "/api/health"]) {
+    const response = await fetch(base + route);
+    assert.equal((await response.text()).includes(fake.helperToken), false);
+    assert.equal(JSON.stringify([...response.headers]).includes(fake.helperToken), false);
+  }
+  const beforeRejected = fake.log.filter((x) => x.path === "/wda/homescreen").length;
+  fake.ui.helperToken = "b".repeat(64);
+  const wrongCredential = await post("home", { requestId: "wrong-helper-credential" });
+  assert.equal(wrongCredential.ok, false);
+  const wrongVideo = await fetch(`${base}/stream`);
+  assert.equal(wrongVideo.status, 503);
+  assert.equal(wrongVideo.headers.get("content-type")?.includes("multipart"), false);
+  await wrongVideo.body?.cancel();
+  fake.ui.helperToken = fake.helperToken;
+  fake.ui.authMarker = false;
+  const legacy = await post("home", { requestId: "legacy-helper" });
+  assert.equal(legacy.ok, false);
+  assert.equal(fake.log.filter((x) => x.path === "/wda/homescreen").length, beforeRejected);
+  const legacyVideo = await fetch(`${base}/stream`);
+  assert.equal(legacyVideo.status, 503);
+  await legacyVideo.body?.cancel();
+  fake.ui.authMarker = true;
+  assert.equal((await readJSON(await fetch(`${base}/api/status`))).lifecycle, "ready");
+  assert.equal((await post("home", { requestId: "authenticated-recovery" })).ok, true);
+  assert.equal(fake.log.filter((x) => x.path === "/wda/homescreen").length, beforeRejected + 1);
 
   console.log("✓ all e2e checks passed");
 } catch (e) {

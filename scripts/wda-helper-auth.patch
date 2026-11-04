@@ -1,0 +1,166 @@
+diff --git a/WebDriverAgentLib/Routing/FBHTTPServer.m b/WebDriverAgentLib/Routing/FBHTTPServer.m
+index 767e7fc..93974fb 100644
+--- a/WebDriverAgentLib/Routing/FBHTTPServer.m
++++ b/WebDriverAgentLib/Routing/FBHTTPServer.m
+@@ -14,6 +14,7 @@
+ #import "FBResponsePayload.h"
+ #import "FBTCPSocket.h"
+ #import "FBSession.h"
++#import "FBIPortalAuthentication.h"
+ 
+ static NSData *FBCRLFCRLFData(void)
+ {
+@@ -494,7 +495,9 @@ static const int64_t FBStaleConnectionSweepIntervalSec = 10;
+     NSString *normalizedName = name.lowercaseString;
+     // RFC 7230 (3.3.3): repeated framing fields are unrecoverable. Last-wins would let an empty
+     // "Transfer-Encoding:" mask an earlier "chunked", and the last Content-Length drive parsing.
+-    if (([normalizedName isEqualToString:@"content-length"] || [normalizedName isEqualToString:@"transfer-encoding"])
++    if (([normalizedName isEqualToString:@"content-length"] || [normalizedName isEqualToString:@"transfer-encoding"] ||
++         [normalizedName isEqualToString:@"authorization"] || [normalizedName isEqualToString:@"origin"] ||
++         [normalizedName isEqualToString:@"sec-fetch-site"])
+         && nil != requestHeaders[normalizedName]) {
+       [self respondBadRequestToClient:client];
+       return nil;
+@@ -570,6 +573,18 @@ static const int64_t FBStaleConnectionSweepIntervalSec = 10;
+   if (nil == requestHeaders) {
+     return nil;
+   }
++  // Authenticate every request before its body or route, including status,
++  // session creation, shutdown and requests on reused connections.
++  if (!FBIPortalHeadersAuthorized(requestHeaders, FBIPortalHelperToken())) {
++    RouteResponse *unauthorized = [RouteResponse new];
++    unauthorized.statusCode = (HTTPStatusCode)401;
++    [unauthorized setHeader:@"Content-Type" value:@"application/json"];
++    [unauthorized setHeader:@"Cache-Control" value:@"no-store"];
++    [unauthorized setHeader:@"WWW-Authenticate" value:@"Bearer realm=\"iPortal\""];
++    [unauthorized respondWithString:@"{\"value\":{\"error\":\"unauthorized\",\"message\":\"Authentication required\"}}"];
++    [self failClient:client withResponse:unauthorized];
++    return nil;
++  }
+   NSUInteger contentLength = 0;
+   if (![self resolveBodyLength:&contentLength fromHeaderFields:requestHeaders forClient:client]) {
+     return nil;
+diff --git a/WebDriverAgentLib/Routing/FBWebServer.m b/WebDriverAgentLib/Routing/FBWebServer.m
+index 78200ac..98526e4 100644
+--- a/WebDriverAgentLib/Routing/FBWebServer.m
++++ b/WebDriverAgentLib/Routing/FBWebServer.m
+@@ -79,8 +79,9 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
+   self.server = [[FBHTTPServer alloc] init];
+   [self.server setRouteQueue:dispatch_get_main_queue()];
+   [self.server setDefaultHeader:@"Server" value:@"WebDriverAgent/1.0"];
+-  [self.server setDefaultHeader:@"Access-Control-Allow-Origin" value:@"*"];
+-  [self.server setDefaultHeader:@"Access-Control-Allow-Headers" value:@"Content-Type, X-Requested-With"];
++  [self.server setDefaultHeader:@"X-iPortal-Helper-Auth" value:@"1"];
++  [self.server setDefaultHeader:@"Cache-Control" value:@"no-store"];
++  [self.server setDefaultHeader:@"Cross-Origin-Resource-Policy" value:@"same-origin"];
+ 
+   [NSNotificationCenter.defaultCenter addObserver:self
+                                           selector:@selector(sessionWasKilled:)
+diff --git a/WebDriverAgentLib/Utilities/FBMjpegServer.m b/WebDriverAgentLib/Utilities/FBMjpegServer.m
+index 0b4a67f..50e15fe 100644
+--- a/WebDriverAgentLib/Utilities/FBMjpegServer.m
++++ b/WebDriverAgentLib/Utilities/FBMjpegServer.m
+@@ -20,6 +20,7 @@
+ #import "FBImageProcessor.h"
+ #import "FBImageUtils.h"
+ #import "XCUIScreen.h"
++#import "../Routing/FBIPortalAuthentication.h"
+ 
+ static const NSUInteger MAX_FPS = 60;
+ static const NSTimeInterval FRAME_TIMEOUT = 1.;
+@@ -50,6 +51,7 @@ static NSUInteger FBNormalizedMjpegFramerate(NSUInteger framerate)
+ @property (nonatomic, assign) NSUInteger droppedFramesCount;
+ // Frames submitted but not sent yet, per client. Guarded by @synchronized (self.listeningClients).
+ @property (nonatomic, readonly) NSMapTable<id, NSNumber *> *pendingFrameCounts;
++@property (nonatomic, readonly) NSMapTable<id, NSMutableData *> *pendingHandshakes;
+ 
+ @end
+ 
+@@ -66,6 +68,8 @@ static NSUInteger FBNormalizedMjpegFramerate(NSUInteger framerate)
+     _listeningClients = [NSMutableArray array];
+     _pendingFrameCounts = [NSMapTable mapTableWithKeyOptions:(NSPointerFunctionsOptions)(NSMapTableObjectPointerPersonality | NSMapTableStrongMemory)
+                                                 valueOptions:(NSPointerFunctionsOptions)NSMapTableStrongMemory];
++    _pendingHandshakes = [NSMapTable mapTableWithKeyOptions:(NSPointerFunctionsOptions)(NSMapTableObjectPointerPersonality | NSMapTableStrongMemory)
++                                              valueOptions:(NSPointerFunctionsOptions)NSMapTableStrongMemory];
+     _imageProcessor = [[FBImageProcessor alloc] init];
+     dispatch_queue_attr_t queueAttributes = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+     _backgroundQueue = dispatch_queue_create(QUEUE_NAME, queueAttributes);
+@@ -195,29 +199,64 @@ static NSUInteger FBNormalizedMjpegFramerate(NSUInteger framerate)
+ 
+ - (void)didClientConnect:(nw_connection_t)newClient
+ {
+-  [FBLogger log:@"Got screenshots broadcast client connection"];
+-  // FBTCPSocket already schedules the receive that -client:didReceiveData: relies on below.
++  @synchronized (self.listeningClients) {
++    if (!self.isStreaming || self.pendingHandshakes.count >= 32) {
++      nw_connection_cancel(newClient);
++      return;
++    }
++    [self.pendingHandshakes setObject:[NSMutableData data] forKey:newClient];
++  }
++  __weak typeof(self) weakSelf = self;
++  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(FBIPortalVideoHandshakeTimeout * NSEC_PER_SEC)), self.backgroundQueue, ^{
++    __strong typeof(weakSelf) strongSelf = weakSelf;
++    if (!strongSelf) return;
++    @synchronized (strongSelf.listeningClients) {
++      if ([strongSelf.pendingHandshakes objectForKey:newClient]) {
++        [strongSelf.pendingHandshakes removeObjectForKey:newClient];
++        nw_connection_cancel(newClient);
++      }
++    }
++  });
+ }
+ 
+ - (void)client:(nw_connection_t)client didReceiveData:(NSData *)data
+ {
++  NSInteger status;
+   @synchronized (self.listeningClients) {
+     if ([self.listeningClients containsObject:client]) {
+       return;
+     }
++    NSMutableData *request = [self.pendingHandshakes objectForKey:client];
++    if (!request) return;
++    if (data.length > FBIPortalMaxVideoHeaderBytes - request.length) {
++      status = 431;
++    } else {
++      [request appendData:data];
++      status = FBIPortalVideoRequestStatus(request, FBIPortalHelperToken());
++    }
++    if (status == 0) return;
++    [self.pendingHandshakes removeObjectForKey:client];
++  }
++  if (status != 200) {
++    NSString *response = [NSString stringWithFormat:@"HTTP/1.1 %ld Rejected\r\nConnection: close\r\nContent-Length: 0\r\nCache-Control: no-store\r\nWWW-Authenticate: Bearer realm=\"iPortal\"\r\n\r\n", (long)status];
++    [self.socket writeData:[response dataUsingEncoding:NSUTF8StringEncoding] toClient:client completion:^(BOOL didSucceed) {
++      nw_connection_cancel(client);
++    }];
++    return;
+   }
+-
+   [FBLogger log:@"Starting screenshots broadcast for the client"];
+-  NSString *streamHeader = [NSString stringWithFormat:@"HTTP/1.0 200 OK\r\nServer: %@\r\nConnection: close\r\nMax-Age: 0\r\nExpires: 0\r\nCache-Control: no-cache, private\r\nPragma: no-cache\r\nContent-Type: multipart/x-mixed-replace; boundary=--BoundaryString\r\n\r\n", SERVER_NAME];
++  NSString *streamHeader = [NSString stringWithFormat:@"HTTP/1.0 200 OK\r\nServer: %@\r\nX-iPortal-Helper-Auth: 1\r\nCross-Origin-Resource-Policy: same-origin\r\nConnection: close\r\nMax-Age: 0\r\nExpires: 0\r\nCache-Control: no-store, private\r\nPragma: no-cache\r\nContent-Type: multipart/x-mixed-replace; boundary=--BoundaryString\r\n\r\n", SERVER_NAME];
+   [self.socket writeData:(id)[streamHeader dataUsingEncoding:NSUTF8StringEncoding] toClient:client];
+   @synchronized (self.listeningClients) {
+-    [self.listeningClients addObject:client];
++    if (self.isStreaming) [self.listeningClients addObject:client];
++    else nw_connection_cancel(client);
+   }
+ }
+ 
+ - (void)didClientDisconnect:(nw_connection_t)client
+ {
+   @synchronized (self.listeningClients) {
++    [self.pendingHandshakes removeObjectForKey:client];
+     [self.listeningClients removeObject:client];
+     [self.pendingFrameCounts removeObjectForKey:client];
+   }
+@@ -230,6 +269,8 @@ static NSUInteger FBNormalizedMjpegFramerate(NSUInteger framerate)
+ {
+   self.isStreaming = NO;
+   @synchronized (self.listeningClients) {
++    for (nw_connection_t client in self.pendingHandshakes.keyEnumerator) nw_connection_cancel(client);
++    [self.pendingHandshakes removeAllObjects];
+     NSArray<nw_connection_t> *clients = self.listeningClients.copy;
+     [self.listeningClients removeAllObjects];
+     [self.pendingFrameCounts removeAllObjects];

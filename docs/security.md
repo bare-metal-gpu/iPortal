@@ -14,6 +14,17 @@ This review covers the Bun/Effect server, USB transport, native web bridge, runt
 
 No UI controls, authentication prompts, device gestures, or permission flows were added.
 
+## Phone-helper authentication follow-up
+
+The Mac now provisions a cryptographically random 256-bit credential for each mirrored-device server process. Xcode delivers it to the signed runner through its test environment. The credential remains stable across USB reconnects and owned helper restarts, and rotates when the mirror server starts again. Independent devices use independent credentials. This adds no authentication prompt or UI setting.
+
+- All phone HTTP routes authenticate before parsing a request body or dispatching an action, including status, session creation and requests on reused connections. Missing/invalid configuration fails closed.
+- Video is authenticated before a client is registered for capture. Handshakes have a 16 KiB header limit, a five-second deadline and a 32-pending-client limit. Fragmented requests wait for complete headers; malformed, duplicate or pipelined headers are rejected.
+- Credentials use the Authorization header, never a URL. The helper rejects browser Origin/Fetch Metadata headers and no longer advertises wildcard CORS. The Mac checks the authentication protocol marker and rejects old helpers rather than silently downgrading. A read-only status probe precedes the first command.
+- The credential never enters the browser document or Mac API status. Helper stdout/stderr is redacted before writing host logs, including split output chunks. Private Xcode result bundles can contain launch environment/diagnostics; they remain inside mode-0700 temporary directories and must be treated as sensitive rather than attached to public issues.
+
+The credential protects the phone helper; it does not add authentication to the trusted-local-client Mac API or encrypt an explicitly configured remote development endpoint. The `IPORTAL_HELPER_TOKEN` environment override is for manually paired development/test processes; normal startup generates it automatically. Explicit overrides must be rotated by their operator.
+
 ## Versions checked
 
 Registry `latest` tags and upstream repository/release metadata were checked on the review date. Direct npm dependencies were already current; `bun update --latest --exact` refreshed compatible transitive dependencies.
@@ -52,7 +63,7 @@ No published advisories were returned by the GitHub repository advisory endpoint
 ## Remaining trust boundaries
 
 - **Local native clients are trusted.** The API deliberately has no per-user authentication. Processes that can connect to Mac loopback, including other local OS users, can inspect/control the connected device. The automatic browser instance fingerprint is a browser request guard, not a secret credential. Do not expose the API with a reverse proxy, SSH forwarding, or public tunnel.
-- **The phone-side helper remains a developer automation service.** It binds to phone loopback, but still has upstream unauthenticated HTTP/MJPEG behavior. The Unix-socket change removes the Mac-browser bypass; it does not authenticate software on the iPhone itself. Phone-browser loopback reachability and DNS-rebinding behavior were not exercised in this review. A future stricter boundary should use automatic per-run credentials on both helper HTTP and video, with no user-managed secret.
+- **The phone-side helper remains a developer automation service.** Its loopback HTTP and MJPEG listeners now require the automatically provisioned session credential. This does not protect a compromised/rooted phone or Mac, or software that can inspect the runner's process environment. Phone-browser DNS-rebinding behavior was not exercised; native rejection of Origin/Fetch Metadata and missing credentials is covered independently.
 - **The explicit `--wda` development override is operator-trusted.** It bypasses private USB transport and can point to a network helper. Do not use it with an untrusted endpoint. Redirects are rejected for helper and video fetches.
 - **The Mac app is not App Sandboxed or notarized.** It launches Xcode tooling and owns USB automation as the logged-in user. Native code, source dependencies, and the local machine remain trusted. This review did not add or validate a hardened-runtime/notarization distribution configuration.
 - **Dependency auditing is advisory-based.** `bun audit` checks resolved packages, not the OS, embedded Bun, unpublished vulnerabilities, or every native source file. CI scanning runs on commits/PRs; it is not continuous monitoring between changes.
@@ -67,3 +78,11 @@ No published advisories were returned by the GitHub repository advisory endpoint
 - Native origin-allowlist tests passed after the final web-view restriction.
 - macOS app and iOS status framework builds passed with the new Swift pin; strict deep code-signature verification passed for the Mac bundle.
 - Final installed Mac build reports Bun 1.4.4 and opens normally in the disconnected state. The phone was disconnected; this review does not claim a new physical-phone gesture/reconnect test or installation of a rebuilt iOS runner.
+
+### Authentication follow-up verification
+
+- Compiled the exact shared native authentication routines and tested missing, wrong, cross-session/device credentials, browser headers, every fragmented header prefix, duplicate/ambiguous framing, oversized requests and unconfigured fail-closed behavior. Redaction tests cover every pipe chunk boundary and UTF-8 text.
+- HTTP/USB regression checks verify automatic command/video authentication, no credential exposure in public responses, rejection of wrong/legacy helpers without executing input, and recovery without replaying rejected commands. Independent-device and relocated compiled-runtime suites exercise separate credentials.
+- Installed the authenticated signed runner and Mac app on the connected iPhone/Mac. Direct USB probes of real helper status/session/input routes returned 401 before receiving the declared body. Real video rejected missing/wrong keys with no frame bytes, waited for fragmented headers, rejected oversized headers and closed an idle handshake. Normal authenticated device-state and JPEG streaming worked after those probes.
+- The full `bun run verify` passed with 67 unit tests plus the native, USB, multi-device and compiled-runtime suites. Live element lookup, state, screenshots, hierarchy and waits passed. Quitting/reopening the installed Mac app started a new authenticated session and returned to ready without a prompt; keep-awake was restored afterward. Physical cable detach/reattach was not repeated in this follow-up; transport reconnect is covered by the simulated-device suites.
+- `bun scripts/test-helper-auth-phone.mjs <private-usb-socket-directory> [base-url]` repeats the physical rejection and positive-proxy checks without reading or printing the real credential. It requires a running mirror and unlocked device; the ordinary test suite uses synthetic devices instead.

@@ -59,6 +59,7 @@ async function start(udid, kind) {
       cwd: scratch,
       env: {
         ...runtimeEnvironment(scratch),
+        IPORTAL_HELPER_TOKEN: udid === phoneID ? phone.helperToken : pad.helperToken,
         USBMUXD_SOCKET_ADDRESS: socketPath,
         IPORTAL_COMMANDS_FILE: path.join(scratch, `${kind}-commands.json`),
       },

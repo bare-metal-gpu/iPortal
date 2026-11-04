@@ -28,8 +28,10 @@ import { createStartupLock } from "./startup-lock.mjs";
 import { claimDevice, canonicalUDID } from "./device-runtime.mjs";
 import { deviceBuild, runtimeCommand, statePath } from "./runtime-paths.mjs";
 import { helperCommand } from "./helper-launch.mjs";
+import { createHelperAuthentication } from "./helper-auth.mjs";
 
 const instanceId = randomUUID();
+const helperAuth = createHelperAuthentication();
 const { values: opts, positionals } = parseArgs({
   allowPositionals: true,
   options: {
@@ -224,6 +226,9 @@ async function forward(socketPath, devicePort) {
 // ---------- WebDriverAgent ----------
 
 async function wda(method, p, body, timeout = 8000, signal, headers = {}) {
+  // Discover legacy helpers through a read-only endpoint before any command.
+  // Never fall back to unauthenticated requests or video.
+  if (!helperAuth.verified && p !== "/status") await wda("GET", "/status", null, timeout, signal);
   const context = commandContext.getStore();
   if (context?.signal) signal = signal ? AbortSignal.any([signal, context.signal]) : context.signal;
   signal?.throwIfAborted();
@@ -241,12 +246,22 @@ async function wda(method, p, body, timeout = 8000, signal, headers = {}) {
     ...(wdaSocket ? { unix: wdaSocket } : {}),
     redirect: "error",
     method,
-    headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
+    headers: {
+      ...headers,
+      ...helperAuth.headers,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(timeout)])
       : AbortSignal.timeout(timeout),
   });
+  try {
+    helperAuth.verify(res);
+  } catch (error) {
+    await res.body?.cancel();
+    throw error;
+  }
   // WDA response values vary by endpoint and are validated by their consumers.
   const json = /** @type {{value: any, sessionId?: string}} */ (await res.json());
   if (!res.ok || json.value?.error) {
@@ -602,14 +617,17 @@ function maybeStartWda(udid, connectionID) {
       UDID: udid,
       TEST_RUNNER_USE_IP: "127.0.0.1",
       TEST_RUNNER_IPORTAL_AUTOMATION: "1",
+      ...helperAuth.runnerEnvironment,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
   wdaProcess.stdin.on("error", () => {});
   let tail = "";
-  const output = (chunk) => {
-    fs.writeSync(log, chunk);
-    tail = (tail + chunk.toString()).slice(-4096);
+  const redactors = [helperAuth.redactor(), helperAuth.redactor()];
+  const output = (redactor) => (chunk) => {
+    const text = redactor.write(chunk);
+    fs.writeSync(log, text);
+    tail = (tail + text).slice(-4096);
     if (/device is locked|DeviceLocked/i.test(tail)) {
       launchLockedDevice = `${udid}:${connectionID}`;
       wdaProblem = "Unlock your iPhone.";
@@ -622,11 +640,15 @@ function maybeStartWda(udid, connectionID) {
       statusEvents.invalidate();
     }
   };
-  wdaProcess.stdout.on("data", output);
-  wdaProcess.stderr.on("data", output);
-  wdaProcess.on("close", () => fs.closeSync(log));
+  wdaProcess.stdout.on("data", output(redactors[0]));
+  wdaProcess.stderr.on("data", output(redactors[1]));
+  wdaProcess.on("close", () => {
+    for (const redactor of redactors) fs.writeSync(log, redactor.end());
+    fs.closeSync(log);
+  });
   wdaProcess.on("exit", () => {
     wdaProcess = null;
+    helperAuth.reset();
     sid = null;
     guardedTouch = undefined;
     fastTouch = true;
@@ -973,6 +995,7 @@ startServer({
   html: loadIPortalHTML(),
   mjpeg: MJPEG,
   mjpegSocket,
+  helperAuth,
   dispatch,
   statusEvents,
   identity: opts.owner ? { owner: opts.owner, pinnedUdid } : {},
@@ -1012,6 +1035,7 @@ if (!MANUAL) {
       if (observedDeviceID !== undefined) {
         transport.abort(apiError("Device connection changed", 409, "device changed"));
         transport = new AbortController();
+        helperAuth.reset();
         for (const tunnel of tunnels) tunnel.destroy();
         sid = null;
         guardedTouch = undefined;

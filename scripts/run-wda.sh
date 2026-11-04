@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launches the already-built WebDriverAgent on the iPhone and keeps it running. iportal.mjs calls this automatically.
+# Developer-only manual launch. Set the same IPORTAL_HELPER_TOKEN in the server's
+# environment. Normal app/server startup provisions authentication automatically.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export UDID="${UDID:-$(bun "$ROOT/iportal.mjs" devices --first)}"

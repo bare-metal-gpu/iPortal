@@ -8,6 +8,9 @@ SAFETY="$ROOT/scripts/wda-mirror-safety.patch"
 LATENCY="$ROOT/scripts/wda-mirror-latency.patch"
 MULTITOUCH="$ROOT/scripts/wda-multitouch.patch"
 COORDINATES="$ROOT/scripts/wda-mirror-coordinates.patch"
+AUTH="$ROOT/scripts/wda-helper-auth.patch"
+
+apply_touch_patches() {
 
 # Upgrade our old diagnostic namespace before checking patch revisions. These
 # exact strings belong to our additions, not to upstream WebDriverAgent.
@@ -21,7 +24,7 @@ JS
 
 # Later patches modify earlier lines, so recognize the final state first.
 if git -C "$WDA" apply --reverse --check "$COORDINATES" 2>/dev/null; then
-  exit 0
+  return 0
 fi
 if ! git -C "$WDA" apply --reverse --check "$MULTITOUCH" 2>/dev/null; then
 if ! git -C "$WDA" apply --reverse --check "$LATENCY" 2>/dev/null; then
@@ -56,3 +59,14 @@ if ! git -C "$WDA" apply --check "$COORDINATES" 2>/dev/null; then
   exit 1
 fi
 git -C "$WDA" apply "$COORDINATES"
+}
+apply_touch_patches
+
+if ! git -C "$WDA" apply --reverse --check "$AUTH" 2>/dev/null; then
+  if ! git -C "$WDA" apply --check "$AUTH" 2>/dev/null; then
+    echo "Cannot apply helper authentication: refusing to build an unauthenticated helper." >&2
+    exit 1
+  fi
+  git -C "$WDA" apply "$AUTH"
+fi
+install -m 644 "$ROOT/ios/FBIPortalAuthentication.h" "$WDA/WebDriverAgentLib/Routing/FBIPortalAuthentication.h"

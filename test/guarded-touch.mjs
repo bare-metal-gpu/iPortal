@@ -24,6 +24,7 @@ const server = spawn(
     cwd: scratch,
     env: {
       ...runtimeEnvironment(scratch),
+      IPORTAL_HELPER_TOKEN: fake.helperToken,
       USBMUXD_SOCKET_ADDRESS: SOCKET,
       IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
     },

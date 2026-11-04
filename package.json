@@ -10,7 +10,7 @@
   "scripts": {
     "setup": "scripts/setup-wda.sh",
     "start": "bun iportal.mjs",
-    "test": "bun test ./test/clipboard.mjs ./test/core.mjs ./test/keep-awake.mjs ./test/server-lifecycle.mjs ./test/status-events.mjs ./test/iportal-status.mjs ./test/iportal-install.mjs ./test/startup-lock.mjs ./test/owned-process.mjs ./test/build-tools.test.ts --timeout 20000 && bun test/e2e.mjs && bun test/multi-device.mjs && bun test/guarded-touch.mjs && bun scripts/test-native-contract.mjs && bun scripts/test-capture-session.mjs && bun scripts/test-lifecycle.mjs && bun test/packaged-runtime.mjs",
+    "test": "bun test ./test/clipboard.mjs ./test/core.mjs ./test/keep-awake.mjs ./test/server-lifecycle.mjs ./test/status-events.mjs ./test/iportal-status.mjs ./test/iportal-install.mjs ./test/startup-lock.mjs ./test/owned-process.mjs ./test/build-tools.test.ts ./test/helper-auth.test.ts --timeout 20000 && bun test/e2e.mjs && bun test/multi-device.mjs && bun test/guarded-touch.mjs && bun scripts/test-native-contract.mjs && bun scripts/test-capture-session.mjs && bun scripts/test-lifecycle.mjs && bun test/packaged-runtime.mjs",
     "build:server": "bun scripts/build-server.ts",
     "app": "macos/build.sh --install",
     "typecheck": "bun --bun run tsc --noEmit && bun --bun run tsc --project public/tsconfig.json --noEmit",
