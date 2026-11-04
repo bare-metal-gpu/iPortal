@@ -129,6 +129,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var resizeHandles: [CornerResizeHandle] = []
     var server: Process?
     var ratio: CGFloat = 390 / 844
+    var preferredPhoneLongEdge: CGFloat = defaultPhoneHeight
+    var adjustingGeometry = false
     var phoneHeight = defaultPhoneHeight
     var hideBar: DispatchWorkItem?
     var capture: PhoneCapture?
@@ -524,6 +526,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func buildWindow() {
         phoneHeight = min(defaultPhoneHeight, maxPhoneHeight - 40)
+        preferredPhoneLongEdge = phoneHeight * max(1, ratio)
         let size = windowSize()
         let vis = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         window = MirrorWindow(contentRect: NSRect(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2, width: size.width, height: size.height),
@@ -615,7 +618,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func layout() {
         let w = (phoneHeight * ratio).rounded()
-        let minimum = min(400, maxPhoneHeight)
+        let minimum = min(400 / max(1, ratio), maxPhoneHeight)
         window.minSize = NSSize(width: (minimum * ratio).rounded(), height: minimum + barGap + barHeight)
         window.maxSize = NSSize(width: (maxPhoneHeight * ratio).rounded(), height: maxPhoneHeight + barGap + barHeight)
         phone.frame = NSRect(x: 0, y: 0, width: w, height: phoneHeight)
@@ -658,7 +661,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         let proposedHeight = widthChange > heightChange
             ? frameSize.width / ratio
             : frameSize.height - barGap - barHeight
-        let height = min(maxPhoneHeight, max(min(400, maxPhoneHeight), proposedHeight))
+        let height = min(maxPhoneHeight, max(min(400 / max(1, ratio), maxPhoneHeight), proposedHeight))
         return NSSize(width: (height * ratio).rounded(), height: height + barGap + barHeight)
     }
 
@@ -674,12 +677,14 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     func windowDidResize(_ notification: Notification) {
         guard phone != nil, loadingBorder != nil, barButtons.count == 4 else { return }
         phoneHeight = window.frame.height - barGap - barHeight
+        if !adjustingGeometry { preferredPhoneLongEdge = phoneHeight * max(1, ratio) }
         layout()
     }
 
     func resize() {
         guard mirroringActive, window != nil else { return }
-        phoneHeight = min(maxPhoneHeight, max(min(400, maxPhoneHeight), phoneHeight))
+        phoneHeight = min(maxPhoneHeight, max(min(400 / max(1, ratio), maxPhoneHeight), phoneHeight))
+        preferredPhoneLongEdge = phoneHeight * max(1, ratio)
         let size = windowSize()
         var frame = window.frame
         frame.origin.y += frame.height - size.height // keep the top edge in place
@@ -715,8 +720,23 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func setAspect(width w: CGFloat, height h: CGFloat) {
-        guard mirroringActive, let window, w > 0, h > 0 else { return }
-        if abs(w / h - ratio) > 0.002 { ratio = w / h; resize() }
+        guard mirroringActive, let window, w.isFinite, h.isFinite, w > 0, h > 0,
+              let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else { return }
+        if abs(w / h - ratio) > 0.002 {
+            trackingScroll = false; trackingMagnify = false
+            nativeCall("nativeGeometryChanged")
+            let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+            ratio = w / h
+            phoneHeight = MirrorGeometry.fittedHeight(aspect: ratio, preferredLongEdge: preferredPhoneLongEdge,
+                available: visible.size, toolbar: barGap + barHeight)
+            adjustingGeometry = true
+            defer { adjustingGeometry = false }
+            window.setFrame(MirrorGeometry.frame(center: center, height: phoneHeight, aspect: ratio,
+                visible: visible, toolbar: barGap + barHeight), display: true)
+            layout()
+            trace("window-geometry", ["aspect": ratio, "width": window.frame.width,
+                "height": phoneHeight, "preferredLongEdge": preferredPhoneLongEdge])
+        }
         window.invalidateShadow()
     }
 
@@ -757,7 +777,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             pageLoading = loading
             updateLoadingBorder()
         }
-        if let w = d["w"] as? Double, let h = d["h"] as? Double {
+        if videoMode == "stream", let w = d["w"] as? Double, let h = d["h"] as? Double {
             setAspect(width: w, height: h)
         }
     }
@@ -1109,7 +1129,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     @objc func closeWindow() { window?.close() }
     @objc func larger() { phoneHeight *= 1.1; resize() }
     @objc func smaller() { phoneHeight /= 1.1; resize() }
-    @objc func actualSize() { phoneHeight = defaultPhoneHeight; resize() }
+    @objc func actualSize() { phoneHeight = defaultPhoneHeight / max(1, ratio); resize() }
 
     @objc func pasteToPhone() {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty,

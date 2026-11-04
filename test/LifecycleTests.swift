@@ -3,6 +3,19 @@ import Foundation
 @main
 struct LifecycleTests {
     static func main() {
+        let display = CGRect(x: -1440, y: 40, width: 1440, height: 900)
+        let portrait = CGFloat(402.0 / 874.0), landscape = 1 / portrait
+        let longEdge: CGFloat = 800, toolbar: CGFloat = 36
+        let portraitHeight = MirrorGeometry.fittedHeight(aspect: portrait, preferredLongEdge: longEdge, available: display.size, toolbar: toolbar)
+        let landscapeHeight = MirrorGeometry.fittedHeight(aspect: landscape, preferredLongEdge: longEdge, available: display.size, toolbar: toolbar)
+        assert(abs(landscapeHeight - portraitHeight * portrait) < 0.001, "rotation preserves scale instead of inflating landscape")
+        let rotated = MirrorGeometry.frame(center: CGPoint(x: -5, y: 100), height: landscapeHeight, aspect: landscape, visible: display, toolbar: toolbar)
+        assert(display.insetBy(dx: 10, dy: 10).contains(rotated), "rotation stays within the current display, including negative origins")
+        let small = CGSize(width: 640, height: 480)
+        let fitted = MirrorGeometry.fittedHeight(aspect: landscape, preferredLongEdge: longEdge, available: small, toolbar: toolbar)
+        assert(fitted * landscape <= 620 && fitted + toolbar <= 460)
+        assert(MirrorGeometry.fittedHeight(aspect: portrait, preferredLongEdge: longEdge, available: display.size, toolbar: toolbar) == portraitHeight,
+               "temporary fit does not discard the preferred scale when rotating back")
         var popup = PopoverPresentation()
         _ = popup.setVisible(true)
         let firstClose = popup.setVisible(false)

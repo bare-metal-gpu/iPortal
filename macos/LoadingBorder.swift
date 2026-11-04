@@ -21,7 +21,9 @@ struct LoadingBorder: View {
                 GeometryReader { geometry in
                     Image(nsImage: snapshot)
                         .resizable()
+                        .scaledToFill()
                         .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
                         .blur(radius: 18)
                         .overlay(Color.black.opacity(0.25))
                 }

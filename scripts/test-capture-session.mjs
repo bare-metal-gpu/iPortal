@@ -40,6 +40,31 @@ try {
     { stdio: "pipe" },
   );
   execFileSync(binary, [], { stdio: "inherit" });
+  const store = capture.match(
+    /\/\/ BEGIN TESTABLE FRAME STORE\n([\s\S]*?)\/\/ END TESTABLE FRAME STORE/,
+  );
+  assert(store, "frame-store markers must exist");
+  const geometryHelper = join(temporary, "CaptureGeometry.swift");
+  const geometryBinary = join(temporary, "capture-geometry-tests");
+  await writeFile(
+    geometryHelper,
+    `@preconcurrency import AVFoundation\nimport Cocoa\nimport CoreImage\n${executor}\n${store[1]}`,
+  );
+  execFileSync(
+    "xcrun",
+    [
+      "swiftc",
+      "-swift-version",
+      "5",
+      "-warnings-as-errors",
+      geometryHelper,
+      join(root, "test/capture-geometry.swift"),
+      "-o",
+      geometryBinary,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(geometryBinary, [], { stdio: "inherit" });
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

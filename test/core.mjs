@@ -443,6 +443,35 @@ function mjpegPart(bytes) {
   ]);
 }
 
+void test("rotation cancels old gesture buffers and ignores stale geometry callbacks", async () => {
+  const h = browserHarness();
+  await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const before = h.run("inputEpoch");
+  h.run(
+    "touch = {t0: 0, last: 0, points: [[0.5, 0.5, 0]]}; typed = 'old'; nativeGeometryChanged(videoEpoch, 'retired-page')",
+  );
+  assert.equal(h.run("inputEpoch"), before);
+  assert.equal(h.run("touch !== null"), true);
+  h.run("nativeGeometryChanged(videoEpoch, bridgeId)");
+  assert.equal(h.run("inputEpoch"), before + 1);
+  assert.equal(h.run("touch"), null);
+  assert.equal(h.run("typed"), "");
+  assert.equal(h.run("canInteract()"), true, "rotation does not falsely enter reconnecting");
+  h.run("startStream(); presentStreamFrame({width:400,height:800}, streamGeneration)");
+  const streaming = h.run("inputEpoch");
+  h.run("presentStreamFrame({width:800,height:400}, streamGeneration - 1)");
+  assert.equal(
+    h.run("inputEpoch"),
+    streaming,
+    "retired stream frames cannot change input geometry",
+  );
+  h.run("presentStreamFrame({width:800,height:400}, streamGeneration)");
+  assert.equal(h.run("inputEpoch"), streaming + 1);
+  h.run("presentStreamFrame({width:800,height:400}, streamGeneration)");
+  assert.equal(h.run("inputEpoch"), streaming + 1, "steady frames retain the current gesture");
+});
+
 void test("native refreshes wake connection polling without overlapping requests", async () => {
   let finish;
   const h = browserHarness({

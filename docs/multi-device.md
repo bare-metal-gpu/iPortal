@@ -53,6 +53,16 @@ layout. Device icons and short device-specific text adapt to iPad. The existing
 helper and embedded status framework already target iPhone and iPad; each physical
 device still needs provisioning, Developer Mode and trust.
 
+Rotation follows the presentation dimensions of incoming frames, not the capture
+device's configured format. Geometry notifications coalesce to the newest frame
+and belong to that capture session; retired captures and fallback streams cannot
+resize a replacement native session. The window preserves the user's preferred
+long-edge size, centers around its previous position and fits the current display.
+Returning to portrait restores that preferred scale. Native video and fallback
+frames preserve their aspect ratio while the window catches up. Buffered gestures
+are discarded on geometry changes so an unfinished gesture cannot replay with old
+coordinates; rotation does not trigger a reconnect.
+
 ## Verification
 
 `npm test` includes two simulated devices behind the same USB multiplexer. It checks
@@ -63,6 +73,9 @@ while the other device remains live. Native tests exercise registry ownership,
 late-close rejection, iPad classification/geometry, ambiguous capture rejection,
 USB row independence and per-source capture concurrency. Existing single-device
 tests remain in the suite.
+Frame tests also exercise rapid rotation coalescing, unchanged-frame suppression,
+capture restart and cancellation. Window geometry tests cover scale restoration
+and display bounds; browser tests cover gesture cancellation and stale callbacks.
 
 The connected physical iPhone has been checked for startup, live native video,
 menu shortcut targeting, keep-awake and locked startup. Quit stopped the main app,

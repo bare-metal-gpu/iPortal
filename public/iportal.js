@@ -37,6 +37,10 @@ function invalidateInput() {
   clearTimeout(wheelTimer);
   wheelTimer = undefined;
 }
+function nativeGeometryChanged(epoch, documentId) {
+  if (epoch !== videoEpoch || documentId !== bridgeId) return;
+  invalidateInput();
+}
 function setLifecycle(
   next,
   identity = deviceUdid,
@@ -225,6 +229,7 @@ function presentStreamFrame(frame, generation) {
   const firstFrame = !streamReady;
   const resized = screen.width !== frame.width || screen.height !== frame.height;
   if (resized) {
+    invalidateInput();
     screen.width = frame.width;
     screen.height = frame.height;
   }
@@ -923,6 +928,7 @@ document.querySelectorAll("button").forEach((b) => b.addEventListener("mouseup",
 
 // Explicit entry points called by WKWebView, kept as classic-script globals.
 Object.assign(window, {
+  nativeGeometryChanged,
   setNativeVideoReady,
   useNativeVideo,
   startStream,

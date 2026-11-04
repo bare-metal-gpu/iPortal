@@ -81,12 +81,26 @@ private enum CapturePermissions {
 
 // Retain one pixel buffer, not a history of frames. The capture queue never
 // performs image conversion; snapshots are made only on lifecycle transitions.
-private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+// BEGIN TESTABLE FRAME STORE
+final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private let lifetime: CaptureLifetime
     private var pixel: CVPixelBuffer?
     private var timestamp: TimeInterval = 0
     private var notification: (@Sendable () -> Void)?
+    private var geometry = CGSize.zero
+    private var geometryPending = false
+    private var geometryNotification: (@Sendable () -> Void)?
+
+    func observeGeometry(_ callback: @escaping @Sendable () -> Void) {
+        lock.lock(); geometryNotification = callback; lock.unlock()
+    }
+
+    func takeGeometry() -> CGSize {
+        lock.lock(); defer { lock.unlock() }
+        geometryPending = false
+        return geometry
+    }
 
     func arm(_ callback: @escaping @Sendable () -> Void) {
         lock.lock(); notification = callback; lock.unlock()
@@ -95,22 +109,41 @@ private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     init(lifetime: CaptureLifetime) { self.lifetime = lifetime }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
+        consume(sample)
+    }
+
+    func consume(_ sample: CMSampleBuffer) {
         guard !lifetime.isCancelled, CMSampleBufferIsValid(sample), CMSampleBufferDataIsReady(sample),
               let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
+        let dimensions: CGSize
+        if let format = CMSampleBufferGetFormatDescription(sample) {
+            dimensions = CMVideoFormatDescriptionGetPresentationDimensions(format, usePixelAspectRatio: true, useCleanAperture: true)
+        } else {
+            dimensions = CGSize(width: CVPixelBufferGetWidth(pixel), height: CVPixelBufferGetHeight(pixel))
+        }
         lock.lock()
         var callback: (@Sendable () -> Void)?
+        var geometryCallback: (@Sendable () -> Void)?
         if !lifetime.isCancelled {
             self.pixel = pixel
             timestamp = ProcessInfo.processInfo.systemUptime
             callback = notification
             notification = nil
+            if dimensions.width > 0, dimensions.height > 0, dimensions != geometry {
+                geometry = dimensions
+                if !geometryPending {
+                    geometryPending = true
+                    geometryCallback = geometryNotification
+                }
+            }
         }
         lock.unlock()
+        geometryCallback?()
         callback?()
     }
 
     func clear() {
-        lock.lock(); pixel = nil; timestamp = 0; lock.unlock()
+        lock.lock(); pixel = nil; timestamp = 0; geometry = .zero; geometryPending = false; lock.unlock()
     }
 
     var lastFrameAt: TimeInterval {
@@ -125,6 +158,7 @@ private final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         return NSImage(cgImage: cg, size: .zero)
     }
 }
+// END TESTABLE FRAME STORE
 
 @MainActor
 final class PhoneCapture {
@@ -168,8 +202,18 @@ final class PhoneCapture {
     init(audioVolume: Float = 1) {
         frames = FrameStore(lifetime: lifetime)
         layer = AVCaptureVideoPreviewLayer(session: session)
-        layer.videoGravity = .resize // the window already has the screen's aspect ratio
+        // Never stretch a newly rotated frame while the window catches up.
+        layer.videoGravity = .resizeAspect
         audio.volume = min(1, max(0, audioVolume))
+        frames.observeGeometry { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, !self.stopped else { return }
+                // Read the latest geometry, not a stale size queued before a rapid rotation.
+                let size = self.frames.takeGeometry()
+                iportalTrace("capture-geometry", ["width": size.width, "height": size.height])
+                self.onSize?(size)
+            }
+        }
     }
 
     /// Calls done(true) once video is running, or done(false) if access is denied or no iPhone shows up.
@@ -271,9 +315,6 @@ final class PhoneCapture {
     }
 
     private func run(_ device: AVCaptureDevice, withAudio: Bool) {
-        observe(AVCaptureInput.Port.formatDescriptionDidChangeNotification, object: nil) { [weak self] in
-            self?.reportSize(device)
-        }
         observe(AVCaptureSession.runtimeErrorNotification, object: session) { [weak self] in self?.failed() }
         observe(AVCaptureSession.wasInterruptedNotification, object: session) { [weak self] in self?.failed() }
         observe(AVCaptureDevice.wasDisconnectedNotification, object: device) { [weak self] in self?.failed() }
@@ -301,7 +342,6 @@ final class PhoneCapture {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, !self.stopped else { return }
-                    self.reportSize(device)
                     self.finish(ok)
                 }
             }
@@ -317,8 +357,4 @@ final class PhoneCapture {
         })
     }
 
-    private func reportSize(_ device: AVCaptureDevice) {
-        let d = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        if d.width > 0, d.height > 0 { onSize?(CGSize(width: Int(d.width), height: Int(d.height))) }
-    }
 }

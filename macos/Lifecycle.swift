@@ -1,6 +1,21 @@
 import Foundation
 import CoreGraphics
 
+enum MirrorGeometry {
+    static func fittedHeight(aspect: CGFloat, preferredLongEdge: CGFloat, available: CGSize, toolbar: CGFloat) -> CGFloat {
+        let maximum = max(1, min(available.height - toolbar - 20, (available.width - 20) / aspect))
+        return min(maximum, max(min(400 / max(1, aspect), maximum), preferredLongEdge / max(1, aspect)))
+    }
+
+    static func frame(center: CGPoint, height: CGFloat, aspect: CGFloat, visible: CGRect, toolbar: CGFloat) -> CGRect {
+        let size = CGSize(width: (height * aspect).rounded(), height: height + toolbar)
+        let limits = visible.insetBy(dx: 10, dy: 10)
+        return CGRect(x: max(limits.minX, min(center.x - size.width / 2, limits.maxX - size.width)),
+                      y: max(limits.minY, min(center.y - size.height / 2, limits.maxY - size.height)),
+                      width: size.width, height: size.height)
+    }
+}
+
 // Intent changes immediately; a closing panel remains on screen during its fade.
 // An old completion must never hide a popup the user has since reopened.
 struct PopoverPresentation {
