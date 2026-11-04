@@ -102,6 +102,14 @@ try {
   assert.ok(value.length > 0, "stream sends bytes");
   await reader.cancel();
 
+  const rawVideo = await fetch(`${base}/stream?raw=1`);
+  assert.equal(rawVideo.headers.get("content-type"), "application/octet-stream");
+  assert(rawVideo.body);
+  const rawReader = rawVideo.body.getReader();
+  const rawPart = await rawReader.read();
+  assert.ok(rawPart.value.length > 0, "WebKit transport preserves framed video bytes");
+  await rawReader.cancel();
+
   assert.equal((await post("gesture", { points: [[0.5, 0.5, 0]], end: 80 })).ok, true);
   const tap = fake.log.findLast((l) => l.path === "/session/S1/actions").body.actions[0].actions;
   assert.deepEqual(tap[0], { type: "pointerMove", duration: 0, x: 195, y: 422 });

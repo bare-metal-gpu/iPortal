@@ -186,6 +186,11 @@ class MjpegFrames {
     const frames = [];
     while (true) {
       if (this.needed === null) {
+        // WDA separates parts with two CRLFs. They may themselves arrive in
+        // separate reads; do not mistake the empty separator for a header.
+        let padding = 0;
+        while (this.buffer[padding] === 13 && this.buffer[padding + 1] === 10) padding += 2;
+        if (padding) this.buffer = this.buffer.subarray(padding);
         let end = -1;
         for (let i = 0; i + 3 < this.buffer.length; i++) {
           if (
@@ -304,11 +309,11 @@ async function connectStream() {
   };
   armWatchdog();
   try {
-    const response = await fetch(`/stream?${Date.now()}`, { signal: controller.signal });
+    const response = await fetch(`/stream?raw=1&t=${Date.now()}`, { signal: controller.signal });
     if (
       !response.ok ||
       !response.body ||
-      !/multipart\/x-mixed-replace/i.test(response.headers.get("content-type") ?? "")
+      !/^application\/octet-stream\b/i.test(response.headers.get("content-type") ?? "")
     )
       throw new Error("Video stream unavailable");
     const reader = response.body.getReader();

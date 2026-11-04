@@ -47,9 +47,24 @@ restoration, optional microphone access, capture-update ordering/cancellation,
 and the Settings input gate. These tests inject authorization states; they do not
 change the developer machine's privacy settings.
 
-The 2026-11-04 installed-app check verified both System Settings destinations,
-real Camera/Microphone denial and restoration after macOS Quit & Reopen, the
-disconnected overlay, and gear/Escape dismissal. macOS kept reporting the
-previous effective access until the requested restart. Both original grants were
-restored. Live denied-permission video still needs a connected phone; no device
-was present for that check.
+The 2026-11-04 installed-app checks verified real Camera/Microphone denial and
+restoration after macOS Quit & Reopen. On the connected iPhone:
+
+- Camera denied: basic video, Home control and the blurred Settings frame worked.
+- Both denied: basic video and App Switcher still worked.
+- Camera allowed, Microphone denied: native capture reached fresh-frame/video/input
+  readiness without requesting microphone access again.
+
+The test exposed two previously hidden fallback bugs. WKWebView rejects streaming
+reads of a `multipart/x-mixed-replace` response, so the canvas client now requests
+`/stream?raw=1` with `application/octet-stream`. The framed bytes are unchanged;
+direct `/stream` clients retain the multipart content type. WDA also emits an extra
+CRLF between frames; the parser now accepts it even across split reads. An actual
+WKWebView probe decoded the phone stream with zero failures, and regression tests
+cover both transport modes and split/coalesced frame separators.
+
+macOS kept reporting the previous effective permission until its requested
+restart. Real permission states, gear/Escape dismissal, smaller-window layout,
+and the snapshot blur were checked in the installed app. Both original grants
+were restored after testing. Automated tests simulate restricted access and
+multi-window requests; those states were not physically tested.

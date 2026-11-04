@@ -375,6 +375,7 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
         };
       }
       if (url.startsWith("/stream")) {
+        assert.match(url, /^\/stream\?raw=1&/, "WebKit must receive uninterpreted framed bytes");
         let waiting;
         const stream = {
           push: (bytes) => {
@@ -396,7 +397,7 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
         });
         return {
           ok: true,
-          headers: { get: () => "multipart/x-mixed-replace; boundary=--BoundaryString" },
+          headers: { get: () => "application/octet-stream" },
           body: { getReader: () => stream.reader },
         };
       }
@@ -611,6 +612,26 @@ void test("MJPEG parsing handles split headers/frames and rejects unbounded or m
       [4, 5],
     ],
   );
+  const padded = Buffer.concat([
+    mjpegPart([7, 8]),
+    Buffer.from("\r\n"),
+    mjpegPart([9, 10]),
+    Buffer.from("\r\n"),
+  ]);
+  for (const chunkSize of [1, 3, padded.length]) {
+    const realDeviceParser = h.run("new MjpegFrames()"),
+      decoded = [];
+    for (let i = 0; i < padded.length; i += chunkSize)
+      decoded.push(...realDeviceParser.push(padded.subarray(i, i + chunkSize)));
+    assert.deepEqual(
+      decoded.map((frame) => [...frame]),
+      [
+        [7, 8],
+        [9, 10],
+      ],
+      "WDA's extra CRLF must survive split reads and multiple parts in one read",
+    );
+  }
   assert.throws(
     () => h.run("new MjpegFrames()").push(Buffer.from("Content-Length: 99999999\r\n\r\n")),
     /size/,

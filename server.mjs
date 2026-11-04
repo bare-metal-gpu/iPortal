@@ -181,7 +181,14 @@ export function startServer({
       if (request.method === "GET" && url.pathname === "/stream") {
         const video = yield* openVideoStream(mjpeg);
         return HttpServerResponse.stream(video.stream, {
-          headers: { ...headers, "content-type": video.contentType },
+          // WebKit's multipart response loader rejects fetch().body reads.
+          // Our canvas decoder needs the original framed bytes, without the
+          // browser interpreting them. Preserve multipart for direct clients.
+          headers: {
+            ...headers,
+            "content-type":
+              url.searchParams.get("raw") === "1" ? "application/octet-stream" : video.contentType,
+          },
         });
       }
       const name = url.pathname.match(/^\/api\/([\w-]+)$/)?.[1];
