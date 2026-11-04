@@ -28,6 +28,17 @@ const multiHelper = multiAdded.slice(
   multiAdded.indexOf("static BOOL FBMirrorValidFingers"),
   multiAdded.indexOf("\n}\n") + 3,
 );
+const coordinatePatch = await readFile(join(root, "scripts/wda-mirror-coordinates.patch"), "utf8");
+const coordinateAdded = coordinatePatch
+  .split("\n")
+  .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+  .map((line) => line.slice(1))
+  .join("\n");
+const coordinateHelper = coordinateAdded.slice(
+  coordinateAdded.indexOf("static CGPoint FBMirrorPortraitPoint"),
+  coordinateAdded.indexOf("\n}\n") + 3,
+);
+assert(coordinateHelper.includes("switch (orientation)"));
 const portal = await readFile(join(root, "ios/FBIPortalStatus.h"), "utf8");
 const portalPhase = portal.slice(
   portal.indexOf("static NSString *FBIPortalPhase"),
@@ -42,6 +53,7 @@ try {
 #import <math.h>
 ${helpers}
 ${multiHelper}
+${coordinateHelper}
 ${portalPhase}
 int main(void) { @autoreleasepool {
   NSCAssert([FBIPortalPhase(0, 10, NO, NO) isEqual:@"waiting"], @"manual launch waits for Mac");
@@ -84,6 +96,24 @@ int main(void) { @autoreleasepool {
     NSCAssert(FBMirrorOrientationName(orientation) != nil, @"orientation name");
   }
   NSCAssert(FBMirrorOrientationName(0) == nil, @"unknown orientation");
+  // Fixtures from the oriented viewport -> portrait screen contract used by
+  // XCUICoordinate.screenPoint. Asymmetric points catch 90/180-degree mistakes.
+  CGPoint expected[] = {CGPointMake(100,50), CGPointMake(302,824), CGPointMake(352,100), CGPointMake(50,774)};
+  CGPoint horizontal[] = {CGPointMake(40,0), CGPointMake(-40,0), CGPointMake(0,40), CGPointMake(0,-40)};
+  CGPoint vertical[] = {CGPointMake(0,30), CGPointMake(0,-30), CGPointMake(-30,0), CGPointMake(30,0)};
+  for (NSInteger orientation=1; orientation<=4; orientation++) {
+    CGSize size=FBMirrorOrientedSize(CGSizeMake(402,874),orientation);
+    CGPoint a=FBMirrorPortraitPoint(CGPointMake(100,50),size,orientation);
+    CGPoint h=FBMirrorPortraitPoint(CGPointMake(140,50),size,orientation);
+    CGPoint v=FBMirrorPortraitPoint(CGPointMake(100,80),size,orientation);
+    NSCAssert(CGPointEqualToPoint(a,expected[orientation-1]), @"off-center tap");
+    NSCAssert(CGPointEqualToPoint(CGPointMake(h.x-a.x,h.y-a.y),horizontal[orientation-1]), @"horizontal drag/scroll axis");
+    NSCAssert(CGPointEqualToPoint(CGPointMake(v.x-a.x,v.y-a.y),vertical[orientation-1]), @"vertical drag/scroll axis");
+    CGPoint f1=FBMirrorPortraitPoint(CGPointMake(80,50),size,orientation);
+    CGPoint f2=FBMirrorPortraitPoint(CGPointMake(120,50),size,orientation);
+    NSCAssert(CGPointEqualToPoint(CGPointMake((f1.x+f2.x)/2,(f1.y+f2.y)/2),a), @"pinch keeps its off-center anchor");
+    NSCAssert(fabs(hypot(f2.x-f1.x,f2.y-f1.y)-40)<0.001, @"pinch preserves finger separation");
+  }
 } return 0; }`;
     const path = join(temporary, "contract.m");
     await writeFile(path, source);
@@ -148,6 +178,20 @@ int main(void) { @autoreleasepool {
     execFileSync("git", ["-C", checkout, "apply", join(root, "scripts/wda-fast-touch.patch")]);
     execFileSync(installer, [checkout]);
     assert.equal(await readFile(source, "utf8"), installed);
+    await writeFile(source, upstream);
+    for (const patch of [
+      "wda-fast-touch.patch",
+      "wda-mirror-safety.patch",
+      "wda-mirror-latency.patch",
+      "wda-multitouch.patch",
+    ])
+      execFileSync("git", ["-C", checkout, "apply", join(root, "scripts", patch)]);
+    execFileSync(installer, [checkout]);
+    assert.equal(
+      await readFile(source, "utf8"),
+      installed,
+      "upgrade the previously installed multi-touch helper",
+    );
     await writeFile(source, "incompatible upstream");
     assert.throws(() => execFileSync(installer, [checkout], { stdio: "pipe" }));
     assert.equal(await readFile(source, "utf8"), "incompatible upstream");

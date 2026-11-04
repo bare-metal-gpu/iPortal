@@ -7,6 +7,7 @@ BASE="$ROOT/scripts/wda-fast-touch.patch"
 SAFETY="$ROOT/scripts/wda-mirror-safety.patch"
 LATENCY="$ROOT/scripts/wda-mirror-latency.patch"
 MULTITOUCH="$ROOT/scripts/wda-multitouch.patch"
+COORDINATES="$ROOT/scripts/wda-mirror-coordinates.patch"
 
 # Upgrade our old diagnostic namespace before checking patch revisions. These
 # exact strings belong to our additions, not to upstream WebDriverAgent.
@@ -21,9 +22,10 @@ if renamed != source:
 PY
 
 # Later patches modify earlier lines, so recognize the final state first.
-if git -C "$WDA" apply --reverse --check "$MULTITOUCH" 2>/dev/null; then
+if git -C "$WDA" apply --reverse --check "$COORDINATES" 2>/dev/null; then
   exit 0
 fi
+if ! git -C "$WDA" apply --reverse --check "$MULTITOUCH" 2>/dev/null; then
 if ! git -C "$WDA" apply --reverse --check "$LATENCY" 2>/dev/null; then
 if ! git -C "$WDA" apply --reverse --check "$SAFETY" 2>/dev/null; then
   if git -C "$WDA" apply --check "$BASE" 2>/dev/null; then
@@ -50,3 +52,9 @@ if ! git -C "$WDA" apply --check "$MULTITOUCH" 2>/dev/null; then
   exit 1
 fi
 git -C "$WDA" apply "$MULTITOUCH"
+fi
+if ! git -C "$WDA" apply --check "$COORDINATES" 2>/dev/null; then
+  echo "Cannot apply mirror coordinate patch: incompatible helper source." >&2
+  exit 1
+fi
+git -C "$WDA" apply "$COORDINATES"

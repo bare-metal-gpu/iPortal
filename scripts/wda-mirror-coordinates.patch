@@ -1,0 +1,40 @@
+--- a/WebDriverAgentLib/Commands/FBTouchActionCommands.m
++++ b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+@@ -65,6 +65,19 @@
+   return orientation == 3 || orientation == 4 ? CGSizeMake(longSide, shortSide) : CGSizeMake(shortSide, longSide);
+ }
+ 
++// XCPointerEventPath takes portrait screen coordinates, even when its event
++// record names a landscape interface. XCUICoordinate.screenPoint performs this
++// conversion for ordinary W3C actions; the direct path must do it explicitly.
++static CGPoint FBMirrorPortraitPoint(CGPoint point, CGSize orientedSize, NSInteger orientation)
++{
++  switch (orientation) {
++    case 2: return CGPointMake(orientedSize.width - point.x, orientedSize.height - point.y);
++    case 3: return CGPointMake(orientedSize.height - point.y, point.x); // interface landscape right
++    case 4: return CGPointMake(point.y, orientedSize.width - point.x); // interface landscape left
++    default: return point;
++  }
++}
++
+ static NSString *FBMirrorOrientationName(NSInteger orientation)
+ {
+   switch (orientation) {
+@@ -185,7 +198,7 @@
+     return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Invalid screen geometry" traceback:nil]);
+   }
+   CGPoint (^at)(NSArray *) = ^CGPoint(NSArray *p) {
+-    return CGPointMake([p[0] doubleValue] * (size.width - 1), [p[1] doubleValue] * (size.height - 1));
++    return FBMirrorPortraitPoint(CGPointMake([p[0] doubleValue] * (size.width - 1), [p[1] doubleValue] * (size.height - 1)), size, orientation);
+   };
+   XCSynthesizedEventRecord *event = [[XCSynthesizedEventRecord alloc] initWithName:@"mirror" displayID:screen.displayID interfaceOrientation:orientation];
+   for (NSArray *finger in fingers ?: @[points]) {
+@@ -224,7 +237,7 @@
+ {
+   // Describes implemented routes, not a guarantee that a particular iOS runtime
+   // accepts their private APIs. Keepalive must return completed:true before use.
+-  return FBResponseWithObject(@{@"version":@4, @"guardedTouch":@YES, @"multiTouch":@YES, @"orientedTouch":@YES, @"validatedTouch":@YES, @"keepaliveEventStream":@YES});
++  return FBResponseWithObject(@{@"version":@5, @"guardedTouch":@YES, @"multiTouch":@YES, @"orientedTouch":@YES, @"validatedTouch":@YES, @"keepaliveEventStream":@YES});
+ }
+ 
+ + (id<FBResponsePayload>)handleMirrorKeepalive:(FBRouteRequest *)request

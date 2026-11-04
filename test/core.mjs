@@ -999,6 +999,63 @@ void test("wheel bursts dispatch once and preserve click/long-press durations", 
   assert.equal(gestures().at(-1).end, 600);
 });
 
+void test("portrait and landscape input stay in visible viewport coordinates", async () => {
+  for (const [width, height] of [
+    [402, 874],
+    [874, 402],
+  ]) {
+    const h = browserHarness();
+    await h.settle();
+    h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+    const screen = h.element("screen");
+    screen.getBoundingClientRect = () => ({ left: 30, top: 20, width, height });
+    const event = (x, y) => ({
+      button: 0,
+      pointerId: 1,
+      clientX: 30 + x * width,
+      clientY: 20 + y * height,
+      preventDefault() {},
+    });
+    const gestures = () =>
+      h.calls
+        .filter(([url]) => url === "/api/gesture")
+        .map(([, options]) => JSON.parse(options.body));
+    screen.listeners.pointerdown(event(0.25, 0.35));
+    await h.advance(40);
+    screen.listeners.pointerup(event(0.65, 0.35));
+    await h.settle();
+    assert.deepEqual(
+      gestures()
+        .at(-1)
+        .points.map((p) => p.slice(0, 2)),
+      [
+        [0.25, 0.35],
+        [0.65, 0.35],
+      ],
+    );
+    screen.listeners.wheel({ ...event(0.4, 0.6), deltaMode: 0, deltaX: width * 0.2, deltaY: 0 });
+    await h.advance(80);
+    const wheel = gestures().at(-1).points;
+    assert.ok(Math.abs(wheel.at(-1)[0] - wheel[0][0] + 0.2) < 1e-12);
+    assert.equal(wheel.at(-1)[1], wheel[0][1], "horizontal wheel cannot become vertical");
+    h.run(
+      "nativeScroll({x:.4,y:.6,dx:0,dy:0,phase:'began'},videoEpoch,bridgeId); nativeScroll({x:.4,y:.6,dx:0,dy:.2,phase:'ended'},videoEpoch,bridgeId)",
+    );
+    await h.settle();
+    const scroll = gestures().at(-1).points;
+    assert.equal(scroll.at(-1)[0], scroll[0][0]);
+    assert.ok(Math.abs(scroll.at(-1)[1] - scroll[0][1] + 0.2) < 1e-12);
+    h.run(
+      "nativePinch({x:.35,y:.55,phase:'began'},videoEpoch,bridgeId); nativePinch({x:.35,y:.55,delta:.7,phase:'ended'},videoEpoch,bridgeId)",
+    );
+    await h.settle();
+    const pinch = JSON.parse(h.calls.findLast(([url]) => url === "/api/pinch")[1].body);
+    assert.equal(pinch.x, 0.35);
+    assert.equal(pinch.y, 0.55);
+    assert.equal(pinch.scale, 1.7);
+  }
+});
+
 void test("native scroll sends exactly one swipe in each direction and ignores momentum/cancelled tails", async () => {
   const h = browserHarness();
   await h.settle();
