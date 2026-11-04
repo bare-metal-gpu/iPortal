@@ -58,8 +58,10 @@ struct CornerResizeTests {
                     }
                     assert(grabbed > 0 && displayPoints > 0, "both resize and phone input remain reachable")
                     handle.updateTrackingAreas()
+                    let originalTrackingArea = handle.trackingAreas.first
                     handle.updateTrackingAreas()
                     assert(handle.trackingAreas.count == 1, "layout cannot accumulate overlapping cursor areas")
+                    assert(handle.trackingAreas.first === originalTrackingArea, "layout preserves active tracking")
                     handle.isHidden = true
                     assert(handle.hitTest(handle.frame.origin) == nil, "hidden handles cannot intercept input")
                     handle.removeFromSuperview()
@@ -71,7 +73,7 @@ struct CornerResizeTests {
             // ignores fully transparent pixels. This caught the first fix's
             // unreachable resize area despite its passing view-level tests.
             let visible = NSScreen.main!.visibleFrame
-            let window = NSWindow(contentRect: NSRect(x: visible.minX + 24, y: visible.minY + 24, width: 64, height: 64),
+            let window = MirrorWindow(contentRect: NSRect(x: visible.minX + 24, y: visible.minY + 24, width: 64, height: 64),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             window.isOpaque = false
             window.backgroundColor = .clear
@@ -109,6 +111,8 @@ struct CornerResizeTests {
                            "cursor must cover every grabbable fractional position")
                     handle.mouseMoved(with: event)
                     assert(NSCursor.current == expected, "movement must not reset the resize cursor")
+                    window.cursorUpdate(with: event)
+                    assert(NSCursor.current == expected, "overlapping view fallback must preserve the corner cursor")
                 }
                 let screenEvent = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 32, y: 32),
                     modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,

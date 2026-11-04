@@ -32,17 +32,30 @@ func iportalTrace(_ event: String, _ fields: [String: Any] = [:]) {
     }
 }
 
-final class MirrorWindow: NSWindow {
-    // Borderless windows can't become key by default, which would block keyboard input.
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-}
-
 final class DragBar: NSVisualEffectView {
     override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
 }
 
 // BEGIN TESTABLE CORNER RESIZE
+final class MirrorWindow: NSWindow {
+    // Borderless windows can't become key by default, which would block keyboard input.
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func cursorUpdate(with event: NSEvent) {
+        // Overlapping tracking areas can pass their unhandled cursor updates
+        // here after the corner has set its cursor. Resolve the actual hit
+        // target instead of letting that fallback reset it to an arrow.
+        if let root = contentView,
+           let handle = root.hitTest(root.superview?.convert(event.locationInWindow, from: nil)
+                ?? event.locationInWindow) as? CornerResizeHandle {
+            handle.cursorUpdate(with: event)
+        } else {
+            super.cursorUpdate(with: event)
+        }
+    }
+}
+
 enum ResizeCorner: CaseIterable {
     case topLeft, topRight, bottomLeft, bottomRight
     var left: Bool { self == .topLeft || self == .bottomLeft }
@@ -98,9 +111,11 @@ final class CornerResizeHandle: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let cursorTrackingArea { removeTrackingArea(cursorTrackingArea) }
+        guard cursorTrackingArea == nil else { return }
         // A single region avoids enter/exit cursor resets between one-pixel
         // strips. Movement inside it uses the exact same curve as mouseDown.
+        // inVisibleRect follows layout itself; replacing it while hovered
+        // would generate another exit/entry and briefly restore the arrow.
         let area = NSTrackingArea(rect: .zero,
             options: [.cursorUpdate, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area)
