@@ -57,13 +57,9 @@ struct CornerResizeTests {
                         }
                     }
                     assert(grabbed > 0 && displayPoints > 0, "both resize and phone input remain reachable")
-                    for rect in handle.grabCursorRects {
-                        for x in [rect.minX + 0.001, rect.maxX - 0.001] {
-                            for y in [rect.minY + 0.001, rect.maxY - 0.001] {
-                                assert(handle.containsGrabPoint(NSPoint(x: x, y: y)), "cursor stays inside the resize hit area")
-                            }
-                        }
-                    }
+                    handle.updateTrackingAreas()
+                    handle.updateTrackingAreas()
+                    assert(handle.trackingAreas.count == 1, "layout cannot accumulate overlapping cursor areas")
                     handle.isHidden = true
                     assert(handle.hitTest(handle.frame.origin) == nil, "hidden handles cannot intercept input")
                     handle.removeFromSuperview()
@@ -96,7 +92,43 @@ struct CornerResizeTests {
                 let middle = window.convertPoint(toScreen: NSPoint(x: 32, y: 32))
                 assert(NSWindow.windowNumber(at: middle, belowWindowWithWindowNumber: 0) != window.windowNumber,
                        "the resize view must not paint/hit the phone area")
+
+                // Move across fractional coordinates and former strip edges.
+                // Every grabbable point must immediately have the same cursor.
+                var expected: NSCursor?
+                for distance in stride(from: 0.5, through: 56.5, by: 0.25) {
+                    let p = NSPoint(x: corner.left ? 3 : 61,
+                                    y: corner.bottom ? distance : 64 - distance)
+                    guard handle.containsGrabPoint(p) else { continue }
+                    let event = NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [], timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+                    NSCursor.arrow.set()
+                    handle.cursorUpdate(with: event)
+                    if expected == nil { expected = NSCursor.current }
+                    assert(NSCursor.current != .arrow && NSCursor.current == expected,
+                           "cursor must cover every grabbable fractional position")
+                    handle.mouseMoved(with: event)
+                    assert(NSCursor.current == expected, "movement must not reset the resize cursor")
+                }
+                let screenEvent = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 32, y: 32),
+                    modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 0, pressure: 0)!
+                handle.mouseMoved(with: screenEvent)
+                assert(NSCursor.current == .arrow, "crossing onto the phone must release the resize cursor")
+                let down = NSEvent.mouseEvent(with: .leftMouseDown, location: local, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                var resized = false
+                handle.onResize = { target, _, _ in
+                    assert(target == corner, "drag keeps the original corner")
+                    resized = true
+                }
+                handle.mouseDown(with: down)
+                handle.mouseDragged(with: screenEvent)
+                assert(resized && NSCursor.current == expected, "drag stays captured beyond the corner")
+                handle.mouseUp(with: screenEvent)
+                assert(NSCursor.current == .arrow, "ending the drag releases the resize cursor")
             }
+            NSCursor.arrow.set()
             print("WindowServer hit testing reaches all four resize corners and excludes the screen area.")
         }
         print("Corner input: all visible pixels pass through, empty corners resize, and cursor regions match across device sizes/orientations.")

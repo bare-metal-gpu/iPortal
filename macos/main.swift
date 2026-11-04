@@ -54,6 +54,7 @@ final class CornerResizeHandle: NSView {
     var onResize: ((ResizeCorner, NSRect, NSPoint) -> Void)?
     private var startFrame: NSRect?
     private var startMouse = NSPoint.zero
+    private var cursorTrackingArea: NSTrackingArea?
 
     init(corner: ResizeCorner) {
         self.corner = corner
@@ -95,23 +96,18 @@ final class CornerResizeHandle: NSView {
         return self
     }
 
-    var grabCursorRects: [NSRect] {
-        // AppKit cursor rectangles cannot describe a curve. Tile it with
-        // inward-rounded strips so even the resize cursor never covers content.
-        let size = min(bounds.width, bounds.height)
-        return (0..<Int(size.rounded(.down))).compactMap { row in
-            let distance = size - CGFloat(row + 1)
-            // Leave a quarter point for the oval path's cubic approximation.
-            let width = size - sqrt(pow(size + 1, 2) - distance * distance) - 0.25
-            guard width > 0 else { return nil }
-            return NSRect(x: corner.left ? bounds.minX : bounds.maxX - width,
-                          y: corner.bottom ? bounds.minY + CGFloat(row) : bounds.maxY - CGFloat(row + 1),
-                          width: width, height: 1)
-        }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let cursorTrackingArea { removeTrackingArea(cursorTrackingArea) }
+        // A single region avoids enter/exit cursor resets between one-pixel
+        // strips. Movement inside it uses the exact same curve as mouseDown.
+        let area = NSTrackingArea(rect: .zero,
+            options: [.cursorUpdate, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        cursorTrackingArea = area
     }
 
-    override func resetCursorRects() {
-        let cursor: NSCursor
+    private lazy var resizeCursor: NSCursor = {
         if #available(macOS 15, *) {
             let position: NSCursor.FrameResizePosition
             switch corner {
@@ -120,11 +116,24 @@ final class CornerResizeHandle: NSView {
             case .bottomLeft: position = .bottomLeft
             case .bottomRight: position = .bottomRight
             }
-            cursor = .frameResize(position: position, directions: .all)
+            return .frameResize(position: position, directions: .all)
         } else {
-            cursor = .crosshair
+            return .crosshair
         }
-        for rect in grabCursorRects { addCursorRect(rect, cursor: cursor) }
+    }()
+
+    override func cursorUpdate(with event: NSEvent) {
+        if startFrame != nil || containsGrabPoint(convert(event.locationInWindow, from: nil)) {
+            resizeCursor.set()
+        } else {
+            super.cursorUpdate(with: event)
+        }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        // The curve can be crossed without leaving the rectangular tracking
+        // area. Resolve the cursor again on movement, not only on entry.
+        cursorUpdate(with: event)
     }
 
     private func screenLocation(_ event: NSEvent) -> NSPoint {
@@ -140,13 +149,18 @@ final class CornerResizeHandle: NSView {
         guard let window else { return }
         startFrame = window.frame
         startMouse = screenLocation(event)
+        resizeCursor.set()
     }
     override func mouseDragged(with event: NSEvent) {
         guard let startFrame else { return }
         let mouse = screenLocation(event)
         onResize?(corner, startFrame, NSPoint(x: mouse.x - startMouse.x, y: mouse.y - startMouse.y))
+        resizeCursor.set()
     }
-    override func mouseUp(with event: NSEvent) { startFrame = nil }
+    override func mouseUp(with event: NSEvent) {
+        startFrame = nil
+        cursorUpdate(with: event)
+    }
 }
 // END TESTABLE CORNER RESIZE
 
@@ -716,7 +730,6 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             handle.frame = NSRect(x: handle.corner.left ? 0 : w - grabSize,
                                   y: handle.corner.bottom ? 0 : phoneHeight - grabSize,
                                   width: grabSize, height: grabSize)
-            window.invalidateCursorRects(for: handle)
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
