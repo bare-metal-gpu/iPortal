@@ -87,9 +87,9 @@ not enable keep-awake. The API uses the existing local-origin and instance check
 
 ## Verification
 
-`npm test` covers presence expiry, multiple viewers, backpressure, old-helper
+`bun run test` covers presence expiry, multiple viewers, backpressure, old-helper
 compatibility, Effect schema validation, repeatable installation, and rollback,
-alongside the existing input/capture/lifecycle suite. `python3 test/iportal-host.py`
+alongside the existing input/capture/lifecycle suite. `bun test ./test/build-tools.test.ts`
 covers binary-section preservation, repeated linking, and unsupported layouts.
 
 Physical-device checks: standalone launch, waiting/connecting/connected screen,
@@ -193,8 +193,8 @@ measured the phone status label from a different event source, so they are not a
 like-for-like video benchmark. The remaining multi-second cost is primarily USB
 enumeration and capture-mode switching; removing polling cannot remove those steps.
 
-To record native milestones, create `vendor/trace-reconnect` before a test and read
-`vendor/reconnect-trace.jsonl`. Remove the marker afterward. The log contains only
+To record native milestones, create `~/Library/Application Support/iPortal/trace-reconnect` before a test and read
+`~/Library/Application Support/iPortal/reconnect-trace.jsonl`. Remove the marker afterward. The log contains only
 timestamps/state milestones, not frames or input contents. Record `/api/events`
 alongside it for the server's USB identifiers, and read `/wda/mirror/portal` once after
 a cycle for the phone's bounded phase history. Avoid high-frequency helper polling.

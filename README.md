@@ -10,22 +10,35 @@ Apple doesn't offer iPhone Mirroring in the EU. This app is the fix: it lets you
 
 ## Install
 
-You need macOS 14+, full Xcode, Node 22.19+ and an Apple ID (a free one is fine).
+You need macOS 14+, full Xcode, Bun 1.4.4+ and an Apple ID (a free one is fine).
 
-1. Xcode → Settings → Accounts: add your Apple ID.
+1. Xcode → Settings → Accounts: add your Apple ID. Under Manage Certificates, create an Apple Development certificate if you do not have one.
 2. Plug in your iPhone, unlock it, tap **Trust**.
 3. iPhone: Settings → Privacy & Security → **Developer Mode** → On.
 4. Run:
 
 ```bash
 git clone https://github.com/bare-metal-gpu/iPortal && cd iPortal
-npm ci
-npm run setup   # builds the helper app for your iPhone
-npm run app     # installs "iPortal" to ~/Applications
+bun install --frozen-lockfile
+bun run setup   # builds the helper app for your iPhone
+bun run app     # installs "iPortal" to ~/Applications
 ```
 
 5. Open **iPortal**. Camera access enables smoother USB video; Microphone access enables device audio. Both are optional.
 6. First launch only: on the iPhone, go to Settings → General → VPN & Device Management → trust your Apple ID.
+
+The installed Mac app contains its compiled Bun/Effect server, browser assets,
+font, and signed phone helper. It can run after the checkout is moved or removed,
+without Node, Python, or a separately installed Bun. Xcode is still required to
+launch the phone helper. Helper logs and command receipts live in
+`~/Library/Application Support/iPortal`; Mac session logs remain in `~/Library/Logs`.
+The app bundle stays read-only.
+
+For stable Mac signing across rebuilds, select your Apple Development identity
+once with `IPORTAL_CODE_SIGN_IDENTITY="<certificate SHA-1>" IPORTAL_DEVELOPMENT_TEAM="<team ID>" bun run app`.
+Use `security find-identity -v -p codesigning` to list identities. The build remembers
+the selection locally; otherwise it uses ad-hoc signing. Setup reuses the saved
+phone/Mac team, with `bun run setup -- <TEAM_ID>` as an explicit override.
 
 ## Use
 
@@ -65,15 +78,15 @@ the watcher) and **Quit iPortal** (stops everything).
 
 Text, deletion, and navigation preserve the on-screen keyboard. Unicode and committed Mac input-method text are supported. Editing behavior follows the focused device app. Copy and Cut transfer a changed device clipboard back to the Mac using the same brief helper handoff.
 
-Prefer the browser? Run `npm start` and open http://localhost:7100.
+Prefer the browser? Run `bun start` and open http://localhost:7100.
 
 ## Good to know
 
 - Connect the iPhone by USB. Locking blurs the last frame; unlocking automatically restores control after a fresh frame arrives.
-- With a free Apple ID, run `npm run setup` again every 7 days.
+- With a free Apple ID, run `bun run setup` and `bun run app` again every 7 days to refresh the bundled phone helper.
 - The iPhone's sound plays on your Mac with native USB video and Microphone access.
 - Each additional iPhone or iPad needs the same one-time helper setup and trust.
-  Select it with `UDID=<device-udid> npm run setup`; `node iportal.mjs devices` lists connected IDs.
+  Select it with `UDID=<device-udid> bun run setup`, then run `bun run app` to update the installed helper; `bun iportal.mjs devices` lists connected IDs.
 - When macOS cannot identify a native USB video source unambiguously among several
   devices, that window uses its device's screenshot stream. Device names are never
   used to guess which screen to show.
@@ -88,23 +101,30 @@ See [multi-device lifecycle and verification](docs/multi-device.md) for session 
 
 ## Development
 
-Run `npm ci`, then `npm run verify` before submitting changes. This checks types,
+Run `bun install --frozen-lockfile`, then `bun run verify` before submitting changes. This checks types,
 lint, formatting, and the regression suite. The full suite needs macOS and Xcode;
 it uses simulated phones and does not interact with a connected device.
 
-- `npm run typecheck` — TypeScript checks Node modules, scripts, tests, and browser code without emitting files.
-- `npm run lint` / `npm run lint:fix` — Oxlint checks correctness, imports, and promise handling; the fix command applies safe fixes only.
-- `npm run format` / `npm run format:check` — Oxfmt formats or verifies supported source, configuration, HTML/CSS, and documentation files.
-- `npm run check` — Run all three static checks.
+Verification also compiles the server and repeats the USB, lifecycle, streaming,
+and multi-device checks from a temporary directory with no Node or Bun on the
+server's PATH. `bun run build:server` builds the executable separately. The server
+uses `@effect/platform-bun` with the existing Effect 4 schemas; `node:` imports
+use Bun's compatibility APIs and do not require Node. The optional real-phone
+benchmark uses Bun and a Swift image sampler, with no Python dependencies.
 
-Tool versions are pinned in `package.json` and `package-lock.json`. Type checking
-uses `checkJs` and strict null checks with Node 22 types. Existing JavaScript
+- `bun run typecheck` — TypeScript checks server modules, scripts, tests, and browser code without emitting files.
+- `bun run lint` / `bun run lint:fix` — Oxlint checks correctness, imports, and promise handling; the fix command applies safe fixes only.
+- `bun run format` / `bun run format:check` — Oxfmt formats or verifies supported source, configuration, HTML/CSS, and documentation files.
+- `bun run check` — Run all three static checks.
+
+Bun is pinned in `package.json` and CI; dependencies are pinned in `bun.lock`. Type checking
+uses `checkJs` and strict null checks with Bun types. Existing JavaScript
 parameters and caught errors remain permissive (`noImplicitAny` and
 `useUnknownInCatchVariables` are disabled); this is not a full strict-TypeScript
 migration. Add JSDoc at module boundaries and for mutable nullable state. Effect
 schemas validate API requests; existing endpoint checks validate upstream responses.
 
-Node and browser globals are checked separately. `public/iportal.js` stays a
+Bun and browser globals are checked separately. `public/iportal.js` stays a
 classic script so the Mac can call its named entry points; `web-assets.mjs`
 inlines it into the HTML response without an extra request or compilation step.
 

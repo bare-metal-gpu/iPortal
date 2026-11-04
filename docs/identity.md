@@ -13,14 +13,14 @@ watcher, CLI, status framework, and README banner use the iPortal name.
 | Mac-to-watcher URL scheme   | `iportal`                                          |
 | Browser instance header     | `x-iportal-instance`                               |
 
-`npm run app` migrates the previous installation before replacing it. It copies
+`bun run app` migrates the previous installation before replacing it. It copies
 the login preference, saved device names, preferred device, and menu-bar position;
 asks the old containing app to unregister its login item; waits for the old
 processes to exit; and keeps the old bundle in ignored `vendor/previous-app-*`.
 A failed retirement stops installation. The new app identity needs its own
 Camera and Microphone grants from macOS.
 
-`npm run setup` updates fresh and previously branded phone projects, including
+`bun run setup` updates fresh and previously branded phone projects, including
 when the signing team changes. Its new build directory prevents reuse of the
 old signed runner. Apple provisioning, XCTest, and upstream library/target names
 remain owned by their providers. Old branding appears only in migration code,

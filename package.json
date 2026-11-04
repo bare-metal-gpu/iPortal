@@ -3,32 +3,34 @@
   "version": "0.1.0",
   "description": "Control your iPhone from your Mac, an open alternative to iPhone Mirroring that works in the EU.",
   "type": "module",
+  "packageManager": "bun@1.4.4",
   "bin": {
     "iportal": "iportal.mjs"
   },
   "scripts": {
     "setup": "scripts/setup-wda.sh",
-    "start": "node iportal.mjs",
-    "test": "node --test test/clipboard.mjs test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs test/status-events.mjs test/iportal-status.mjs test/iportal-install.mjs test/startup-lock.mjs test/owned-process.mjs && node test/e2e.mjs && node test/multi-device.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
+    "start": "bun iportal.mjs",
+    "test": "bun test ./test/clipboard.mjs ./test/core.mjs ./test/keep-awake.mjs ./test/server-lifecycle.mjs ./test/status-events.mjs ./test/iportal-status.mjs ./test/iportal-install.mjs ./test/startup-lock.mjs ./test/owned-process.mjs ./test/build-tools.test.ts --timeout 20000 && bun test/e2e.mjs && bun test/multi-device.mjs && bun test/guarded-touch.mjs && bun scripts/test-native-contract.mjs && bun scripts/test-capture-session.mjs && bun scripts/test-lifecycle.mjs && bun test/packaged-runtime.mjs",
+    "build:server": "bun scripts/build-server.ts",
     "app": "macos/build.sh --install",
-    "typecheck": "tsc --noEmit && tsc --project public/tsconfig.json --noEmit",
+    "typecheck": "bun --bun run tsc --noEmit && bun --bun run tsc --project public/tsconfig.json --noEmit",
     "lint": "oxlint .",
     "lint:fix": "oxlint --fix .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "check": "npm run typecheck && npm run lint && npm run format:check",
-    "verify": "npm run check && npm test"
+    "check": "bun run typecheck && bun run lint && bun run format:check",
+    "verify": "bun run check && bun run test"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "bun": ">=1.4.4"
   },
   "license": "MIT",
   "dependencies": {
-    "@effect/platform-node": "4.1.2",
+    "@effect/platform-bun": "4.1.2",
     "effect": "4.1.2"
   },
   "devDependencies": {
-    "@types/node": "22.20.5",
+    "@types/bun": "1.4.4",
     "oxfmt": "0.76.0",
     "oxlint": "1.91.0",
     "oxlint-tsgolint": "7.0.2005",

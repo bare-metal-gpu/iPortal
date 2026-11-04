@@ -1,9 +1,9 @@
-import { test } from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { createStartupLock } from "../startup-lock.mjs";
 
-void test("startup lock is published without waiting for the UI helper", async () => {
+test("startup lock is published without waiting for the UI helper", async () => {
   let calls = 0,
     updates = 0;
   const probe = createStartupLock({
@@ -24,7 +24,7 @@ void test("startup lock is published without waiting for the UI helper", async (
   assert.equal(calls, 1, "status refreshes must not poll CoreDevice");
 });
 
-void test("a late result cannot label a replacement connection locked", async () => {
+test("a late result cannot label a replacement connection locked", async () => {
   const resolvers = [];
   const probe = createStartupLock({
     read: () => new Promise((resolve) => resolvers.push(resolve)),
@@ -45,7 +45,7 @@ void test("a late result cannot label a replacement connection locked", async ()
   assert.equal(probe.value(second), null);
 });
 
-void test("probe errors stay unknown, never assume the phone is locked", async () => {
+test("probe errors stay unknown, never assume the phone is locked", async () => {
   const probe = createStartupLock({
     read: async () => {
       throw new Error("unavailable");

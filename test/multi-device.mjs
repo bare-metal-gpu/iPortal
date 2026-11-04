@@ -1,3 +1,4 @@
+import { serverCommand, runtimeEnvironment } from "./server-command.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -35,9 +36,9 @@ const blocker = net.createServer((socket) => socket.end());
 
 async function start(udid, kind) {
   const child = spawn(
-    process.execPath,
+    serverCommand[0],
     [
-      "iportal.mjs",
+      ...serverCommand.slice(1),
       "--no-open",
       "--no-autostart",
       "--managed",
@@ -55,8 +56,9 @@ async function start(udid, kind) {
       "0",
     ],
     {
+      cwd: scratch,
       env: {
-        ...process.env,
+        ...runtimeEnvironment(scratch),
         USBMUXD_SOCKET_ADDRESS: socketPath,
         IPORTAL_COMMANDS_FILE: path.join(scratch, `${kind}-commands.json`),
       },

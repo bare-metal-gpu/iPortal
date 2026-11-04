@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "bun:test";
 import { createKeepAwake } from "../keep-awake.mjs";
 
 function fixture() {
@@ -37,7 +37,7 @@ function fixture() {
   return { api, calls, device, advance, pending, timers };
 }
 
-void test("bounded lease pulses, renews, expires, and leaves no background timers", async () => {
+test("bounded lease pulses, renews, expires, and leaves no background timers", async () => {
   const f = fixture();
   assert.equal(f.api.status().enabled, false);
   assert.equal(
@@ -63,7 +63,7 @@ void test("bounded lease pulses, renews, expires, and leaves no background timer
   assert.equal(f.calls.length, count);
 });
 
-void test("locked phone, malformed state and upstream failure stop without unlocking", async () => {
+test("locked phone, malformed state and upstream failure stop without unlocking", async () => {
   const f = fixture();
   f.device.locked = true;
   await assert.rejects(f.api.configure({ enabled: true }), { code: "device locked" });
@@ -80,7 +80,7 @@ void test("locked phone, malformed state and upstream failure stop without unloc
   assert.equal(f.timers.size, 0);
 });
 
-void test("disable and expiry invalidate queued work before it touches the phone", async () => {
+test("disable and expiry invalidate queued work before it touches the phone", async () => {
   for (const expire of [true, false]) {
     const f = fixture();
     f.device.blocked = true;
@@ -94,7 +94,7 @@ void test("disable and expiry invalidate queued work before it touches the phone
   }
 });
 
-void test("manual locking ends an active lease without sending another event", async () => {
+test("manual locking ends an active lease without sending another event", async () => {
   const f = fixture();
   await f.api.configure({ enabled: true });
   const count = f.calls.length;
@@ -106,7 +106,7 @@ void test("manual locking ends an active lease without sending another event", a
   assert.equal(f.timers.size, 0);
 });
 
-void test("replacing a queued lease cannot restart the old one", async () => {
+test("replacing a queued lease cannot restart the old one", async () => {
   const f = fixture();
   f.device.blocked = true;
   const old = f.api.configure({ enabled: true, method: "volume" });
@@ -122,7 +122,7 @@ void test("replacing a queued lease cannot restart the old one", async () => {
   f.api.stop();
 });
 
-void test("invalid options do not replace an active lease; status is read-only", async () => {
+test("invalid options do not replace an active lease; status is read-only", async () => {
   const f = fixture();
   await f.api.configure({ enabled: true });
   for (const body of [
@@ -143,7 +143,7 @@ void test("invalid options do not replace an active lease; status is read-only",
   assert.equal(f.calls.length, count);
 });
 
-void test("successful input defers maintenance, drops obsolete queued pulses and preserves expiry", async () => {
+test("successful input defers maintenance, drops obsolete queued pulses and preserves expiry", async () => {
   const f = fixture();
   await f.api.configure({ enabled: true, durationMs: 40000 });
   await f.advance(14000);

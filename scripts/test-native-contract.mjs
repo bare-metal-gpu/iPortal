@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Compile the exact pure Objective-C validators shipped in the WDA patch.
 import assert from "node:assert/strict";
 import { readFile, writeFile, mkdtemp, rm, mkdir } from "node:fs/promises";

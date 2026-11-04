@@ -26,19 +26,8 @@ for NAME in iPortalLaunch; do
   rm -rf "$RUNNER/$NAME.storyboardc"
   ditto "$TEMP/$NAME.storyboardc" "$RUNNER/$NAME.storyboardc"
 done
-python3 - "$RUNNER/Info.plist" <<'PY'
-import plistlib, sys
-path = sys.argv[1]
-with open(path, 'rb') as f: info = plistlib.load(f)
-info['UILaunchStoryboardName'] = 'iPortalLaunch'
-# Preserve the runner's delegates. iPortalUI fills its empty window on launch.
-configs = info.setdefault('UIApplicationSceneManifest', {}).setdefault('UISceneConfigurations', {})
-configs['UIWindowSceneSessionRoleApplication'] = [{
-    'UISceneConfigurationName': 'Default Configuration',
-    'UISceneDelegateClassName': '_XCTRunnerAppDelegate',
-}]
-with open(path, 'wb') as f: plistlib.dump(info, f)
-PY
+BUN="${IPORTAL_BUN_PATH:-$(command -v bun)}"
+"$BUN" "$SOURCE/configure-host.ts" "$RUNNER/Info.plist"
 SIGN_INFO="$(codesign -dvv "$RUNNER" 2>&1)"
 if [[ "$SIGN_INFO" == *'Signature=adhoc'* ]]; then
   IDENTITY='-'
@@ -47,7 +36,7 @@ else
   IDENTITY="$(shasum -a 1 "$TEMP/cert0" | awk '{print toupper($1)}')"
 fi
 HOST_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$RUNNER/Info.plist")"
-python3 "$SOURCE/link-host.py" "$RUNNER/$HOST_NAME"
+"$BUN" "$SOURCE/link-host.ts" "$RUNNER/$HOST_NAME"
 codesign --force --sign "$IDENTITY" "$FRAMEWORK"
 codesign --force --sign "$IDENTITY" --preserve-metadata=identifier,entitlements "$RUNNER"
 codesign --verify --strict "$RUNNER"

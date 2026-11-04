@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Compile the exact executor used by the app against deterministic virtual
 // sessions. No camera permissions, connected phone, or installed app required.
 import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";

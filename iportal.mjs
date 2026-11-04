@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { createClipboard } from "./clipboard.mjs";
 // iportal: control your iPhone from your computer.
 // Video comes from WebDriverAgent's MJPEG stream, input goes back through WDA's W3C actions API.
@@ -7,10 +7,8 @@ import { createClipboard } from "./clipboard.mjs";
 import net from "node:net";
 import { loadIPortalHTML } from "./web-assets.mjs";
 import fs from "node:fs";
-import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { apiError } from "./errors.mjs";
 import { createInspection } from "./inspection.mjs";
@@ -26,9 +24,10 @@ import { createUSBMonitor } from "./usb-events.mjs";
 import { createStatusEvents } from "./status-events.mjs";
 import { createStartupLock } from "./startup-lock.mjs";
 import { claimDevice, canonicalUDID } from "./device-runtime.mjs";
+import { deviceBuild, runtimeCommand, statePath } from "./runtime-paths.mjs";
+import { helperCommand } from "./helper-launch.mjs";
 
 const instanceId = randomUUID();
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const { values: opts, positionals } = parseArgs({
   allowPositionals: true,
   options: {
@@ -387,7 +386,7 @@ async function gesture(points, end, guards = {}) {
       // A helper replacement may have removed the guarded route. The fallback
       // must perform its own checks before dispatch rather than trust cached capability.
       await legacyGestureGuards(guards);
-      console.log("  WDA has no fast touch endpoint; rerun npm run setup for lower latency");
+      console.log("  WDA has no fast touch endpoint; rerun bun run setup for lower latency");
     }
   }
   return withSession(async (s) => {
@@ -570,19 +569,30 @@ function maybeStartWda(udid, connectionID) {
     process.platform !== "darwin"
   )
     return;
-  if (!fs.existsSync(path.join(ROOT, "vendor/iportal-device-build"))) return;
-  const logPath = path.join(ROOT, `vendor/wda-${udid}.log`);
+  if (!fs.existsSync(deviceBuild)) return;
+  let command;
+  try {
+    command = helperCommand(udid);
+  } catch {
+    wdaProblem = "Finish setting up iPortal on your Mac.";
+    wdaRetryAt = Date.now() + 30000;
+    return;
+  }
+  const logPath = statePath(`wda-${udid}.log`);
   const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   const log = fs.openSync(logPath, "a");
   console.log(`  starting WebDriverAgent on ${udid}`);
-  wdaProcess = spawn(
-    process.execPath,
-    [path.join(ROOT, "scripts/owned-process.mjs"), "bash", path.join(ROOT, "scripts/run-wda.sh")],
-    {
-      env: { ...process.env, UDID: udid },
-      stdio: ["pipe", "pipe", "pipe"],
+  const [executable, ...args] = runtimeCommand("--owned-command", ...command);
+  wdaProblem = null;
+  wdaProcess = spawn(executable, args, {
+    env: {
+      ...process.env,
+      UDID: udid,
+      TEST_RUNNER_USE_IP: "127.0.0.1",
+      TEST_RUNNER_IPORTAL_AUTOMATION: "1",
     },
-  );
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   wdaProcess.stdin.on("error", () => {});
   let tail = "";
   const output = (chunk) => {
@@ -719,8 +729,7 @@ async function status(signal) {
     maybeStartWda(device.udid, device.id);
     error = wdaProblem
       ? wdaProblem
-      : wdaProcess ||
-          (fs.existsSync(path.join(ROOT, "vendor/iportal-device-build")) && !opts["no-autostart"])
+      : wdaProcess || (fs.existsSync(deviceBuild) && !opts["no-autostart"])
         ? null
         : "Finish setting up iPortal on your Mac.";
   } else if (MANUAL && !up) error = "Reconnect your iPhone.";
@@ -783,9 +792,7 @@ const commandLedger = () =>
   (commands ??= createCommands({
     file:
       process.env.IPORTAL_COMMANDS_FILE ??
-      path.join(
-        ROOT,
-        "vendor",
+      statePath(
         opts.udid
           ? `commands-${canonicalUDID(opts.udid)}.json`
           : opts.port === "7100"

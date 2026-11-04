@@ -83,7 +83,7 @@ Native status values are 0 = unregistered, 1 = enabled, 2 = approval required,
 ## Verification
 
 - Release build and deep, strict signature verification pass for both apps.
-- `npm test`: 50 unit tests plus e2e, guarded input, native contract, helper patch,
+- `bun run test`: 50 unit tests plus e2e, guarded input, native contract, helper patch,
   capture lifecycle and native lifecycle checks pass.
 - Native lifecycle tests cover request validation, selected-phone round trips,
   USB row retention/expiry, reattachment, multiple rows, invitation suppression,

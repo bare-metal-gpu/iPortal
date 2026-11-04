@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import net from "node:net";
 import os from "node:os";
@@ -9,7 +9,7 @@ import { createUSBMonitor } from "../usb-events.mjs";
 const settle = () => new Promise((r) => setImmediate(r));
 const decode = (data) => JSON.parse(new TextDecoder().decode(data).slice(6));
 
-void test("status events coalesce probes, cancel obsolete readiness, and publish detach immediately", async () => {
+test("status events coalesce probes, cancel obsolete readiness, and publish detach immediately", async () => {
   const reads = [];
   const hub = createStatusEvents({
     read: (signal) => new Promise((resolve) => reads.push({ signal, resolve })),
@@ -36,7 +36,7 @@ void test("status events coalesce probes, cancel obsolete readiness, and publish
   }
 });
 
-void test("slow event readers retain a bounded latest snapshot and can cancel", async () => {
+test("slow event readers retain a bounded latest snapshot and can cancel", async () => {
   let state = 0;
   const hub = createStatusEvents({ read: async () => ({ state: ++state }) });
   try {
@@ -54,7 +54,7 @@ void test("slow event readers retain a bounded latest snapshot and can cancel", 
   }
 });
 
-void test("usbmux events handle fragmented/coalesced frames and fall back after listener failure", async () => {
+test("usbmux events handle fragmented/coalesced frames and fall back after listener failure", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-usb-"));
   const address = path.join(directory, "mux");
   let socket,

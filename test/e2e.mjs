@@ -1,3 +1,4 @@
+import { serverCommand, runtimeEnvironment } from "./server-command.mjs";
 import { readJSON } from "./json.mjs";
 // End-to-end test against the fake iPhone: usbmuxd forwarding, status, MJPEG stream and input commands.
 import { spawn } from "node:child_process";
@@ -11,9 +12,9 @@ const fake = startFakeIphone();
 const PORT = 7199;
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-e2e-"));
 const server = spawn(
-  process.execPath,
+  serverCommand[0],
   [
-    "iportal.mjs",
+    ...serverCommand.slice(1),
     "--port",
     String(PORT),
     "--wda-port",
@@ -23,8 +24,9 @@ const server = spawn(
     "--no-open",
   ],
   {
+    cwd: scratch,
     env: {
-      ...process.env,
+      ...runtimeEnvironment(scratch),
       USBMUXD_SOCKET_ADDRESS: SOCKET,
       IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
     },

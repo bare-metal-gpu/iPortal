@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 import { decodeRequest } from "../schemas.mjs";
@@ -39,7 +39,7 @@ function harness(wda) {
     flush: () => new Promise((resolve) => setImmediate(resolve)),
   };
 }
-void test("viewer readiness expires and cannot be sustained by an idle server", async () => {
+test("viewer readiness expires and cannot be sustained by an idle server", async () => {
   const h = harness();
   h.portal.receive({ clientId: "a", ready: false });
   await h.flush();
@@ -57,7 +57,7 @@ void test("viewer readiness expires and cannot be sustained by an idle server", 
   await h.advance(2000);
   assert.equal(h.calls.length, 3);
 });
-void test("one ready viewer is sufficient; stale viewers are removed", async () => {
+test("one ready viewer is sufficient; stale viewers are removed", async () => {
   const h = harness();
   h.portal.receive({ clientId: "ready", ready: true });
   await h.flush();
@@ -70,7 +70,7 @@ void test("one ready viewer is sufficient; stale viewers are removed", async () 
   assert.equal(h.calls.at(-1)[2].ready, false);
   h.portal.stop();
 });
-void test("slow upstream does not overlap requests or delay receiving presence", async () => {
+test("slow upstream does not overlap requests or delay receiving presence", async () => {
   let finish;
   const h = harness(
     () =>
@@ -87,7 +87,7 @@ void test("slow upstream does not overlap requests or delay receiving presence",
   await h.advance(2000);
   assert.equal(h.calls.length, 1);
 });
-void test("old helpers back off without preventing an eventual upgrade", async () => {
+test("old helpers back off without preventing an eventual upgrade", async () => {
   const h = harness(() => {
     throw Object.assign(new Error("old helper"), { code: "unknown command" });
   });
@@ -103,7 +103,7 @@ void test("old helpers back off without preventing an eventual upgrade", async (
   assert.equal(h.calls.length, 2);
   h.portal.stop();
 });
-void test("presence schema rejects malformed or unexpected fields", async () => {
+test("presence schema rejects malformed or unexpected fields", async () => {
   assert.deepEqual(
     await Effect.runPromise(decodeRequest("presence", { clientId: "viewer", ready: true })),
     { clientId: "viewer", ready: true },
@@ -117,7 +117,7 @@ void test("presence schema rejects malformed or unexpected fields", async () => 
     await assert.rejects(Effect.runPromise(decodeRequest("presence", body)));
 });
 
-void test("readiness transitions publish immediately and changes during a send are coalesced", async () => {
+test("readiness transitions publish immediately and changes during a send are coalesced", async () => {
   let finish;
   const h = harness(
     () =>

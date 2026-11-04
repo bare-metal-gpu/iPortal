@@ -1,5 +1,5 @@
 import { loadIPortalHTML } from "../web-assets.mjs";
-import { test } from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -29,7 +29,7 @@ function trackedClasses() {
   };
 }
 
-void test("browser bootstrap supplies instance binding and request ID without prompts", async () => {
+test("browser bootstrap supplies instance binding and request ID without prompts", async () => {
   const html = loadIPortalHTML();
   const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
   const calls = [],
@@ -90,7 +90,7 @@ void test("browser bootstrap supplies instance binding and request ID without pr
   assert.ok(JSON.parse(ensure[1].body).requestId);
 });
 
-void test("native loading tracks queued input, reconnects and the first fallback frame", async () => {
+test("native loading tracks queued input, reconnects and the first fallback frame", async () => {
   const html = loadIPortalHTML();
   const messages = [],
     releases = [],
@@ -448,7 +448,7 @@ function mjpegPart(bytes) {
   ]);
 }
 
-void test("rotation cancels old gesture buffers and ignores stale geometry callbacks", async () => {
+test("rotation cancels old gesture buffers and ignores stale geometry callbacks", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -477,7 +477,7 @@ void test("rotation cancels old gesture buffers and ignores stale geometry callb
   assert.equal(h.run("inputEpoch"), streaming + 1, "steady frames retain the current gesture");
 });
 
-void test("settings blocks phone input across readiness changes and rejects stale callbacks", async () => {
+test("settings blocks phone input across readiness changes and rejects stale callbacks", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -508,7 +508,7 @@ void test("settings blocks phone input across readiness changes and rejects stal
   assert.equal(h.run("canInteract()"), true);
 });
 
-void test("native refreshes wake connection polling without overlapping requests", async () => {
+test("native refreshes wake connection polling without overlapping requests", async () => {
   let finish;
   const h = browserHarness({
     beforeStatus: () =>
@@ -529,7 +529,7 @@ void test("native refreshes wake connection polling without overlapping requests
   assert.equal(h.run("pollInFlight"), false);
 });
 
-void test("USB events immediately freeze input and stale status cannot undo a detach", async () => {
+test("USB events immediately freeze input and stale status cannot undo a detach", async () => {
   let hold = false,
     finish;
   const h = browserHarness({
@@ -574,7 +574,7 @@ void test("USB events immediately freeze input and stale status cannot undo a de
   await h.settle();
 });
 
-void test("USB reattachment invalidates old readiness, retains the frame and bypasses stale stream cooldown", async () => {
+test("USB reattachment invalidates old readiness, retains the frame and bypasses stale stream cooldown", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("startStream()");
@@ -602,7 +602,7 @@ void test("USB reattachment invalidates old readiness, retains the frame and byp
   assert.equal(h.draws.at(-1), 43);
 });
 
-void test("MJPEG parsing handles split headers/frames and rejects unbounded or malformed parts", async () => {
+test("MJPEG parsing handles split headers/frames and rejects unbounded or malformed parts", async () => {
   const h = browserHarness();
   await h.settle();
   const parser = h.run("new MjpegFrames()");
@@ -647,7 +647,7 @@ void test("MJPEG parsing handles split headers/frames and rejects unbounded or m
   assert.throws(() => h.run("new MjpegFrames()").push(Buffer.alloc(16385, 65)), /header/);
 });
 
-void test("MJPEG freezes its last presented frame, rejects stale decodes and recovers from silent stalls", async () => {
+test("MJPEG freezes its last presented frame, rejects stale decodes and recovers from silent stalls", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("startStream()");
@@ -701,7 +701,7 @@ void test("MJPEG freezes its last presented frame, rejects stale decodes and rec
   assert.equal(h.element("body").classList.contains("preserve-stream-frame"), false);
 });
 
-void test("native unlock restores CSS hit testing and real pointer handlers; device changes reject old readiness", async () => {
+test("native unlock restores CSS hit testing and real pointer handlers; device changes reject old readiness", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -743,7 +743,7 @@ void test("native unlock restores CSS hit testing and real pointer handlers; dev
   assert.equal(h.element("body").classList.contains("preserve-stream-frame"), false);
 });
 
-void test("hung action and receipt requests expire without retrying input or blocking the queue forever", async () => {
+test("hung action and receipt requests expire without retrying input or blocking the queue forever", async () => {
   let homes = 0;
   const h = browserHarness({
     fetchAction: (url, options) => {
@@ -770,7 +770,7 @@ void test("hung action and receipt requests expire without retrying input or blo
   assert.equal(h.run("pendingActions"), 0);
 });
 
-void test("Effect schemas reject malformed actions before device dispatch", async () => {
+test("Effect schemas reject malformed actions before device dispatch", async () => {
   for (const [
     name,
     body,
@@ -859,7 +859,7 @@ void test("Effect schemas reject malformed actions before device dispatch", asyn
   );
 });
 
-void test("pinch paths are simultaneous, preserve scale and stay on screen in portrait and landscape", () => {
+test("pinch paths are simultaneous, preserve scale and stay on screen in portrait and landscape", () => {
   for (const [width, height] of [
     [390, 844],
     [844, 390],
@@ -900,7 +900,7 @@ void test("pinch paths are simultaneous, preserve scale and stay on screen in po
   }
 });
 
-void test("native pinch adds deltas once, cancels stale tails and cannot also scroll", async () => {
+test("native pinch adds deltas once, cancels stale tails and cannot also scroll", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -961,7 +961,7 @@ void test("native pinch adds deltas once, cancels stale tails and cannot also sc
   assert.equal(pinches().at(-1).scale, 1.5, "early flush cannot replay or add its tail");
 });
 
-void test("Command-scroll zooms once per burst, latches its trackpad mode and Safari scales are cumulative", async () => {
+test("Command-scroll zooms once per burst, latches its trackpad mode and Safari scales are cumulative", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -1015,7 +1015,7 @@ void test("Command-scroll zooms once per burst, latches its trackpad mode and Sa
   );
 });
 
-void test("wheel bursts dispatch once and preserve click/long-press durations", async () => {
+test("wheel bursts dispatch once and preserve click/long-press durations", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -1055,7 +1055,7 @@ void test("wheel bursts dispatch once and preserve click/long-press durations", 
   assert.equal(gestures().at(-1).end, 600);
 });
 
-void test("portrait and landscape input stay in visible viewport coordinates", async () => {
+test("portrait and landscape input stay in visible viewport coordinates", async () => {
   for (const [width, height] of [
     [402, 874],
     [874, 402],
@@ -1112,7 +1112,7 @@ void test("portrait and landscape input stay in visible viewport coordinates", a
   }
 });
 
-void test("native scroll sends exactly one swipe in each direction and ignores momentum/cancelled tails", async () => {
+test("native scroll sends exactly one swipe in each direction and ignores momentum/cancelled tails", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -1182,7 +1182,7 @@ void test("native scroll sends exactly one swipe in each direction and ignores m
   );
 });
 
-void test("flushing scroll before another action cannot replay its remaining tail", async () => {
+test("flushing scroll before another action cannot replay its remaining tail", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -1204,7 +1204,7 @@ void test("flushing scroll before another action cannot replay its remaining tai
   );
 });
 
-void test("automatic browser binding blocks foreign origins and rebinding without CLI credentials", () => {
+test("automatic browser binding blocks foreign origins and rebinding without CLI credentials", () => {
   const request = (headers) => ({
     method: "POST",
     headers: { host: "localhost:7100", "content-type": "application/json", ...headers },
@@ -1227,7 +1227,7 @@ void test("automatic browser binding blocks foreign origins and rebinding withou
     assert.throws(() => checkRequest(request(headers), 7100, "instance"));
 });
 
-void test("queue removes cancelled work and prioritizes keepalive while preserving FIFO input order", async () => {
+test("queue removes cancelled work and prioritizes keepalive while preserving FIFO input order", async () => {
   const scheduler = createScheduler();
   const events = [];
   let release;
@@ -1251,7 +1251,7 @@ void test("queue removes cancelled work and prioritizes keepalive while preservi
   assert.deepEqual(events, ["keepalive", "first", "next"]);
 });
 
-void test("queue deadlines expire before dispatch, and capacity bounds backlog", async () => {
+test("queue deadlines expire before dispatch, and capacity bounds backlog", async () => {
   const scheduler = createScheduler({ maxQueued: 1 });
   let release,
     executed = false;
@@ -1278,7 +1278,7 @@ void test("queue deadlines expire before dispatch, and capacity bounds backlog",
   assert.equal(executed, false);
 });
 
-void test("maintenance gets its own deadline after the originating input is cancelled", async () => {
+test("maintenance gets its own deadline after the originating input is cancelled", async () => {
   const scheduler = createScheduler();
   const controller = new AbortController();
   controller.abort();
@@ -1304,7 +1304,7 @@ void test("maintenance gets its own deadline after the originating input is canc
   assert.equal(dispatched, true);
 });
 
-void test("receipts deduplicate concurrent/retried commands, survive restart and reject conflicting IDs", async () => {
+test("receipts deduplicate concurrent/retried commands, survive restart and reject conflicting IDs", async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-receipts-"));
   try {
     const file = path.join(scratch, "commands.json");
@@ -1339,7 +1339,7 @@ void test("receipts deduplicate concurrent/retried commands, survive restart and
   }
 });
 
-void test("pushed status wakes readiness without a poll and rejects old events/documents", async () => {
+test("pushed status wakes readiness without a poll and rejects old events/documents", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
@@ -1373,7 +1373,7 @@ void test("pushed status wakes readiness without a poll and rejects old events/d
   );
 });
 
-void test("physical attachment waits for fresh USB selection data before native capture preparation", async () => {
+test("physical attachment waits for fresh USB selection data before native capture preparation", async () => {
   let hold = false,
     finish;
   const h = browserHarness({
@@ -1406,7 +1406,7 @@ void test("physical attachment waits for fresh USB selection data before native 
   assert.equal(h.messages.at(-1).singleUsbDevice, true);
 });
 
-void test("editing keys preserve modifiers, ordering, composition and settings isolation", async () => {
+test("editing keys preserve modifiers, ordering, composition and settings isolation", async () => {
   const h = browserHarness();
   await h.settle();
   h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");

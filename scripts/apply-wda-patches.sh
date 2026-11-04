@@ -11,15 +11,13 @@ COORDINATES="$ROOT/scripts/wda-mirror-coordinates.patch"
 
 # Upgrade our old diagnostic namespace before checking patch revisions. These
 # exact strings belong to our additions, not to upstream WebDriverAgent.
-python3 - "$WDA/WebDriverAgentLib/Commands/FBTouchActionCommands.m" <<'PY'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-source = p.read_text()
-renamed = source.replace('// iphone-mirror: injects', '// iportal: injects').replace('errorWithDomain:@"iphone-mirror"', 'errorWithDomain:@"iportal"')
-if renamed != source:
-    p.write_text(renamed)
-PY
+bun - "$WDA/WebDriverAgentLib/Commands/FBTouchActionCommands.m" <<'JS'
+import fs from 'node:fs';
+const file = process.argv[2];
+const source = fs.readFileSync(file, 'utf8');
+const renamed = source.replaceAll('// iphone-mirror: injects', '// iportal: injects').replaceAll('errorWithDomain:@"iphone-mirror"', 'errorWithDomain:@"iportal"');
+if (source !== renamed) fs.writeFileSync(file, renamed);
+JS
 
 # Later patches modify earlier lines, so recognize the final state first.
 if git -C "$WDA" apply --reverse --check "$COORDINATES" 2>/dev/null; then

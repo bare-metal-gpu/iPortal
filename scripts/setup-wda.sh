@@ -9,10 +9,15 @@ BUILD="$ROOT/vendor/iportal-device-build"
 
 command -v xcodebuild >/dev/null || { echo "Xcode is required (install it from the App Store, open it once)."; exit 1; }
 
-UDID="${UDID:-$(node "$ROOT/iportal.mjs" devices --first || true)}"
+UDID="${UDID:-$(bun "$ROOT/iportal.mjs" devices --first || true)}"
 [ -n "$UDID" ] || { echo "No iPhone found. Plug it in via USB, unlock it and tap Trust."; exit 1; }
 
 TEAM="${1:-}"
+if [ -z "$TEAM" ]; then
+  for SAVED in "$ROOT/vendor/ios-signing-team" "$ROOT/vendor/mac-signing-team"; do
+    if [ -s "$SAVED" ]; then TEAM="$(cat "$SAVED")"; break; fi
+  done
+fi
 if [ -z "$TEAM" ]; then
   # The Team ID is the OU of your "Apple Development" signing certificate.
   TEAM="$(security find-certificate -c "Apple Development" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*OU *= *\([A-Z0-9]\{10\}\).*/\1/p' | head -1)"
@@ -31,7 +36,7 @@ bash "$ROOT/scripts/build-iportal-ui.sh" "$WDA"
 
 # Free accounts need a team-specific identifier. Handle both fresh upstream
 # checkouts and previously branded runners, including repeat setup runs.
-python3 "$ROOT/scripts/configure-ios.py" "$WDA/WebDriverAgent.xcodeproj/project.pbxproj" "$TEAM"
+bun "$ROOT/scripts/configure-ios.ts" "$WDA/WebDriverAgent.xcodeproj/project.pbxproj" "$TEAM"
 
 echo "→ Building for $UDID with team $TEAM (first build takes a few minutes)"
 LOG="$ROOT/vendor/iportal-device-build.log"
@@ -41,10 +46,10 @@ if ! xcodebuild build-for-testing \
   -destination "id=$UDID" \
   -derivedDataPath "$BUILD" \
   -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
-  DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="Apple Development" >"$LOG" 2>&1; then
+  IPORTAL_BUN_PATH="$(command -v bun)" DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="Apple Development" >"$LOG" 2>&1; then
   grep -E "error:" "$LOG" | sed 's/^.*error: /  ! /' | sort -u
   if grep -q "No Accounts" "$LOG"; then
-    echo "Sign in to Xcode: Xcode → Settings → Accounts → + → Apple ID, then run npm run setup again."
+    echo "Sign in to Xcode: Xcode → Settings → Accounts → + → Apple ID, then run bun run setup again."
   else
     echo "Build failed (full log: vendor/iportal-device-build.log)."
   fi
@@ -57,6 +62,7 @@ codesign --verify --strict "$RUNNER"
 [ -d "$RUNNER/iPortalLaunch.storyboardc" ] || { echo "Runner launch screen was not embedded."; exit 1; }
 codesign --verify --strict "$RUNNER/Frameworks/iPortalUI.framework"
 xcrun otool -L "$RUNNER/iPortalRunner-Runner" | grep -q '@executable_path/Frameworks/iPortalUI.framework/iPortalUI' || { echo "Runner status screen was not linked."; exit 1; }
+printf '%s\n' "$TEAM" > "$ROOT/vendor/ios-signing-team"
 
 cat <<MSG
 
@@ -66,5 +72,5 @@ On your iPhone, once:
   1. Settings → Privacy & Security → Developer Mode → On (it restarts)
   2. After the first launch: Settings → General → VPN & Device Management → trust your Apple ID
 
-Then run: npm start
+Then run: bun start
 MSG

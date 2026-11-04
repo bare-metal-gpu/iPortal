@@ -11,7 +11,7 @@ PLIST="$WDA/WebDriverAgentRunner/Info.plist"
 
 # XCTRunner generates its own Info.plist. Set the visible name in the existing
 # icon post-action, after its rollback backup and before its re-signing step.
-node --input-type=module - "$WDA/Scripts/embed-runner-icon.sh" <<'JS'
+bun - "$WDA/Scripts/embed-runner-icon.sh" <<'JS'
 import fs from 'node:fs';
 const file = process.argv[2];
 const source = fs.readFileSync(file, 'utf8').replaceAll('iPhone Portal', 'iPortal');
@@ -28,4 +28,4 @@ if (!source.includes(marker)) {
   fs.writeFileSync(file, source.replace(anchor, branding + anchor));
 } else { fs.writeFileSync(file, source); }
 JS
-node "$ROOT/scripts/install-iportal-status.mjs" "$WDA"
+bun "$ROOT/scripts/install-iportal-status.mjs" "$WDA"

@@ -1,5 +1,5 @@
 // A fake iPhone for development without a device: a fake usbmuxd socket plus a fake WebDriverAgent.
-// Usage: node test/fake-iphone.mjs [frame.jpg]   then   USBMUXD_SOCKET_ADDRESS=/tmp/fake-usbmuxd.sock npm start
+// Usage: bun test/fake-iphone.mjs [frame.jpg]   then   USBMUXD_SOCKET_ADDRESS=/tmp/fake-usbmuxd.sock bun start
 import http from "node:http";
 import net from "node:net";
 import fs from "node:fs";
@@ -308,7 +308,7 @@ export function startFakeIphone({
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { log } = startFakeIphone({ frame: process.argv[2] });
-  console.log(`fake iPhone up. Run: USBMUXD_SOCKET_ADDRESS=${SOCKET} npm start`);
+  console.log(`fake iPhone up. Run: USBMUXD_SOCKET_ADDRESS=${SOCKET} bun start`);
   setInterval(() => {
     while (log.length) console.log(JSON.stringify(log.shift()));
   }, 200);

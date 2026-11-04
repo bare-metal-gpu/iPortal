@@ -48,7 +48,7 @@ identity and bundle identity remain unchanged.
 
 ## Verification
 
-`npm run verify` exercises shared prompts, denial, restriction, revocation,
+`bun run verify` exercises shared prompts, denial, restriction, revocation,
 restoration, optional microphone access, capture-update ordering/cancellation,
 and the Settings input gate. These tests inject authorization states; they do not
 change the developer machine's privacy settings.

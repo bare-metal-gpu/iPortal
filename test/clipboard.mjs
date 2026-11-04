@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "bun:test";
 import { Effect } from "effect";
 import { createClipboard, validateClipboard } from "../clipboard.mjs";
 import { decodeRequest } from "../schemas.mjs";
 import { checkRequest } from "../server.mjs";
 const encode = (text) => Buffer.from(text).toString("base64");
 
-void test("clipboard validates Unicode, URLs, base64 and bounded payloads", async () => {
+test("clipboard validates Unicode, URLs, base64 and bounded payloads", async () => {
   const payload = { format: "text", content: encode("iPortal 👋 café\n日本語") };
   assert.deepEqual(validateClipboard(payload), payload);
   assert.deepEqual(await Effect.runPromise(decodeRequest("clipboard-write", payload)), payload);
@@ -30,7 +30,7 @@ void test("clipboard validates Unicode, URLs, base64 and bounded payloads", asyn
   );
 });
 
-void test("clipboard does not replay failed operations or return invalid/empty data as content", async () => {
+test("clipboard does not replay failed operations or return invalid/empty data as content", async () => {
   let calls = 0;
   /** @type {Record<string, any>} */
   let value = { empty: true };
@@ -59,7 +59,7 @@ void test("clipboard does not replay failed operations or return invalid/empty d
   assert.equal(calls, 0, "invalid payload never reaches phone");
 });
 
-void test("native clipboard callers cannot use a stale server instance", () => {
+test("native clipboard callers cannot use a stale server instance", () => {
   const headers = {
     host: "127.0.0.1:7100",
     "content-type": "application/json",
@@ -70,7 +70,7 @@ void test("native clipboard callers cannot use a stale server instance", () => {
   checkRequest({ method: "POST", headers }, 7100, "new");
 });
 
-void test("keyboard schema validates keys and modifier combinations", async () => {
+test("keyboard schema validates keys and modifier combinations", async () => {
   assert.equal(
     (
       await Effect.runPromise(

@@ -12,8 +12,8 @@ Managed `/api/health` responses include the selected `pinnedUdid` and launch `ow
 For CLI automation with explicit ports, run a separate process per UDID:
 
 ```bash
-node iportal.mjs --udid <first-udid> --port 7100 --wda-port 8100 --mjpeg-port 9100 --no-open
-node iportal.mjs --udid <second-udid> --port 7101 --wda-port 8101 --mjpeg-port 9101 --no-open --device-kind iPad
+bun iportal.mjs --udid <first-udid> --port 7100 --wda-port 8100 --mjpeg-port 9100 --no-open
+bun iportal.mjs --udid <second-udid> --port 7101 --wda-port 8101 --mjpeg-port 9101 --no-open --device-kind iPad
 ```
 
 Each device can have only one owning server. Queues, inspection observations,
@@ -139,7 +139,7 @@ Supply the same `requestId` when recovering a lost input reply. Concurrent and s
 curl -s http://127.0.0.1:7100/api/screenshot \
   -H 'Content-Type: application/json' -d '{}' > screenshot.json
 # Inspect mimeType before choosing the extension.
-node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("screenshot.json")); if(!r.ok) throw Error(r.error); fs.writeFile("screen."+r.value.mimeType.split("/")[1],Buffer.from(r.value.data,"base64"));'
+bun -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("screenshot.json")); if(!r.ok) throw Error(r.error); fs.writeFile("screen."+r.value.mimeType.split("/")[1],Buffer.from(r.value.data,"base64"));'
 ```
 
 ## Keep-awake
@@ -166,23 +166,23 @@ Methods:
 - `hid` (default): sends Consumer-page AC Idle Keep Alive (`page:12, usage:688`) through the patched acknowledged event-stream route `/wda/mirror/keepalive`. Older helpers without that route, or reporting it unsupported, fall back to WDA's slower `performIoHidEvent`; other errors stop the lease. Avoids volume/button presses. Verified on an iPhone 16 Pro running iOS 26.7.1 with 30-second Auto-Lock; verify effectiveness on other iOS/device combinations. There is no automatic fallback to volume presses.
 - `volume`: explicit fallback sending volume-up then volume-down. May display the volume HUD, affect camera behavior, and change the final volume at its limits. If the second press fails, the first press is not undone. The fallback has automated stub coverage but was not used for the real-phone keep-awake verification.
 
-The old WDA route takes about 5.24 seconds because Apple's daemon waits five seconds for a button confirmation before implicitly reporting success. The patched route uses synthesized event-stream playback with a shorter confirmation interval and waits for its daemon callback. Five final server pulse measurements on the same phone had a median of 0.67 seconds, roughly 87% lower latency than the legacy route. End-to-end HTTP renewal requests had a median of 0.70 seconds. This requires rebuilding the helper with `npm run setup`. A completed callback is not proof that application animations or accessibility state have settled.
+The old WDA route takes about 5.24 seconds because Apple's daemon waits five seconds for a button confirmation before implicitly reporting success. The patched route uses synthesized event-stream playback with a shorter confirmation interval and waits for its daemon callback. Five final server pulse measurements on the same phone had a median of 0.67 seconds, roughly 87% lower latency than the legacy route. End-to-end HTTP renewal requests had a median of 0.70 seconds. This requires rebuilding the helper with `bun run setup`. A completed callback is not proof that application animations or accessibility state have settled.
 
 ## Verification
 
-`npm test` covers Effect schema validation, browser binding, queue priority/deadlines/cancellation, persisted receipt recovery, real HTTP regression checks, fake USB forwarding, element actions, observations, waits, and device pinning. Unimplemented fake-WDA routes fail explicitly. On macOS it also compiles the exact native input-validation and rotation helpers and verifies fresh/repeated/upgrade/incompatible patch installation. Native tests do not simulate physical touchscreen behavior. On the connected iPhone, lookup, state, screenshots, waits, an observation-guarded tap, targeted typing, a portrait gesture, and duplicate-request recovery passed. Rotation geometry has native contract coverage for all four orientations. A physical iPhone touch recorder verified 16 cases across portrait, both landscape directions and a return to portrait: off-center taps, horizontal/vertical drags and off-center two-finger pinches. The largest observed endpoint error was 0.21 points; converted points also matched XCTest’s own coordinate conversion. Upside-down portrait remains covered by native contract tests rather than a physical iPhone check. Seven-attribute lookup measured a 199 ms median using a selector’s expanded response versus 603 ms with separate ID-based attribute reads (three pairs on the same Settings navigation element).
+`bun run test` covers Effect schema validation, browser binding, queue priority/deadlines/cancellation, persisted receipt recovery, real HTTP regression checks, fake USB forwarding, element actions, observations, waits, and device pinning. Unimplemented fake-WDA routes fail explicitly. On macOS it also compiles the exact native input-validation and rotation helpers and verifies fresh/repeated/upgrade/incompatible patch installation. Native tests do not simulate physical touchscreen behavior. On the connected iPhone, lookup, state, screenshots, waits, an observation-guarded tap, targeted typing, a portrait gesture, and duplicate-request recovery passed. Rotation geometry has native contract coverage for all four orientations. A physical iPhone touch recorder verified 16 cases across portrait, both landscape directions and a return to portrait: off-center taps, horizontal/vertical drags and off-center two-finger pinches. The largest observed endpoint error was 0.21 points; converted points also matched XCTest’s own coordinate conversion. Upside-down portrait remains covered by native contract tests rather than a physical iPhone check. Seven-attribute lookup measured a 199 ms median using a selector’s expanded response versus 603 ms with separate ID-based attribute reads (three pairs on the same Settings navigation element).
 
 For an explicitly opted-in real phone test, unlock and connect the phone, then run:
 
 ```bash
-node scripts/test-phone.mjs http://127.0.0.1:7100 /absolute/path/to/local-test-output
+bun scripts/test-phone.mjs http://127.0.0.1:7100 /absolute/path/to/local-test-output
 ```
 
 This opens Settings, briefly goes Home, returns to Settings, and changes no settings. It checks lookup, attributes, hierarchy, full/element screenshots, and waits for appearance, disappearance, attribute equality and timeout. The optional output directory receives screenshots and a report. Keep that output out of Git.
 
 ## Reproducing touch latency measurements
 
-`scripts/benchmark-touch.py` is an explicitly opted-in real-phone test requiring Python and Pillow. With the phone unlocked and connected, run `python scripts/benchmark-touch.py /absolute/path/report.json`. It opens Settings, navigates to Display & Brightness and back, and performs small alternating scrolls. It changes no settings and enables keep-awake for 30 minutes.
+`scripts/benchmark-touch.ts` is an explicitly opted-in real-phone test using Bun and a native Swift image sampler (built automatically with Xcode). With the phone unlocked and connected, run `bun scripts/benchmark-touch.ts /absolute/path/report.json`. The sampler uses CoreGraphics rather than the historical Pillow implementation; compare new reports within the same sampler version. It opens Settings, navigates to Display & Brightness and back, and performs small alternating scrolls. It changes no settings and enables keep-awake for 30 minutes.
 
 The report separates HTTP completion from the first changed central-region MJPEG frame, using the host monotonic clock. It waits for quiet video before each sample to avoid counting residual scroll inertia. Video timing includes capture and transport delay; it is not a direct panel measurement or a measurement of the native USB preview. Mouse recording time is excluded. Raw drag duration remains part of playback. Frame samples and screenshots are not saved by this benchmark.
 

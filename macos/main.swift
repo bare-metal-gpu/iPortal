@@ -1,5 +1,5 @@
 // Native device windows for iPortal: no chrome, with a slim hover toolbar.
-// Each window owns a iportal.mjs process pinned to one iPhone or iPad. Video comes from direct USB capture
+// Each window owns a bundled server pinned to one iPhone or iPad. Video comes from direct USB capture
 // (Capture.swift), with a transparent WKWebView on top that turns clicks and keys into touches. If the capture
 // isn't available, the web view shows WebDriverAgent's MJPEG stream instead.
 import Cocoa
@@ -10,14 +10,13 @@ let barHeight: CGFloat = 30
 let barGap: CGFloat = 6
 let defaultPhoneHeight: CGFloat = 844
 let preferredPort = Int(ProcessInfo.processInfo.environment["IPORTAL_PORT"] ?? "") ?? 7100
-let info = Bundle.main.infoDictionary ?? [:]
-let repoPath = info["IPortalRepoPath"] as? String ?? FileManager.default.currentDirectoryPath
-let nodePath = info["IPortalNodePath"] as? String ?? "/opt/homebrew/bin/node"
+let stateURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/iPortal", isDirectory: true)
+let serverURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/iportal-server")
 let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/iPortal.log")
 // Opt-in, monotonic milestones; never log frames or input contents.
 private let traceQueue = DispatchQueue(label: "iportal.reconnect-trace")
 func iportalTrace(_ event: String, _ fields: [String: Any] = [:]) {
-    guard FileManager.default.fileExists(atPath: repoPath + "/vendor/trace-reconnect") else { return }
+    guard FileManager.default.fileExists(atPath: stateURL.appendingPathComponent("trace-reconnect").path) else { return }
     var record = fields
     record["event"] = event; record["uptime"] = ProcessInfo.processInfo.systemUptime
     record["wallMs"] = Date().timeIntervalSince1970 * 1000
@@ -25,7 +24,7 @@ func iportalTrace(_ event: String, _ fields: [String: Any] = [:]) {
     data.append(10)
     let payload = data
     traceQueue.async {
-        let path = repoPath + "/vendor/reconnect-trace.jsonl"
+        let path = stateURL.appendingPathComponent("reconnect-trace.jsonl").path
         if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
         guard let file = FileHandle(forWritingAtPath: path) else { return }
         defer { try? file.close() }
@@ -1095,15 +1094,18 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     func startServer() {
         guard mirroringActive, !terminating, !serverStopping, server?.isRunning != true else { return }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: nodePath)
+        p.executableURL = serverURL
         guard let target = requestedDeviceUDID else { return }
         serverOwner = UUID().uuidString
-        p.arguments = ["iportal.mjs", "--no-open", "--managed", "--owner", serverOwner,
+        p.arguments = ["--no-open", "--managed", "--owner", serverOwner,
                        "--port", "\(preferredPort)", "--wda-port", "0", "--mjpeg-port", "0",
                        "--udid", target, "--device-kind", kind.rawValue]
-        p.currentDirectoryURL = URL(fileURLWithPath: repoPath)
+        do { try FileManager.default.createDirectory(at: stateURL, withIntermediateDirectories: true) }
+        catch { NSLog("iPortal: couldn't create runtime directory: \(error)"); return }
+        p.currentDirectoryURL = stateURL
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "\((nodePath as NSString).deletingLastPathComponent):/usr/bin:/bin:/usr/sbin:/sbin:\(env["PATH"] ?? "")"
+        env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["IPORTAL_STATE_DIR"] = stateURL.path
         p.environment = env
         let sessionLog = logURL.deletingLastPathComponent().appendingPathComponent("iPortal-\(target).log")
         if !FileManager.default.fileExists(atPath: sessionLog.path) {
@@ -1162,7 +1164,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         } catch {
             serverRetryAt = ProcessInfo.processInfo.systemUptime + serverBackoff
             serverBackoff = min(30, serverBackoff * 2)
-            NSLog("iPortal: couldn't start node: \(error)")
+            NSLog("iPortal: couldn't start server: \(error)")
         }
     }
 

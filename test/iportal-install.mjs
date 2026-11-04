@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,11 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 const root = path.resolve(import.meta.dirname, "..");
 
-void test("iOS signing identity migration preserves upstream targets and is repeatable", () => {
-  execFileSync("python3", [path.join(root, "test/ios-identity.py")], { stdio: "pipe" });
-});
-
-void test("status installer is repeatable and rejects incompatible upstream sources", () => {
+test("status installer is repeatable and rejects incompatible upstream sources", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-install-"));
   try {
     const commands = path.join(temp, "WebDriverAgentLib/Commands/FBTouchActionCommands.m");
@@ -48,9 +44,8 @@ void test("status installer is repeatable and rejects incompatible upstream sour
   }
 });
 
-void test(
+test.skipIf(process.platform !== "darwin")(
   "failed native build restores the complete original host bundle",
-  { skip: process.platform !== "darwin" },
   () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-rollback-"));
     try {

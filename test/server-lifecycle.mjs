@@ -1,10 +1,28 @@
-import { test } from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { Effect, Stream } from "effect";
-import { openVideoStream } from "../server.mjs";
+import { openVideoStream, readBody } from "../server.mjs";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("Bun request bodies enforce actual bytes, malformed JSON and cancellation", async () => {
+  const signal = new AbortController();
+  const request = (body) => new Request("http://localhost/test", { method: "POST", body });
+  assert.deepEqual(await readBody(request('{"value":1}'), signal.signal), { value: 1 });
+  await assert.rejects(readBody(request("not json"), signal.signal), /Invalid JSON/);
+  await assert.rejects(readBody(request("123456789"), signal.signal, 8), /size limit/);
+  let cancelled = false;
+  const stream = new ReadableStream({
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const pending = readBody(request(stream), signal.signal);
+  signal.abort(new Error("owner closed"));
+  await assert.rejects(pending, /owner closed/);
+  assert.ok(cancelled, "cancellation releases the request reader");
+});
 async function upstream(handler) {
   const sockets = new Set();
   const requestedSockets = new Set();
@@ -43,7 +61,7 @@ async function assertReleased(source) {
   assert.equal(source.sockets.size, 0, "upstream socket released");
 }
 
-void test("video connection deadline closes an upstream that never sends headers", async () => {
+test("video connection deadline closes an upstream that never sends headers", async () => {
   const source = await upstream(() => {});
   try {
     const started = performance.now();
@@ -55,7 +73,7 @@ void test("video connection deadline closes an upstream that never sends headers
   }
 });
 
-void test("silent video read stalls terminate, release the socket and allow reconnect", async () => {
+test("silent video read stalls terminate, release the socket and allow reconnect", async () => {
   let requests = 0;
   const source = await upstream((_req, res) => {
     res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame" });
@@ -73,7 +91,7 @@ void test("silent video read stalls terminate, release the socket and allow reco
   }
 });
 
-void test("downstream cancellation releases an active video stream immediately", async () => {
+test("downstream cancellation releases an active video stream immediately", async () => {
   const source = await upstream((_req, res) => {
     res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame" });
     res.write("frame");
@@ -86,7 +104,7 @@ void test("downstream cancellation releases an active video stream immediately",
   }
 });
 
-void test("connection deadline does not truncate a healthy long-lived stream", async () => {
+test("connection deadline does not truncate a healthy long-lived stream", async () => {
   const source = await upstream((_req, res) => {
     res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame" });
     res.flushHeaders();

@@ -69,7 +69,7 @@ coordinates; rotation does not trigger a reconnect.
 
 ## Verification
 
-`npm test` includes two simulated devices behind the same USB multiplexer. It checks
+`bun run test` includes two simulated devices behind the same USB multiplexer. It checks
 independent HTTP/tunnel ports, owner/UDID health checks, separate receipts, iPad
 coordinate scaling, two streams, locking one device, cancelling queued input on
 detach, reattachment with a new USB ID, closing/reopening, and crash/lease recovery

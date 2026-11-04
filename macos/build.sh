@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/iPortal.app"
 BUILD="$ROOT/vendor/mac-build"
-NODE="$(command -v node)" || { echo "Node 22.19+ is required."; exit 1; }
+BUN="$(command -v bun)" || { echo "Bun 1.4.4+ is required."; exit 1; }
 mkdir -p "$ROOT/vendor" "$ROOT/dist"
 # Reuse a selected development identity across local rebuilds so macOS can
 # recognize the background helper after an update. Never store private keys.
@@ -20,7 +20,7 @@ fi
 echo "→ Building iPortal with Xcode"
 if ! xcodebuild -project "$ROOT/macos/iPortal.xcodeproj" -scheme iPortal \
   -configuration Release -destination 'platform=macOS' -derivedDataPath "$BUILD" \
-  IPORTAL_REPO_PATH="$ROOT" IPORTAL_NODE_PATH="$NODE" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$SIGN_IDENTITY" DEVELOPMENT_TEAM="$SIGN_TEAM" build >"$ROOT/vendor/mac-build.log" 2>&1; then
+  IPORTAL_BUN_PATH="$BUN" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$SIGN_IDENTITY" DEVELOPMENT_TEAM="$SIGN_TEAM" build >"$ROOT/vendor/mac-build.log" 2>&1; then
   tail -80 "$ROOT/vendor/mac-build.log"
   exit 1
 fi

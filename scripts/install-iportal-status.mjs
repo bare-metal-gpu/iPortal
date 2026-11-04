@@ -21,7 +21,13 @@ if (
 )
   throw new Error("Unsupported WDA source; cannot install iPortal status screen");
 fs.mkdirSync(destination, { recursive: true });
-for (const file of ["iPortalLaunch.storyboard", "iPortalUI.m", "link-host.py", "embed.sh"])
+for (const file of [
+  "iPortalLaunch.storyboard",
+  "iPortalUI.m",
+  "link-host.ts",
+  "configure-host.ts",
+  "embed.sh",
+])
   fs.copyFileSync(path.join(root, "ios", file), path.join(destination, file));
 fs.copyFileSync(
   path.join(root, "ios/FBIPortalStatus.h"),

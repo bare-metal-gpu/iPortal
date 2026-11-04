@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUN="${IPORTAL_BUN_PATH:-$(command -v bun)}"
+OUTPUT="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/iportal-server"
+"$BUN" "$ROOT/scripts/build-server.ts" "$OUTPUT"
+codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$OUTPUT"
+# Keep signed device products beside the server. __TESTROOT__ in xctestrun
+# remains relative to Build/Products, so moving the Mac app is safe.
+DEVICE="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Device"
+rm -rf "$DEVICE"
+PRODUCTS="$ROOT/vendor/iportal-device-build/Build/Products"
+if [ -d "$PRODUCTS" ]; then
+  mkdir -p "$DEVICE/Build"
+  ditto "$PRODUCTS" "$DEVICE/Build/Products"
+fi

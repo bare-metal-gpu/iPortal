@@ -1,7 +1,6 @@
-import http from "node:http";
 import { Cause, Effect, Layer, Stream } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/http";
-import { NodeHttpServer } from "@effect/platform-node";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+import { BunHttpServer } from "@effect/platform-bun";
 import { apiError } from "./errors.mjs";
 import { decodeRequest, RequestSchemas } from "./schemas.mjs";
 import { interFont } from "./web-assets.mjs";
@@ -61,40 +60,40 @@ export function checkRequest(request, port, instanceId) {
   }
 }
 
-function readBody(req, signal, limit = 1024 * 1024) {
-  return new Promise((resolve, reject) => {
-    let length = 0;
-    const chunks = [];
-    const cleanup = () => signal.removeEventListener("abort", abort);
-    const abort = () => {
-      cleanup();
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) return abort();
-    req.on("data", (chunk) => {
-      length += chunk.length;
-      if (length > limit) {
-        chunks.length = 0;
-        cleanup();
-        reject(apiError("Request body exceeds size limit", 413));
-      } else chunks.push(chunk);
-    });
-    req.on("error", (error) => {
-      cleanup();
-      reject(error);
-    });
-    req.on("aborted", abort);
-    req.on("end", () => {
-      cleanup();
-      if (length > limit) return;
-      try {
-        resolve(length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {});
-      } catch {
-        reject(apiError("Invalid JSON body"));
-      }
-    });
-  });
+/** @param {Request} req @param {AbortSignal} signal */
+export async function readBody(req, signal, limit = 1024 * 1024) {
+  const lifetime = AbortSignal.any([signal, req.signal, AbortSignal.timeout(10000)]);
+  lifetime.throwIfAborted();
+  if (Number(req.headers.get("content-length")) > limit)
+    throw apiError("Request body exceeds size limit", 413);
+  const reader = req.body?.getReader();
+  if (!reader) return {};
+  const chunks = [];
+  let length = 0;
+  const abort = () => {
+    void reader.cancel(lifetime.reason).catch(() => {});
+  };
+  lifetime.addEventListener("abort", abort, { once: true });
+  try {
+    while (true) {
+      lifetime.throwIfAborted();
+      const { done, value } = await reader.read();
+      lifetime.throwIfAborted();
+      if (done) break;
+      length += value.byteLength;
+      if (length > limit) throw apiError("Request body exceeds size limit", 413);
+      chunks.push(value);
+    }
+    try {
+      return length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+    } catch {
+      throw apiError("Invalid JSON body");
+    }
+  } finally {
+    lifetime.removeEventListener("abort", abort);
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 // The handshake and each idle read are bounded independently. A permanent
@@ -227,49 +226,38 @@ export function startServer({
     );
 
   const routes = HttpRouter.add("*", "/*", handler);
-  const live = HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-    Layer.provide(
-      NodeHttpServer.layer(
-        () => {
-          const server = http.createServer({
-            requestTimeout: 10000,
-            headersTimeout: 10000,
-            connectionsCheckingInterval: 1000,
-          });
-          server.once("listening", () => {
-            const address = server.address();
-            if (!address || typeof address === "string")
-              throw new Error("Missing HTTP listener address");
-            boundPort = address.port;
-            onListening?.(boundPort);
-          });
-          return server;
-        },
-        { port, host: "127.0.0.1" },
-      ),
-    ),
-  );
-  return Effect.runFork(
-    Layer.launch(live).pipe(
+  const launch = (listenPort) => {
+    const listener = Layer.effect(
+      HttpServer.HttpServer,
+      Effect.gen(function* () {
+        const server = yield* BunHttpServer.make({
+          port: listenPort,
+          hostname: "127.0.0.1",
+          // SSE supplies heartbeats; video has its own shorter stall deadline.
+          idleTimeout: 30,
+          maxRequestBodySize: 6 * 1024 * 1024,
+        });
+        if (!("port" in server.address)) throw new Error("Missing HTTP listener address");
+        boundPort = server.address.port;
+        onListening?.(boundPort);
+        return server;
+      }),
+    ).pipe(Layer.provideMerge(BunHttpServer.layerHttpServices));
+    const live = HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+      Layer.provide(listener),
+    );
+    return Layer.launch(live).pipe(
       Effect.catchCause((cause) =>
-        Effect.sync(() => {
-          if (fallbackPort && port !== 0 && /EADDRINUSE/.test(Cause.pretty(cause))) {
-            startServer({
-              port: 0,
-              instanceId,
-              html,
-              mjpeg,
-              dispatch,
-              statusEvents,
-              onListening,
-              identity,
-            });
-            return;
-          }
-          console.error("Could not start mirror server:", Cause.pretty(cause));
-          process.exit(1);
-        }),
+        fallbackPort &&
+        listenPort !== 0 &&
+        /EADDRINUSE|(?:address|port \d+).*in use/i.test(Cause.pretty(cause))
+          ? launch(0)
+          : Effect.sync(() => {
+              console.error("Could not start mirror server:", Cause.pretty(cause));
+              process.exit(1);
+            }),
       ),
-    ),
-  );
+    );
+  };
+  return Effect.runFork(launch(port));
 }

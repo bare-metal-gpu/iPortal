@@ -1,3 +1,4 @@
+import { serverCommand, runtimeEnvironment } from "./server-command.mjs";
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -8,11 +9,21 @@ import { startFakeIphone, SOCKET } from "./fake-iphone.mjs";
 const fake = startFakeIphone({ guardedTouch: true });
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-guarded-"));
 const server = spawn(
-  process.execPath,
-  ["iportal.mjs", "--port", "7199", "--wda-port", "18200", "--mjpeg-port", "19200", "--no-open"],
+  serverCommand[0],
+  [
+    ...serverCommand.slice(1),
+    "--port",
+    "7199",
+    "--wda-port",
+    "18200",
+    "--mjpeg-port",
+    "19200",
+    "--no-open",
+  ],
   {
+    cwd: scratch,
     env: {
-      ...process.env,
+      ...runtimeEnvironment(scratch),
       USBMUXD_SOCKET_ADDRESS: SOCKET,
       IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
     },
