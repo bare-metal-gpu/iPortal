@@ -78,8 +78,25 @@ struct CaptureSessionTests {
             cancelledEvents.add("start")
             return true
         }, completion: { _ in cancelledEvents.add("ready") })
+        CaptureSessionExecutor.update(cancelled, key: "default") { cancelledEvents.add("audio") }
         drain()
         precondition(cancelledEvents.all == ["stop"])
+
+        // Permission changes must serialize behind session configuration. A
+        // later revoke removes audio before another operation can use it.
+        let audioLifetime = CaptureLifetime(), audioEvents = Events()
+        let audioEntered = DispatchSemaphore(value: 0), audioRelease = DispatchSemaphore(value: 0)
+        CaptureSessionExecutor.start(audioLifetime, operation: {
+            audioEvents.add("start")
+            audioEntered.signal(); wait(audioRelease, "Audio test did not release configuration")
+            return true
+        }, completion: { _ in audioEvents.add("ready") })
+        wait(audioEntered, "Audio test did not start")
+        CaptureSessionExecutor.update(audioLifetime, key: "default") { audioEvents.add("allow") }
+        CaptureSessionExecutor.update(audioLifetime, key: "default") { audioEvents.add("deny") }
+        precondition(audioEvents.all == ["start"])
+        audioRelease.signal(); drain()
+        precondition(audioEvents.all == ["start", "ready", "allow", "deny"])
 
         // A start already in the queue must be skipped when canceled behind a
         // different session's blocking operation.

@@ -45,39 +45,19 @@ enum CaptureSessionExecutor {
         }
     }
 
+    static func update(_ lifetime: CaptureLifetime, key: String, operation: @escaping @Sendable () -> Void) {
+        queue(for: key).async {
+            guard !lifetime.isCancelled else { return }
+            operation()
+        }
+    }
+
     static func stop(_ lifetime: CaptureLifetime, key: String = "default", teardown: @escaping @Sendable () -> Void) {
         lifetime.cancel()
         queue(for: key).async(execute: teardown)
     }
 }
 // END TESTABLE CAPTURE EXECUTOR
-
-@MainActor
-private enum CapturePermissions {
-    static var pending: Task<(Bool, Bool), Never>?
-    static func access(_ type: AVMediaType) async -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: type) {
-        case .authorized: return true
-        case .notDetermined:
-            return await withCheckedContinuation { continuation in
-                AVCaptureDevice.requestAccess(for: type) { continuation.resume(returning: $0) }
-            }
-        default: return false
-        }
-    }
-    static func request() async -> (Bool, Bool) {
-        if let pending { return await pending.value }
-        let task = Task { @MainActor in
-            let video = await access(.video)
-            let audio = video ? await access(.audio) : false
-            return (video, audio)
-        }
-        pending = task
-        let result = await task.value
-        pending = nil
-        return result
-    }
-}
 
 // Retain only the newest frame. Presentation and its geometry consume the same
 // sample; a busy main queue drops superseded frames instead of adding latency.
@@ -169,7 +149,9 @@ final class PhoneCapture {
     var connectedDevices: () -> [IPortalUSBDevice] = { [] }
     let session = AVCaptureSession()
     let layer: AVSampleBufferDisplayLayer
-    let audio = AVCaptureAudioPreviewOutput()
+    private let audio = AVCaptureAudioPreviewOutput()
+    private var audioEnabled = false
+    private var preferredVolume: Float = 1
     var onSize: ((CGSize) -> Void)?
     var onFailure: (() -> Void)?
     var onFrame: (() -> Void)?
@@ -199,7 +181,8 @@ final class PhoneCapture {
         frames = FrameStore(lifetime: lifetime)
         layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        audio.volume = min(1, max(0, audioVolume))
+        preferredVolume = min(1, max(0, audioVolume))
+        audio.volume = 0
         frames.observeFrames { [weak self] in
             DispatchQueue.main.async {
                 guard let self, !self.stopped, let frame = self.frames.takeFrame() else { return }
@@ -247,15 +230,44 @@ final class PhoneCapture {
         iportalTrace("capture-devices-enabled")
 
         Task { @MainActor [weak self] in
-            let (video, audio) = await CapturePermissions.request()
+            let authorization = await CapturePermissions.shared.request(.camera)
             guard let self, !self.stopped else { return }
             self.startupTimeoutAt = ProcessInfo.processInfo.systemUptime + 10
-            guard video else { return self.finish(false) }
+            guard authorization == .authorized else { return self.finish(false) }
+            self.setAudioEnabled(CapturePermissions.shared.snapshot.canPlayAudio)
             let deadline = ProcessInfo.processInfo.systemUptime + timeout
             self.observe(AVCaptureDevice.wasConnectedNotification, object: nil) { [weak self] in
-                self?.waitForDevice(until: deadline, withAudio: audio)
+                self?.waitForDevice(until: deadline)
             }
-            self.waitForDevice(until: deadline, withAudio: audio)
+            self.waitForDevice(until: deadline)
+            // Audio is optional. Its prompt must not hold up video, and closing
+            // the window while camera permission was pending must not ask again.
+            if self.preferredVolume > 0, CapturePermissions.shared.snapshot.microphone == .notDetermined {
+                Task { @MainActor [weak self] in
+                    guard let self, !self.stopped else { return }
+                    await CapturePermissions.shared.request(.microphone)
+                }
+            }
+        }
+    }
+
+    func setVolume(_ volume: Float) {
+        preferredVolume = min(1, max(0, volume))
+        audio.volume = audioEnabled ? preferredVolume : 0
+    }
+
+    func setAudioEnabled(_ enabled: Bool) {
+        guard enabled != audioEnabled else { return }
+        audioEnabled = enabled
+        audio.volume = enabled ? preferredVolume : 0
+        guard configuring, let sourceID else { return }
+        let session = self.session, audio = self.audio
+        CaptureSessionExecutor.update(lifetime, key: sourceID) {
+            session.beginConfiguration()
+            if enabled {
+                if !session.outputs.contains(where: { $0 === audio }), session.canAddOutput(audio) { session.addOutput(audio) }
+            } else if session.outputs.contains(where: { $0 === audio }) { session.removeOutput(audio) }
+            session.commitConfiguration()
         }
     }
 
@@ -310,7 +322,7 @@ final class PhoneCapture {
     }
 
     // The device appears a second or two after screen capture devices are allowed.
-    private func waitForDevice(until deadline: TimeInterval, withAudio: Bool) {
+    private func waitForDevice(until deadline: TimeInterval) {
         guard !stopped, !configuring else { return }
         discoveryRetry?.cancel()
         if let device = findDevice() {
@@ -318,18 +330,18 @@ final class PhoneCapture {
             Self.claims[device.uniqueID] = claimID
             configuring = true
             iportalTrace("capture-device-available")
-            return run(device, withAudio: withAudio)
+            return run(device)
         }
         if identityAmbiguous { return finish(false) }
         if ProcessInfo.processInfo.systemUptime > deadline { return finish(false) }
         let retry = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.waitForDevice(until: deadline, withAudio: withAudio) }
+            MainActor.assumeIsolated { self?.waitForDevice(until: deadline) }
         }
         discoveryRetry = retry
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: retry)
     }
 
-    private func run(_ device: AVCaptureDevice, withAudio: Bool) {
+    private func run(_ device: AVCaptureDevice) {
         observe(AVCaptureSession.runtimeErrorNotification, object: session) { [weak self] in self?.failed() }
         observe(AVCaptureSession.wasInterruptedNotification, object: session) { [weak self] in self?.failed() }
         observe(AVCaptureDevice.wasDisconnectedNotification, object: device) { [weak self] in self?.failed() }
@@ -338,6 +350,7 @@ final class PhoneCapture {
         let audio = self.audio
         let frames = self.frames
         let frameQueue = self.frameQueue
+        let withAudio = audioEnabled
         CaptureSessionExecutor.start(lifetime, key: device.uniqueID, operation: {
             iportalTrace("capture-configure")
             guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return false }

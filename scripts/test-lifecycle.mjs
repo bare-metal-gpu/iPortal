@@ -27,6 +27,22 @@ try {
     { stdio: "pipe" },
   );
   execFileSync(binary, [], { stdio: "inherit" });
+  const permissions = join(directory, "permission-tests");
+  execFileSync(
+    "xcrun",
+    [
+      "swiftc",
+      "-swift-version",
+      "5",
+      "-warnings-as-errors",
+      join(root, "macos/Permissions.swift"),
+      join(root, "test/PermissionTests.swift"),
+      "-o",
+      permissions,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(permissions, [], { stdio: "inherit" });
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

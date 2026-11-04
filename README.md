@@ -24,12 +24,17 @@ npm run setup   # builds the helper app for your iPhone
 npm run app     # installs "iPortal" to ~/Applications
 ```
 
-5. Open **iPortal** and allow Camera and Microphone access when asked.
+5. Open **iPortal**. Camera access enables smoother USB video; Microphone access enables device audio. Both are optional.
 6. First launch only: on the iPhone, go to Settings → General → VPN & Device Management → trust your Apple ID.
 
 ## Use
 
 Click to tap, drag to swipe, scroll to scroll, type to type.
+
+Open the gear beside App Switcher (or press ⌘,) to manage permissions. Settings
+reflects macOS’s current state across all device windows. Without Camera access,
+mirroring uses basic video from the phone helper; without Microphone access,
+video continues silently. See [permission behavior](docs/permissions.md).
 
 Closing the mirror, choosing Quit in the Dock, or pressing ⌘Q leaves the menu-bar
 watcher running in a separate native helper. Connect an iPhone to see its name and press the trailing play
@@ -52,7 +57,7 @@ Prefer the browser? Run `npm start` and open http://localhost:7100.
 
 - Connect the iPhone by USB. Locking blurs the last frame; unlocking automatically restores control after a fresh frame arrives.
 - With a free Apple ID, run `npm run setup` again every 7 days.
-- The iPhone's sound plays on your Mac while mirroring.
+- The iPhone's sound plays on your Mac with native USB video and Microphone access.
 - Each additional iPhone or iPad needs the same one-time helper setup and trust.
   Select it with `UDID=<device-udid> npm run setup`; `node iportal.mjs devices` lists connected IDs.
 - When macOS cannot identify a native USB video source unambiguously among several

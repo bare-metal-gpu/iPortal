@@ -181,6 +181,13 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var scrollMonitor: Any?
     var trackingScroll = false
     var trackingMagnify = false
+    var settingsVisible = false
+    var settingsBlocksInput: Bool { settingsVisible || settingsHost?.isHidden == false }
+    var settingsGeneration = 0
+    var settingsHost: SettingsOverlayHost!
+    let settingsState = SettingsOverlayState()
+    var permissionObserver: NSObjectProtocol?
+    var permissionSnapshot = CapturePermissions.shared.snapshot
 
     func trace(_ event: String, _ fields: [String: Any] = [:]) {
         var fields = fields
@@ -362,6 +369,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func recoverCapture() {
+        CapturePermissions.shared.refresh()
+        if CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
         freezeVideo()
         captureBudget.failed()
         stopCapture()
@@ -467,6 +476,12 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         nextNativeAttemptAt = 0
         NSApp.setActivationPolicy(.regular)
         buildWindow()
+        CapturePermissions.shared.refresh()
+        permissionSnapshot = CapturePermissions.shared.snapshot
+        permissionObserver = NotificationCenter.default.addObserver(forName: CapturePermissions.didChange,
+            object: CapturePermissions.shared, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.permissionsChanged() }
+            }
         installScrollMonitor()
         updateLoadingBorder()
         ensureServer()
@@ -484,6 +499,11 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         statusEventTask?.cancel(); statusEventTask = nil
         lifecycleTimer?.invalidate(); lifecycleTimer = nil
         hideBar?.cancel(); hideBar = nil
+        if let permissionObserver { NotificationCenter.default.removeObserver(permissionObserver) }
+        permissionObserver = nil
+        CapturePermissions.shared.inspect(sessionID, visible: false)
+        settingsVisible = false; settingsGeneration += 1
+        settingsState.snapshot = nil; settingsHost = nil
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
         stopCapture()
         web?.stopLoading()
@@ -586,9 +606,15 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         minimize.target = window
         minimize.action = #selector(NSWindow.miniaturize(_:))
         barButtons = [close, minimize,
+                      symbolButton("gearshape", "Settings", #selector(toggleSettings)),
                       symbolButton("square.on.square", "App Switcher", #selector(appSwitcher)),
                       symbolButton("house", "Home", #selector(home))]
         barButtons.forEach(bar.addSubview)
+        settingsHost = SettingsOverlayHost(rootView: SettingsOverlay(state: settingsState, permissions: .shared,
+            close: { [weak self] in self?.setSettingsVisible(false) }))
+        settingsHost.isHidden = true
+        settingsHost.alphaValue = 0
+        phone.addSubview(settingsHost)
 
         layout()
         window.makeKeyAndOrderFront(nil)
@@ -625,6 +651,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         phone.layer?.cornerRadius = kind.radius(width: w, height: phoneHeight)
         web.frame = phone.bounds
         loadingBorder.frame = phone.bounds
+        settingsHost?.frame = phone.bounds
         loadingBorderState.radius = max(0, kind.radius(width: w, height: phoneHeight) - 2)
         // Generous grab areas extend inward from every rounded phone corner.
         // They sit above the input web view, so a resize cannot send a phone gesture.
@@ -641,12 +668,13 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         capture?.layer.frame = videoHost.bounds
         CATransaction.commit()
         bar.frame = NSRect(x: 0, y: phoneHeight + barGap, width: w, height: barHeight)
-        // Traffic lights on the left, Home and App Switcher on the right.
+        // Traffic lights on the left; Settings, App Switcher and Home on the right.
         let y = (barHeight - 16) / 2
         barButtons[0].frame = NSRect(x: 10, y: y + 1, width: 14, height: 14)
         barButtons[1].frame = NSRect(x: 30, y: y + 1, width: 14, height: 14)
-        barButtons[2].frame = NSRect(x: w - 62, y: y, width: 22, height: 16)
-        barButtons[3].frame = NSRect(x: w - 32, y: y, width: 22, height: 16)
+        barButtons[2].frame = NSRect(x: w - 92, y: y, width: 22, height: 16)
+        barButtons[3].frame = NSRect(x: w - 62, y: y, width: 22, height: 16)
+        barButtons[4].frame = NSRect(x: w - 32, y: y, width: 22, height: 16)
         window.invalidateShadow()
     }
 
@@ -675,7 +703,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard phone != nil, loadingBorder != nil, barButtons.count == 4 else { return }
+        guard phone != nil, loadingBorder != nil, barButtons.count == 5 else { return }
         phoneHeight = window.frame.height - barGap - barHeight
         if !adjustingGeometry { preferredPhoneLongEdge = phoneHeight * max(1, ratio) }
         layout()
@@ -697,7 +725,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     func hover(_ inside: Bool) {
         guard mirroringActive else { return }
         hideBar?.cancel()
-        if inside { return fadeBar(to: 1) }
+        if inside || settingsVisible { return fadeBar(to: 1) }
         let work = DispatchWorkItem { [weak self] in self?.fadeBar(to: 0) }
         hideBar = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
@@ -743,6 +771,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     // In MJPEG mode the page reports the stream's real size once the first frame arrives.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard mirroringActive, message.webView === web, message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
+        let priorBridge = videoGate.bridgeID
         if let lifecycle = d["lifecycle"] as? String, let udid = d["deviceUdid"] as? String,
            let epoch = d["videoEpoch"] as? Int, let bridgeID = d["bridgeId"] as? String,
            let instance = d["serverInstance"] as? String, let revision = d["statusRevision"] as? Int {
@@ -762,6 +791,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         }
         guard d["bridgeId"] as? String == videoGate.bridgeID,
               d["videoEpoch"] as? Int == videoGate.epoch else { return }
+        if priorBridge != videoGate.bridgeID { nativeCall("setNativeSettingsVisible", ready: settingsBlocksInput) }
         if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
         if !waitingForVideo, captureLoading == false, loadingBorderState.phase != "live", deviceLifecycle == "ready" {
             trace("input-ready")
@@ -782,10 +812,73 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         }
     }
 
+    // Settings is local UI: never let its clicks, scrolls or keyboard shortcuts
+    // become phone input. Each window owns its overlay; permissions are shared.
+    @objc func toggleSettings() { setSettingsVisible(!settingsVisible) }
+
+    func setSettingsVisible(_ visible: Bool) {
+        guard mirroringActive, settingsVisible != visible, let settingsHost else { return }
+        settingsVisible = visible; settingsGeneration += 1
+        let generation = settingsGeneration
+        CapturePermissions.shared.inspect(sessionID, visible: visible)
+        if visible { nativeCall("setNativeSettingsVisible", ready: true) }
+        trackingScroll = false; trackingMagnify = false
+        if visible { for index in [3, 4] { (barButtons[index] as? NSButton)?.isEnabled = false } }
+        (barButtons[2] as? NSButton)?.contentTintColor = visible ? .labelColor : .secondaryLabelColor
+        if visible {
+            settingsState.snapshot = videoMode == "native" ? capture?.snapshot() : loadingBorderState.snapshot
+            if videoMode == "stream" {
+                web.takeSnapshot(with: nil) { [weak self] image, _ in
+                    guard let self, self.mirroringActive, self.settingsVisible, self.settingsGeneration == generation else { return }
+                    self.settingsState.snapshot = image ?? self.settingsState.snapshot
+                }
+            }
+            settingsHost.isHidden = false
+            loadingBorder.isHidden = true
+            hideBar?.cancel(); fadeBar(to: 1)
+            window.makeFirstResponder(settingsHost)
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
+            settingsHost.animator().alphaValue = visible ? 1 : 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.mirroringActive, self.settingsGeneration == generation else { return }
+                if !visible {
+                    settingsHost.isHidden = true
+                    self.loadingBorder.isHidden = false
+                    self.nativeCall("setNativeSettingsVisible", ready: false)
+                    for index in [3, 4] { (self.barButtons[index] as? NSButton)?.isEnabled = true }
+                    self.settingsState.snapshot = nil
+                    self.window.makeFirstResponder(self.web)
+                }
+            }
+        })
+    }
+
+    func permissionsChanged() {
+        guard mirroringActive else { return }
+        let next = CapturePermissions.shared.snapshot, previous = permissionSnapshot
+        permissionSnapshot = next
+        capture?.setAudioEnabled(next.canPlayAudio)
+        guard previous.camera != next.camera else { return }
+        if !next.canCaptureVideo {
+            if capture != nil || videoMode != "stream" { fallbackToStream() }
+        } else {
+            captureBudget = CaptureRetryBudget()
+            nextNativeAttemptAt = 0
+            if capture == nil, let captureUdid, deviceLifecycle == "ready" || deviceLifecycle == "connecting" {
+                startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+            }
+        }
+    }
+
     // MARK: Video
 
     func startCapture(udid: String, singleUsbDevice: Bool) {
         guard mirroringActive else { return }
+        CapturePermissions.shared.refresh()
+        if CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
         let now = ProcessInfo.processInfo.systemUptime
         guard captureBudget.beginAttempt(at: now) else {
             nextNativeAttemptAt = now + 30
@@ -823,7 +916,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self, weak c] ok in
             guard let self, self.capture === c else { return }
             if !ok {
-                if c?.identityAmbiguous == true {
+                if CapturePermissions.shared.snapshot.blocksNativeCapture {
+                    self.fallbackToStream()
+                } else if c?.identityAmbiguous == true {
                     self.nativeIdentityDeferred = true
                     self.fallbackToStream()
                 } else { self.recoverCapture() }
@@ -838,7 +933,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         captureFailed = true
         captureLoading = false
         waitingForVideo = true
-        nextNativeAttemptAt = nativeIdentityDeferred ? .infinity : ProcessInfo.processInfo.systemUptime + 30
+        nextNativeAttemptAt = nativeIdentityDeferred || CapturePermissions.shared.snapshot.blocksNativeCapture ? .infinity : ProcessInfo.processInfo.systemUptime + 30
         NSLog("iPortal video fallback; preserving last frame")
         nativeCall("startStream")
         updateLoadingBorder()
@@ -1071,6 +1166,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             MainActor.assumeIsolated {
                 guard let self, self.mirroringActive, event.window === self.window else { return event }
                 let point = self.web.convert(event.locationInWindow, from: nil)
+                guard !self.settingsBlocksInput else { return event }
                 guard self.web.bounds.contains(point) || self.trackingScroll || self.trackingMagnify else { return event }
                 // Never also pass this event to WKWebView: its DOM wheel handler
                 // would turn the same physical gesture into a second swipe.
@@ -1121,18 +1217,18 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func js(_ code: String) { guard mirroringActive else { return }; web?.evaluateJavaScript(code, completionHandler: nil) }
 
-    @objc func home() { js("api('home')") }
-    @objc func appSwitcher() { js("api('shortcut', { name: 'switcher' })") }
-    @objc func spotlight() { js("api('shortcut', { name: 'spotlight' })") }
-    @objc func notifications() { js("api('shortcut', { name: 'notifications' })") }
-    @objc func controlCenter() { js("api('shortcut', { name: 'control' })") }
+    @objc func home() { guard !settingsBlocksInput else { return }; js("api('home')") }
+    @objc func appSwitcher() { guard !settingsBlocksInput else { return }; js("api('shortcut', { name: 'switcher' })") }
+    @objc func spotlight() { guard !settingsBlocksInput else { return }; js("api('shortcut', { name: 'spotlight' })") }
+    @objc func notifications() { guard !settingsBlocksInput else { return }; js("api('shortcut', { name: 'notifications' })") }
+    @objc func controlCenter() { guard !settingsBlocksInput else { return }; js("api('shortcut', { name: 'control' })") }
     @objc func closeWindow() { window?.close() }
     @objc func larger() { phoneHeight *= 1.1; resize() }
     @objc func smaller() { phoneHeight /= 1.1; resize() }
     @objc func actualSize() { phoneHeight = defaultPhoneHeight / max(1, ratio); resize() }
 
     @objc func pasteToPhone() {
-        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty,
+        guard !settingsBlocksInput, let text = NSPasteboard.general.string(forType: .string), !text.isEmpty,
               let data = try? JSONSerialization.data(withJSONObject: ["text": text]),
               let json = String(data: data, encoding: .utf8) else { return }
         js("typed += (\(json)).text; flush()")
@@ -1140,7 +1236,10 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     @objc func toggleAudio(_ item: NSMenuItem) {
         audioVolume = audioVolume > 0 ? 0 : 1
-        capture?.audio.volume = audioVolume
+        capture?.setVolume(audioVolume)
+        if audioVolume > 0, CapturePermissions.shared.snapshot.canCaptureVideo {
+            Task { await CapturePermissions.shared.request(.microphone) }
+        }
         item.state = audioVolume > 0 ? .on : .off
     }
 
@@ -1292,6 +1391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         while closing.contains(where: { $0.server?.isRunning == true }) && Date() < deadline { usleep(50_000) }
         for session in closing { if let p = session.server, p.isRunning { kill(p.processIdentifier, SIGKILL) } }
     }
+    @objc func toggleSettings() { activeSession?.toggleSettings() }
     @objc func home() { activeSession?.home() }
     @objc func appSwitcher() { activeSession?.appSwitcher() }
     @objc func spotlight() { activeSession?.spotlight() }
@@ -1331,6 +1431,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         menu("iPortal", [
             NSMenuItem(title: "About iPortal", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+            .separator(),
+            item("Settings…", #selector(toggleSettings), ","),
             .separator(),
             NSMenuItem(title: "Hide iPortal", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             NSMenuItem(title: "Quit iPortal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),

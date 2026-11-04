@@ -17,18 +17,7 @@ struct LoadingBorder: View {
 
     var body: some View {
         ZStack {
-            if state.phase != "live", let snapshot = state.snapshot {
-                GeometryReader { geometry in
-                    Image(nsImage: snapshot)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-                        .blur(radius: 18)
-                        .overlay(Color.black.opacity(0.25))
-                }
-                .accessibilityHidden(true)
-            }
+            if state.phase != "live" { MirrorBlurredSnapshot(snapshot: state.snapshot) }
             IPortalConnectionBorder(active: state.active, radius: state.radius)
             if state.showMessage {
                 IPortalConnectionMessage(
@@ -43,6 +32,20 @@ struct LoadingBorder: View {
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: state.showMessage)
         .allowsHitTesting(false)
+    }
+}
+
+struct MirrorBlurredSnapshot: View {
+    let snapshot: NSImage?
+    var body: some View {
+        GeometryReader { geometry in
+            if let snapshot {
+                Image(nsImage: snapshot).resizable().scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped().blur(radius: 18).overlay(Color.black.opacity(0.25))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

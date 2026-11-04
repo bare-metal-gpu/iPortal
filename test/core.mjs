@@ -472,6 +472,37 @@ void test("rotation cancels old gesture buffers and ignores stale geometry callb
   assert.equal(h.run("inputEpoch"), streaming + 1, "steady frames retain the current gesture");
 });
 
+void test("settings blocks phone input across readiness changes and rejects stale callbacks", async () => {
+  const h = browserHarness();
+  await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  h.run(
+    "touch = {points:[[.2,.3,0]]}; typed = 'old'; setNativeSettingsVisible(true, videoEpoch, bridgeId)",
+  );
+  assert.equal(h.run("canInteract()"), false);
+  assert.equal(h.run("touch"), null);
+  assert.equal(h.run("typed"), "");
+  const calls = h.calls.length;
+  await h.run("api('home')");
+  assert.equal(h.calls.length, calls, "settings controls cannot trigger phone input");
+  h.run(
+    "setNativeVideoReady(true, videoEpoch, bridgeId); setNativeSettingsVisible(false, videoEpoch, 'retired-page')",
+  );
+  assert.equal(h.run("canInteract()"), false);
+  h.lifecycle("locked");
+  await h.run("poll()");
+  h.lifecycle("ready");
+  await h.run("poll()");
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  assert.equal(
+    h.run("canInteract()"),
+    false,
+    "reconnect must not dismiss the local settings input gate",
+  );
+  h.run("setNativeSettingsVisible(false, videoEpoch, bridgeId)");
+  assert.equal(h.run("canInteract()"), true);
+});
+
 void test("native refreshes wake connection polling without overlapping requests", async () => {
   let finish;
   const h = browserHarness({

@@ -19,7 +19,12 @@ let serverInstance = /** @type {HTMLMetaElement} */ (
 ).content;
 const controlOnly = new Set(["ensure", "quality", "lock", "unlock"]);
 function canInteract() {
-  return lifecycle === "ready" && connected && (nativeVideo ? nativeReady : streamReady);
+  return (
+    !nativeSettingsVisible &&
+    lifecycle === "ready" &&
+    connected &&
+    (nativeVideo ? nativeReady : streamReady)
+  );
 }
 function setNativeVideoReady(ready, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId) return;
@@ -36,6 +41,12 @@ function invalidateInput() {
   typed = "";
   clearTimeout(wheelTimer);
   wheelTimer = undefined;
+}
+let nativeSettingsVisible = false;
+function setNativeSettingsVisible(visible, epoch, documentId) {
+  if (epoch !== videoEpoch || documentId !== bridgeId) return;
+  nativeSettingsVisible = Boolean(visible);
+  if (nativeSettingsVisible) invalidateInput();
 }
 function nativeGeometryChanged(epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId) return;
@@ -928,6 +939,7 @@ document.querySelectorAll("button").forEach((b) => b.addEventListener("mouseup",
 
 // Explicit entry points called by WKWebView, kept as classic-script globals.
 Object.assign(window, {
+  setNativeSettingsVisible,
   nativeGeometryChanged,
   setNativeVideoReady,
   useNativeVideo,
