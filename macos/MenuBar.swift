@@ -41,11 +41,40 @@ private func portalMenuIcon() -> NSImage {
 @MainActor
 private final class MenuBarState: ObservableObject {
     @Published var devices: [IPortalDeviceRow] = []
+    @Published var sessions: [String: IPortalMirrorSession] = [:]
     @Published var loginEnabled = false
     @Published var presentation = PopoverPresentation()
     var visible: Bool { presentation.visible }
     @Published var notchX: CGFloat = 150
     var height: CGFloat { CGFloat(max(1, devices.count) * 56 + 62) }
+}
+
+private final class NotchedMaterialView: NSVisualEffectView {
+    var notchX: CGFloat = 150 { didSet { needsLayout = true } }
+    override var isFlipped: Bool { true }
+    override func layout() {
+        super.layout()
+        let size = bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        let path = NotchedOutline(notchX: notchX).path(in: CGRect(origin: .zero, size: size)).cgPath
+        maskImage = NSImage(size: size, flipped: true) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.addPath(path)
+            context.setFillColor(NSColor.black.cgColor)
+            context.fillPath()
+            return true
+        }
+    }
+}
+
+private struct NotchedBackdrop: NSViewRepresentable {
+    let notchX: CGFloat
+    func makeNSView(context: Context) -> NotchedMaterialView {
+        let view = NotchedMaterialView()
+        configureIPortalMaterial(view)
+        return view
+    }
+    func updateNSView(_ view: NotchedMaterialView, context: Context) { view.notchX = notchX }
 }
 
 // One path owns both the backdrop and the beam, including the arrow. Native
@@ -100,6 +129,7 @@ private struct NotchedBeam: View {
 private struct MirrorPopover: View {
     @ObservedObject var state: MenuBarState
     var start: (String) -> Void
+    var pause: (IPortalMirrorSession) -> Void
     var setLogin: (Bool) -> Void
     var quit: () -> Void
     private var outline: NotchedOutline { NotchedOutline(notchX: state.notchX) }
@@ -111,21 +141,27 @@ private struct MirrorPopover: View {
                     .frame(maxWidth: .infinity).frame(height: 56)
             } else {
                 ForEach(state.devices) { device in
+                    let session = state.sessions[deviceKey(device.serial)]
+                    let enabled = session.map { $0.phase == .mirroring } ?? device.available
+                    let label = session == nil ? "Mirror \(device.name)" : "Pause \(device.name)"
                     HStack(spacing: 12) {
                         Image(systemName: device.kind.symbol).font(.system(size: 23))
                             .foregroundStyle(.white.opacity(0.65)).accessibilityHidden(true)
                         Text(device.name).font(.system(size: 13, weight: .medium))
                             .foregroundStyle(.white.opacity(0.9)).lineLimit(1).help(device.name)
                         Spacer(minLength: 12)
-                        Button { start(device.serial) } label: {
-                            Image(systemName: "play.fill").font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.white.opacity(device.available ? 0.85 : 0.3))
+                        Button {
+                            if let session { pause(session) } else { start(device.serial) }
+                        } label: {
+                            Image(systemName: session == nil ? "play.fill" : "pause.fill").font(.system(size: 11, weight: .semibold))
+                                .contentTransition(.symbolEffect(.replace))
+                                .foregroundStyle(.white.opacity(enabled ? 0.85 : 0.3))
                                 .frame(width: 30, height: 30)
                                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
                                 .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
                         }
-                        .buttonStyle(.plain).disabled(!device.available)
-                        .help("Mirror \(device.name)").accessibilityLabel("Mirror \(device.name)")
+                        .buttonStyle(.plain).disabled(!enabled)
+                        .help(label).accessibilityLabel(label)
                     }
                     .padding(.horizontal, 18).frame(height: 56)
                 }
@@ -145,8 +181,7 @@ private struct MirrorPopover: View {
         }
         .padding(.top, 18).padding(.bottom, 10)
         .frame(width: 300, height: state.height)
-        .background { outline.fill(.ultraThinMaterial).overlay(outline.fill(.black.opacity(0.68))) }
-        .clipShape(outline)
+        .background { NotchedBackdrop(notchX: state.notchX).allowsHitTesting(false) }
         .overlay(outline.stroke(.white.opacity(0.12), lineWidth: 0.7))
         .overlay(NotchedBeam(outline: outline, active: state.visible && !state.devices.isEmpty))
         .preferredColorScheme(.dark)
@@ -172,6 +207,8 @@ final class MirrorMenuBar: NSObject {
     private var menuObservers: [NSObjectProtocol] = []
     private var menuTracking = false
     var onStart: ((String) -> Void)?
+    var onPause: ((IPortalMirrorSession) -> Void)?
+    var onShow: (() -> Void)?
     var onQuit: (() -> Void)?
     var onLogin: ((Bool) -> Void)?
     var isLoginEnabled: () -> Bool = { false }
@@ -196,6 +233,7 @@ final class MirrorMenuBar: NSObject {
         panel.appearance = NSAppearance(named: .darkAqua)
         host = NSHostingView(rootView: MirrorPopover(state: state,
             start: { [weak self] serial in self?.close(); self?.onStart?(serial) },
+            pause: { [weak self] session in self?.onPause?(session) },
             setLogin: { [weak self] enabled in self?.setLoginEnabled(enabled) },
             quit: { [weak self] in self?.onQuit?() }))
         host.sizingOptions = []
@@ -211,12 +249,23 @@ final class MirrorMenuBar: NSObject {
         }
     }
 
-    func update(devices: [IPortalUSBDevice], mirroring: Bool) {
+    func update(devices: [IPortalUSBDevice], sessions: [IPortalMirrorSession]) {
         deviceList.update(devices, at: ProcessInfo.processInfo.systemUptime)
-        state.devices = deviceList.devices
+        state.sessions = Dictionary(sessions.map { (deviceKey($0.serial), $0) }, uniquingKeysWith: { _, latest in latest })
+        refreshRows()
         scheduleExpiry()
-        item.button?.toolTip = mirroring ? "iPortal — Mirroring" : "iPortal"
+        item.button?.toolTip = sessions.isEmpty ? "iPortal" : "iPortal — Mirroring"
         if state.visible { position() }
+    }
+
+    private func refreshRows() {
+        var rows = deviceList.devices
+        // An unplugged device still has a window that the user can pause.
+        let listed = Set(rows.map { deviceKey($0.serial) })
+        for session in state.sessions.values where !listed.contains(deviceKey(session.serial)) {
+            rows.append(IPortalDeviceRow(serial: session.serial, name: session.name, available: false, kind: session.kind))
+        }
+        state.devices = rows.sorted { deviceKey($0.serial) < deviceKey($1.serial) }
     }
 
     private func scheduleExpiry() {
@@ -225,7 +274,7 @@ final class MirrorMenuBar: NSObject {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.deviceList.expire(at: ProcessInfo.processInfo.systemUptime)
-            self.state.devices = self.deviceList.devices
+            self.refreshRows()
             if self.state.visible { self.position() }
             self.scheduleExpiry()
         }
@@ -250,6 +299,7 @@ final class MirrorMenuBar: NSObject {
     }
 
     func show(activate: Bool = false) {
+        onShow?()
         state.loginEnabled = isLoginEnabled()
         _ = state.presentation.setVisible(true)
         panel.ignoresMouseEvents = false

@@ -53,14 +53,26 @@ struct LifecycleTests {
         assert(padList.devices.first(where: { $0.serial == "tablet" })?.kind == .iPad)
         assert(padList.devices.first(where: { $0.serial == "tablet" })?.available == false)
         let serial = "0000814000000000000000A1"
-        for request in [IPortalWatcherRequest.mirror(serial), .login(true), .login(false)] {
+        let sessionID = UUID()
+        for request in [IPortalWatcherRequest.mirror(serial), .pause(serial, session: sessionID), .login(true), .login(false)] {
             assert(IPortalWatcherRequest(url: request.url) == request, "watcher commands must round-trip without losing the selected phone")
         }
         for malformed in ["https://mirror?serial=00008140", "iportal://mirror?serial=x", "iportal://login?enabled=true",
                           "iportal://login?enabled=1&enabled=0", "iportal://mirror?serial=00008140;quit",
-                          "iportal://login/path?enabled=1", "iportal://login?enabled=1#extra"] {
+                          "iportal://login/path?enabled=1", "iportal://login?enabled=1#extra",
+                          "iportal://pause?serial=00008140", "iportal://pause?serial=00008140&session=invalid",
+                          "iportal://pause?serial=00008140&serial=00008141",
+                          "iportal://pause?serial=x&session=\(sessionID.uuidString)"] {
             assert(IPortalWatcherRequest(url: URL(string: malformed)!) == nil, "unknown or ambiguous requests must be rejected")
         }
+        let active = IPortalMirrorSession(serial: serial, name: "Phone", kind: .iPhone, id: sessionID, phase: .mirroring)
+        let stopping = IPortalMirrorSession(serial: "0000814000000000000000A2", name: "Tablet", kind: .iPad, id: UUID(), phase: .stopping)
+        let snapshot = IPortalSessionSnapshot(pid: 42, launchedAt: 100, sessions: [active, stopping])
+        let restored = try! JSONDecoder().decode(IPortalSessionSnapshot.self, from: JSONEncoder().encode(snapshot))
+        assert(restored.liveSessions(owners: [42: 100]) == [active, stopping], "each device retains its own state and session token")
+        assert(restored.liveSessions(owners: [:]).isEmpty, "a crashed owner cannot leave Pause stuck on")
+        assert(restored.liveSessions(owners: [43: 100]).isEmpty, "a new main app cannot inherit old window state")
+        assert(restored.liveSessions(owners: [42: 200]).isEmpty, "PID reuse must not revive a stale snapshot")
         var list = USBDeviceListState()
         let device = IPortalUSBDevice(serial: "phone", name: "My iPhone")
         list.update([device], at: 0)

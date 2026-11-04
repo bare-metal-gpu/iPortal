@@ -21,6 +21,19 @@ runs inside the helper. Main-app termination stops its owned server; an
 independently started server is left alone. Both processes share local device
 name preferences, and workspace notifications track main-app launch/termination.
 
+The main app publishes per-device window sessions when they open, bind, close,
+or finish stopping. A distributed notification prompts the watcher to read the
+latest snapshot; opening the popup also refreshes it. Snapshots are accepted only
+while the owning PID and launch time match a running containing app. A crashed
+or restarted app cannot leave stale Pause buttons behind. No polling is added.
+
+Each active window shows Pause, including locked, reconnecting, minimized, or
+unplugged windows. Pause closes only that device's window and stops its server.
+The action carries the window session's UUID, so delayed clicks cannot close a
+replacement. Its button stays disabled while stopping, then becomes Play if the
+device is attached. Other device sessions keep running. An active disconnected
+window stays listed until closed even after its USB row expires.
+
 USB arrivals open an anchored list of attached iPhones and iPads. Each play action carries
 the selected USB serial through to the server's UDID argument. The list retains
 unavailable rows for two seconds through USB mode changes, disabling their play
@@ -32,8 +45,9 @@ Names come from a bounded, event-triggered local `devicectl list devices` query,
 filtered to physical USB-attached devices and cached locally by UDID. The USB
 product name is the fallback. No name polling runs in the background.
 
-One custom panel outline defines the translucent backdrop and animated border,
-including the top notch. It is positioned from the status button's screen
+The popup uses the same active, behind-window `NSVisualEffectView` HUD material
+as the mirror and toolbar. One custom panel outline masks the native blur and
+defines the animated border, including the top notch. It is positioned from the status button's screen
 coordinates, clamped to the display edge, and dismissed on outside click or
 Escape. Reduce Motion uses a static border.
 
@@ -69,10 +83,11 @@ Native status values are 0 = unregistered, 1 = enabled, 2 = approval required,
 ## Verification
 
 - Release build and deep, strict signature verification pass for both apps.
-- `npm test`: 48 unit tests plus e2e, guarded input, native contract, helper patch,
+- `npm test`: 50 unit tests plus e2e, guarded input, native contract, helper patch,
   capture lifecycle and native lifecycle checks pass.
 - Native lifecycle tests cover request validation, selected-phone round trips,
-  USB row retention/expiry, reattachment, multiple rows and invitation suppression.
+  USB row retention/expiry, reattachment, multiple rows, invitation suppression,
+  pause-token validation, and stale snapshots after crashes or PID reuse.
 - The installed helper is registered and running as the native launchd job;
   the legacy main-app login registration is disabled. A second helper launch
   exits without creating another watcher.

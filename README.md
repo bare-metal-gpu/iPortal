@@ -34,7 +34,8 @@ Click to tap, drag to swipe, scroll to scroll, type to type.
 Closing the mirror, choosing Quit in the Dock, or pressing ⌘Q leaves the menu-bar
 watcher running in a separate native helper. Connect an iPhone to see its name and press the trailing play
 button to mirror it. iPads work the same way. Press Play for another connected
-device to open its own mirror; pressing Play again focuses its existing window.
+device to open its own mirror. An open mirror shows Pause for that device; Pause closes only its window and
+stops its session. Play returns once that session has finished stopping.
 Keyboard shortcuts and audio controls apply to the focused window. Closing one
 mirror leaves the others running. The menu-bar settings include **Open at Login** (starts only
 the watcher) and **Quit iPortal** (stops everything).

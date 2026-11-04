@@ -3,12 +3,43 @@ import ServiceManagement
 import Security
 
 @MainActor
+func configureIPortalMaterial(_ view: NSVisualEffectView) {
+    view.material = .hudWindow
+    view.blendingMode = .behindWindow
+    view.state = .active
+}
+
+@MainActor
 enum IPortalWatcher {
     static let appID = "com.baremetalgpu.iportal"
     static let helperID = "com.baremetalgpu.iportal.watcher"
     static let preferences: UserDefaults = Bundle.main.bundleIdentifier == appID
         ? .standard : UserDefaults(suiteName: appID)!
     static let settingsChanged = Notification.Name(helperID + ".settingsChanged")
+    static let sessionsChanged = Notification.Name(appID + ".sessionsChanged")
+    private static let sessionsKey = "ActiveMirrorSessions"
+
+    static func publishSessions(_ sessions: [IPortalMirrorSession]) {
+        guard let started = NSRunningApplication.current.launchDate else { return }
+        let snapshot = IPortalSessionSnapshot(pid: ProcessInfo.processInfo.processIdentifier,
+            launchedAt: started.timeIntervalSince1970, sessions: sessions)
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        preferences.set(data, forKey: sessionsKey)
+        preferences.synchronize()
+        DistributedNotificationCenter.default().postNotificationName(sessionsChanged,
+            object: appURL.path, userInfo: nil, deliverImmediately: true)
+    }
+
+    static func currentSessions() -> [IPortalMirrorSession] {
+        preferences.synchronize()
+        guard let data = preferences.data(forKey: sessionsKey),
+              let snapshot = try? JSONDecoder().decode(IPortalSessionSnapshot.self, from: data) else { return [] }
+        let owners = Dictionary(uniqueKeysWithValues: mainApplications.compactMap { app -> (Int32, TimeInterval)? in
+            guard !app.isTerminated, let started = app.launchDate else { return nil }
+            return (app.processIdentifier, started.timeIntervalSince1970)
+        })
+        return snapshot.liveSessions(owners: owners)
+    }
 
     static var appURL: URL {
         if Bundle.main.bundleIdentifier == appID { return Bundle.main.bundleURL }

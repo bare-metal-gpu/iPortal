@@ -22,21 +22,36 @@ func dismissesPopoverMouseDown(at point: CGPoint, panel: CGRect, statusItem: CGR
 // handler, shell interpolation, or durable command queue is needed.
 enum IPortalWatcherRequest: Equatable {
     case mirror(String)
+    case pause(String, session: UUID)
     case login(Bool)
 
     init?(url: URL) {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               parts.scheme == "iportal", parts.path.isEmpty,
               parts.user == nil, parts.password == nil, parts.port == nil,
-              parts.fragment == nil, let items = parts.queryItems, items.count == 1 else { return nil }
+              parts.fragment == nil, let items = parts.queryItems else { return nil }
+        if parts.host == "pause" {
+            guard items.count == 2, Set(items.map(\.name)) == ["serial", "session"],
+                  let serial = items.first(where: { $0.name == "serial" })?.value,
+                  Self.validSerial(serial),
+                  let token = items.first(where: { $0.name == "session" })?.value,
+                  let session = UUID(uuidString: token) else { return nil }
+            self = .pause(serial, session: session)
+            return
+        }
+        guard items.count == 1 else { return nil }
         switch (parts.host, items[0].name, items[0].value) {
         case ("mirror", "serial", .some(let serial)):
-            guard (8...64).contains(serial.count), serial.allSatisfy({ $0.isASCII && ($0.isHexDigit || $0 == "-") }) else { return nil }
+            guard Self.validSerial(serial) else { return nil }
             self = .mirror(serial)
         case ("login", "enabled", "1"): self = .login(true)
         case ("login", "enabled", "0"): self = .login(false)
         default: return nil
         }
+    }
+
+    private static func validSerial(_ serial: String) -> Bool {
+        (8...64).contains(serial.count) && serial.allSatisfy { $0.isASCII && ($0.isHexDigit || $0 == "-") }
     }
 
     var url: URL {
@@ -46,6 +61,9 @@ enum IPortalWatcherRequest: Equatable {
         case .mirror(let serial):
             parts.host = "mirror"
             parts.queryItems = [URLQueryItem(name: "serial", value: serial)]
+        case .pause(let serial, let session):
+            parts.host = "pause"
+            parts.queryItems = [URLQueryItem(name: "serial", value: serial), URLQueryItem(name: "session", value: session.uuidString)]
         case .login(let enabled):
             parts.host = "login"
             parts.queryItems = [URLQueryItem(name: "enabled", value: enabled ? "1" : "0")]
@@ -56,7 +74,7 @@ enum IPortalWatcherRequest: Equatable {
 
 func deviceKey(_ serial: String) -> String { serial.lowercased().filter { $0.isLetter || $0.isNumber } }
 
-enum IPortalDeviceKind: String {
+enum IPortalDeviceKind: String, Codable {
     case iPhone, iPad
     init?(product: String) {
         if product.hasPrefix("iPhone") { self = .iPhone }
@@ -67,6 +85,29 @@ enum IPortalDeviceKind: String {
     var initialRatio: CGFloat { self == .iPad ? 3 / 4 : 390 / 844 }
     func radius(width: CGFloat, height: CGFloat) -> CGFloat {
         min(width, height) * (self == .iPad ? 0.035 : 0.14)
+    }
+}
+
+struct IPortalMirrorSession: Codable, Equatable {
+    enum Phase: String, Codable { case mirroring, stopping }
+    let serial: String
+    let name: String
+    let kind: IPortalDeviceKind
+    let id: UUID
+    let phase: Phase
+}
+
+// A persisted snapshot is useful when the watcher starts after the app. Only
+// accept it while its exact owning process is alive, including its launch date.
+// PID reuse, crashes and missed termination notifications cannot revive it.
+struct IPortalSessionSnapshot: Codable {
+    let pid: Int32
+    let launchedAt: TimeInterval
+    let sessions: [IPortalMirrorSession]
+
+    func liveSessions(owners: [Int32: TimeInterval]) -> [IPortalMirrorSession] {
+        guard let started = owners[pid], abs(started - launchedAt) < 0.001 else { return [] }
+        return sessions
     }
 }
 

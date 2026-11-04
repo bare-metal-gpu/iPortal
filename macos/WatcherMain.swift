@@ -9,6 +9,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
     private var invitations = USBInvitationGate()
     private var workspaceObservers: [NSObjectProtocol] = []
     private var settingsObserver: NSObjectProtocol?
+    private var sessionsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Keep the user's status-item position during the one-time migration.
@@ -19,6 +20,8 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         menuBar = MirrorMenuBar()
         menuBar?.isLoginEnabled = { IPortalWatcher.loginEnabled }
         menuBar?.onStart = { IPortalWatcher.request(.mirror($0)) }
+        menuBar?.onPause = { IPortalWatcher.request(.pause($0.serial, session: $0.id)) }
+        menuBar?.onShow = { [weak self] in self?.updateMenu() }
         menuBar?.onLogin = { IPortalWatcher.request(.login($0)) }
         menuBar?.onQuit = {
             IPortalWatcher.mainApplications.forEach { _ = $0.terminate() }
@@ -36,6 +39,13 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated { self?.updateMenu() }
             })
         }
+        sessionsObserver = DistributedNotificationCenter.default().addObserver(forName: IPortalWatcher.sessionsChanged,
+            object: IPortalWatcher.appURL.path, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateMenu() }
+            }
+        // Subscribe before reading: launches or closes during startup cannot
+        // leave the watcher with a permanently missed transition.
+        updateMenu()
         settingsObserver = DistributedNotificationCenter.default().addObserver(forName: IPortalWatcher.settingsChanged,
             object: IPortalWatcher.appURL.path, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.menuBar?.refreshLoginStatus() }
@@ -51,7 +61,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         let devices = (usbMonitor?.connectedDevices ?? []).map {
             IPortalUSBDevice(serial: $0.serial, name: names.name(for: $0.serial, fallback: $0.name), kind: $0.kind)
         }
-        menuBar?.update(devices: devices, mirroring: !IPortalWatcher.mainApplications.isEmpty)
+        menuBar?.update(devices: devices, sessions: IPortalWatcher.currentSessions())
     }
 
     private func usbChanged(_ serial: String, attached: Bool) {
@@ -76,6 +86,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         menuBar?.stop()
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         if let settingsObserver { DistributedNotificationCenter.default().removeObserver(settingsObserver) }
+        if let sessionsObserver { DistributedNotificationCenter.default().removeObserver(sessionsObserver) }
     }
 }
 

@@ -115,6 +115,7 @@ final class HoverView: NSView {
 
 @MainActor
 final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
+    let sessionID = UUID()
     var mirroringActive = false
     var mirrorGeneration = 0
     var serverStopping = false
@@ -539,9 +540,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         window.contentView = root
 
         phone = NSVisualEffectView()
-        phone.material = .hudWindow
-        phone.blendingMode = .behindWindow
-        phone.state = .active
+        configureIPortalMaterial(phone)
         phone.wantsLayer = true
         phone.layer?.masksToBounds = true
         phone.layer?.cornerCurve = .continuous
@@ -571,9 +570,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         }
 
         bar = DragBar()
-        bar.material = .hudWindow
-        bar.blendingMode = .behindWindow
-        bar.state = .active
+        configureIPortalMaterial(bar)
         bar.maskImage = roundedMask(radius: 9)
         bar.alphaValue = 0
         bar.isHidden = true
@@ -1172,6 +1169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 self.pending = nil
                 self.sessions.insert(pending, for: serial)
                 pending.bind(device)
+                self.publishSessions()
             }
             self.sessions.session(for: serial)?.usbChanged(serial, attached: attached)
             self.allSessions.forEach { $0.captureInventoryChanged() }
@@ -1200,11 +1198,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
     func startMirroring(serial: String? = nil) {
+        defer { publishSessions() }
         if serial == nil, let existing = activeSession ?? allSessions.first { existing.startMirroring(); return }
         let preferred = UserDefaults.standard.string(forKey: "MirrorDeviceUDID") ?? ""
         let device: IPortalUSBDevice?
         if let serial {
             if let existing = sessions.session(for: serial) { existing.startMirroring(); return }
+            // Wait for the previous server to relinquish its device lease.
+            guard !retiring.contains(where: { $0.requestedDeviceUDID.map(deviceKey) == deviceKey(serial) }) else { return }
             // A stale Play event must not start mirroring a different device.
             device = devices.first { deviceKey($0.serial) == deviceKey(serial) }
             guard device != nil else { return }
@@ -1224,8 +1225,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if let target = session.requestedDeviceUDID { sessions.remove(session, for: target) }
         if pending === session { pending = nil }
         if session.server?.isRunning == true { retiring.append(session) }
+        publishSessions()
     }
-    func serverStopped(_ session: MirrorSession) { retiring.removeAll { $0 === session } }
+    func serverStopped(_ session: MirrorSession) {
+        retiring.removeAll { $0 === session }
+        publishSessions()
+    }
+
+    func publishSessions() {
+        let states = (allSessions + retiring).compactMap { session -> IPortalMirrorSession? in
+            guard let serial = session.requestedDeviceUDID else { return nil }
+            guard session.mirroringActive || session.server?.isRunning == true else { return nil }
+            return IPortalMirrorSession(serial: serial, name: session.deviceName, kind: session.kind,
+                id: session.sessionID, phase: session.mirroringActive ? .mirroring : .stopping)
+        }
+        IPortalWatcher.publishSessions(states)
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { startMirroring(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -1236,6 +1251,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func handleWatcherRequest(_ request: IPortalWatcherRequest) {
         switch request {
         case .mirror(let serial): IPortalWatcherService.prepare(); startMirroring(serial: serial)
+        case .pause(let serial, let token):
+            // An old button event must never close a replacement window.
+            if let session = sessions.session(for: serial), session.sessionID == token { session.closeWindow() }
+            publishSessions()
+            if allSessions.isEmpty { NSApp.terminate(nil) }
         case .login(let enabled):
             IPortalWatcherService.setLoginEnabled(enabled) { [weak self] in
                 if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
@@ -1245,6 +1265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationWillTerminate(_ notification: Notification) {
         let closing = allSessions + retiring
         for session in closing { session.terminating = true; session.stopMirroring() }
+        publishSessions()
         usbMonitor?.stop()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         let deadline = Date().addingTimeInterval(3)
