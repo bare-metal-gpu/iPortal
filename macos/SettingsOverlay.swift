@@ -33,6 +33,7 @@ struct SettingsOverlay: View {
             }
         }
         .contentShape(Rectangle())
+        .onTapGesture(perform: close)
         .environment(\.colorScheme, .dark)
         .onExitCommand(perform: close)
     }
@@ -63,6 +64,8 @@ struct SettingsOverlay: View {
             .help(status == .notDetermined ? "Allow \(permission.title)" : status == .restricted || status == .unavailable ? status.title : "Change in System Settings")
         }
         .frame(maxWidth: .infinity, minHeight: 36)
+        .contentShape(Rectangle())
+        .onTapGesture { } // Row clicks stay local; only blank space dismisses.
     }
 }
 
