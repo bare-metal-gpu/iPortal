@@ -20,13 +20,13 @@ func dismissesPopoverMouseDown(at point: CGPoint, panel: CGRect, statusItem: CGR
 
 // Delivered directly to the containing app with NSWorkspace. No global URL
 // handler, shell interpolation, or durable command queue is needed.
-enum PortalWatcherRequest: Equatable {
+enum IPortalWatcherRequest: Equatable {
     case mirror(String)
     case login(Bool)
 
     init?(url: URL) {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              parts.scheme == "iphone-portal", parts.path.isEmpty,
+              parts.scheme == "iportal", parts.path.isEmpty,
               parts.user == nil, parts.password == nil, parts.port == nil,
               parts.fragment == nil, let items = parts.queryItems, items.count == 1 else { return nil }
         switch (parts.host, items[0].name, items[0].value) {
@@ -41,7 +41,7 @@ enum PortalWatcherRequest: Equatable {
 
     var url: URL {
         var parts = URLComponents()
-        parts.scheme = "iphone-portal"
+        parts.scheme = "iportal"
         switch self {
         case .mirror(let serial):
             parts.host = "mirror"
@@ -56,7 +56,7 @@ enum PortalWatcherRequest: Equatable {
 
 func deviceKey(_ serial: String) -> String { serial.lowercased().filter { $0.isLetter || $0.isNumber } }
 
-enum PortalDeviceKind: String {
+enum IPortalDeviceKind: String {
     case iPhone, iPad
     init?(product: String) {
         if product.hasPrefix("iPhone") { self = .iPhone }
@@ -82,10 +82,10 @@ struct DeviceSessionRegistry<Session: AnyObject> {
     }
 }
 
-struct PortalUSBDevice: Identifiable, Equatable {
+struct IPortalUSBDevice: Identifiable, Equatable {
     let serial: String
     let name: String
-    var kind: PortalDeviceKind = .iPhone
+    var kind: IPortalDeviceKind = .iPhone
     var id: String { serial }
 }
 
@@ -96,7 +96,7 @@ struct CaptureSourceIdentity {
 
 // Display names can be duplicated, renamed, or stale. They are never identity.
 // Never assume the sole camera belongs to one of several attached devices.
-func captureSourceID(for target: String, devices: [PortalUSBDevice], sources: [CaptureSourceIdentity],
+func captureSourceID(for target: String, devices: [IPortalUSBDevice], sources: [CaptureSourceIdentity],
                      singleUSB: Bool) -> String? {
     let expected = deviceKey(target)
     if let exact = sources.first(where: { deviceKey($0.id) == expected }) { return exact.id }
@@ -105,26 +105,26 @@ func captureSourceID(for target: String, devices: [PortalUSBDevice], sources: [C
     return nil
 }
 
-struct PortalDeviceRow: Identifiable, Equatable {
+struct IPortalDeviceRow: Identifiable, Equatable {
     let serial: String
     let name: String
     var available: Bool
-    var kind: PortalDeviceKind = .iPhone
+    var kind: IPortalDeviceKind = .iPhone
     var id: String { serial }
 }
 
 // Keep the label through brief USB enumeration gaps, but disable its action
 // immediately. Repeated updates must not extend a genuinely removed row's life.
 struct USBDeviceListState {
-    private var rows: [String: PortalDeviceRow] = [:]
+    private var rows: [String: IPortalDeviceRow] = [:]
     private var deadlines: [String: TimeInterval] = [:]
-    var devices: [PortalDeviceRow] { rows.values.sorted { $0.serial < $1.serial } }
+    var devices: [IPortalDeviceRow] { rows.values.sorted { $0.serial < $1.serial } }
     var nextExpiry: TimeInterval? { deadlines.values.min() }
 
-    mutating func update(_ devices: [PortalUSBDevice], at now: TimeInterval) {
+    mutating func update(_ devices: [IPortalUSBDevice], at now: TimeInterval) {
         let connected = Set(devices.map(\.serial))
         for device in devices {
-            rows[device.serial] = PortalDeviceRow(serial: device.serial, name: device.name, available: true, kind: device.kind)
+            rows[device.serial] = IPortalDeviceRow(serial: device.serial, name: device.name, available: true, kind: device.kind)
             deadlines.removeValue(forKey: device.serial)
         }
         for serial in rows.keys where !connected.contains(serial) {

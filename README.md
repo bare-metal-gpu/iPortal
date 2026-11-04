@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="iPhone Portal — a glass-engraved title and Dynamic Island symbol against a sparse star field" width="100%" />
+  <img src="docs/banner.png" alt="iPortal — a glass-engraved title and Dynamic Island symbol against a sparse star field" width="100%" />
 </p>
 
 **Getting this in the EU?**
@@ -18,13 +18,13 @@ You need macOS 14+, full Xcode, Node 22.19+ and an Apple ID (a free one is fine)
 4. Run:
 
 ```bash
-git clone https://github.com/bare-metal-gpu/iphone-mirror && cd iphone-mirror
+git clone https://github.com/bare-metal-gpu/iPortal && cd iPortal
 npm ci
 npm run setup   # builds the helper app for your iPhone
-npm run app     # installs "iPhone Portal" to ~/Applications
+npm run app     # installs "iPortal" to ~/Applications
 ```
 
-5. Open **iPhone Portal** and allow Camera and Microphone access when asked.
+5. Open **iPortal** and allow Camera and Microphone access when asked.
 6. First launch only: on the iPhone, go to Settings → General → VPN & Device Management → trust your Apple ID.
 
 ## Use
@@ -37,7 +37,7 @@ button to mirror it. iPads work the same way. Press Play for another connected
 device to open its own mirror; pressing Play again focuses its existing window.
 Keyboard shortcuts and audio controls apply to the focused window. Closing one
 mirror leaves the others running. The menu-bar settings include **Open at Login** (starts only
-the watcher) and **Quit iPhone Portal** (stops everything).
+the watcher) and **Quit iPortal** (stops everything).
 
 | Shortcut     | Action                          |
 | ------------ | ------------------------------- |
@@ -53,12 +53,12 @@ Prefer the browser? Run `npm start` and open http://localhost:7100.
 - With a free Apple ID, run `npm run setup` again every 7 days.
 - The iPhone's sound plays on your Mac while mirroring.
 - Each additional iPhone or iPad needs the same one-time helper setup and trust.
-  Select it with `UDID=<device-udid> npm run setup`; `node mirror.mjs devices` lists connected IDs.
+  Select it with `UDID=<device-udid> npm run setup`; `node iportal.mjs devices` lists connected IDs.
 - When macOS cannot identify a native USB video source unambiguously among several
   devices, that window uses its device's screenshot stream. Device names are never
   used to guess which screen to show.
 
-The Mac app builds through `macos/iPhonePortal.xcodeproj` so Xcode compiles BorderBeamKit’s Metal shader and embeds its resources. The dependency tracks Libraries.dev’s `main` branch, with the resolved commit checked in. The phone window has 56-point corner resize targets with proportional sizing, and its loading background uses the same translucent blur as the toolbar. A border beam indicates startup, reconnecting, video loading, and pending input; it fades away when ready. The centered loading message pairs ThinkingOrbsKit’s `connecting` orb with shimmering Inter text on a transparent background. Inter is bundled with its SIL Open Font License. Reduce Motion uses static indicators. If Xcode reports a missing Metal Toolchain, install it once with `xcodebuild -downloadComponent MetalToolchain`.
+The Mac app builds through `macos/iPortal.xcodeproj` so Xcode compiles BorderBeamKit’s Metal shader and embeds its resources. The dependency tracks Libraries.dev’s `main` branch, with the resolved commit checked in. The phone window has 56-point corner resize targets with proportional sizing, and its loading background uses the same translucent blur as the toolbar. A border beam indicates startup, reconnecting, video loading, and pending input; it fades away when ready. The centered loading message pairs ThinkingOrbsKit’s `connecting` orb with shimmering Inter text on a transparent background. Inter is bundled with its SIL Open Font License. Reduce Motion uses static indicators. If Xcode reports a missing Metal Toolchain, install it once with `xcodebuild -downloadComponent MetalToolchain`.
 
 ## Automation API
 
@@ -84,7 +84,7 @@ parameters and caught errors remain permissive (`noImplicitAny` and
 migration. Add JSDoc at module boundaries and for mutable nullable state. Effect
 schemas validate API requests; existing endpoint checks validate upstream responses.
 
-Node and browser globals are checked separately. `public/mirror.js` stays a
+Node and browser globals are checked separately. `public/iportal.js` stays a
 classic script so the Mac can call its named entry points; `web-assets.mjs`
 inlines it into the HTML response without an extra request or compilation step.
 Oxlint explicitly checks floating/misused promises, dependency cycles, duplicate

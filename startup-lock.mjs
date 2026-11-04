@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 async function readStartupLock(udid) {
-  const directory = await mkdtemp(join(tmpdir(), "iphone-portal-lock-"));
+  const directory = await mkdtemp(join(tmpdir(), "iportal-lock-"));
   try {
     const output = join(directory, "state.json");
     await execute(

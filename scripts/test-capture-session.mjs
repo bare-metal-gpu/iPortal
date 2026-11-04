@@ -20,7 +20,7 @@ const match = capture.match(
 assert(match, "capture executor markers must exist");
 const executor = match[1];
 assert(executor.includes("CaptureSessionExecutor"));
-const temporary = await mkdtemp(join(tmpdir(), "iphone-portal-capture-"));
+const temporary = await mkdtemp(join(tmpdir(), "iportal-capture-"));
 try {
   const helper = join(temporary, "CaptureSessionExecutor.swift");
   const binary = join(temporary, "capture-session-tests");

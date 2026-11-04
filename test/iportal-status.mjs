@@ -2,14 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 import { decodeRequest } from "../schemas.mjs";
-import { createPortalStatus } from "../portal-status.mjs";
+import { createIPortalStatus } from "../iportal-status.mjs";
 
 function harness(wda) {
   let time = 0,
     next,
     awake = { enabled: false };
   const calls = [];
-  const portal = createPortalStatus({
+  const portal = createIPortalStatus({
     wda: async (...args) => {
       calls.push(args);
       return wda?.(...args);

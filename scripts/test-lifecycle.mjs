@@ -9,7 +9,7 @@ if (process.platform !== "darwin") {
   process.exit(0);
 }
 const root = fileURLToPath(new URL("../", import.meta.url));
-const directory = await mkdtemp(join(tmpdir(), "iphone-portal-lifecycle-"));
+const directory = await mkdtemp(join(tmpdir(), "iportal-lifecycle-"));
 try {
   const binary = join(directory, "lifecycle-tests");
   execFileSync(

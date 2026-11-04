@@ -40,7 +40,7 @@ private func portalMenuIcon() -> NSImage {
 
 @MainActor
 private final class MenuBarState: ObservableObject {
-    @Published var devices: [PortalDeviceRow] = []
+    @Published var devices: [IPortalDeviceRow] = []
     @Published var loginEnabled = false
     @Published var presentation = PopoverPresentation()
     var visible: Bool { presentation.visible }
@@ -136,7 +136,7 @@ private struct MirrorPopover: View {
                 Menu {
                     Toggle("Open at Login", isOn: Binding(get: { state.loginEnabled }, set: setLogin))
                     Divider()
-                    Button("Quit iPhone Portal", action: quit)
+                    Button("Quit iPortal", action: quit)
                 } label: { Image(systemName: "gearshape").frame(width: 24, height: 24) }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("Settings").accessibilityLabel("Settings")
@@ -178,10 +178,10 @@ final class MirrorMenuBar: NSObject {
 
     override init() {
         super.init()
-        item.autosaveName = "iPhonePortal"
+        item.autosaveName = "iPortal"
         item.button?.image = portalMenuIcon()
-        item.button?.setAccessibilityLabel("iPhone Portal")
-        item.button?.toolTip = "iPhone Portal"
+        item.button?.setAccessibilityLabel("iPortal")
+        item.button?.toolTip = "iPortal"
         item.button?.target = self
         item.button?.action = #selector(clicked)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -211,11 +211,11 @@ final class MirrorMenuBar: NSObject {
         }
     }
 
-    func update(devices: [PortalUSBDevice], mirroring: Bool) {
+    func update(devices: [IPortalUSBDevice], mirroring: Bool) {
         deviceList.update(devices, at: ProcessInfo.processInfo.systemUptime)
         state.devices = deviceList.devices
         scheduleExpiry()
-        item.button?.toolTip = mirroring ? "iPhone Portal — Mirroring" : "iPhone Portal"
+        item.button?.toolTip = mirroring ? "iPortal — Mirroring" : "iPortal"
         if state.visible { position() }
     }
 
@@ -328,7 +328,7 @@ final class MirrorMenuBar: NSObject {
         login.state = isLoginEnabled() ? .on : .off
         menu.addItem(login)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit iPhone Portal", action: #selector(quitAll), keyEquivalent: "")
+        let quit = NSMenuItem(title: "Quit iPortal", action: #selector(quitAll), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
         item.menu = menu

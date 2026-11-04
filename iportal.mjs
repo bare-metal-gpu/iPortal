@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// iphone-mirror: control your iPhone from your computer.
+// iportal: control your iPhone from your computer.
 // Video comes from WebDriverAgent's MJPEG stream, input goes back through WDA's W3C actions API.
 // USB forwarding talks to usbmuxd directly, so no iproxy / libimobiledevice is needed.
 
 import net from "node:net";
-import { loadMirrorHTML } from "./web-assets.mjs";
+import { loadIPortalHTML } from "./web-assets.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -14,7 +14,7 @@ import { parseArgs } from "node:util";
 import { apiError } from "./errors.mjs";
 import { createInspection } from "./inspection.mjs";
 import { createKeepAwake } from "./keep-awake.mjs";
-import { createPortalStatus } from "./portal-status.mjs";
+import { createIPortalStatus } from "./iportal-status.mjs";
 import { randomUUID } from "node:crypto";
 import { commandContext, createScheduler } from "./scheduler.mjs";
 import { createCommands } from "./commands.mjs";
@@ -82,9 +82,7 @@ function muxOpen() {
 }
 
 function muxSend(sock, dict) {
-  const body = Buffer.from(
-    plist({ ClientVersionString: "iphone-mirror", ProgName: "iphone-mirror", ...dict }),
-  );
+  const body = Buffer.from(plist({ ClientVersionString: "iportal", ProgName: "iportal", ...dict }));
   const head = Buffer.alloc(16);
   head.writeUInt32LE(16 + body.length, 0);
   head.writeUInt32LE(1, 4); // protocol version: plist
@@ -528,7 +526,7 @@ const WDA_PROBLEMS = [
   ],
   [
     /cannot be installed on this device|doesn't include the currently selected device/,
-    "Finish setting up iPhone Portal on your Mac.",
+    "Finish setting up iPortal on your Mac.",
   ],
   [
     /Developer Mode is (disabled|not enabled)|enable Developer Mode/i,
@@ -556,7 +554,7 @@ function maybeStartWda(udid, connectionID) {
     process.platform !== "darwin"
   )
     return;
-  if (!fs.existsSync(path.join(ROOT, "vendor/build"))) return;
+  if (!fs.existsSync(path.join(ROOT, "vendor/iportal-device-build"))) return;
   const logPath = path.join(ROOT, `vendor/wda-${udid}.log`);
   const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   const log = fs.openSync(logPath, "a");
@@ -705,9 +703,10 @@ async function status(signal) {
     maybeStartWda(device.udid, device.id);
     error = wdaProblem
       ? wdaProblem
-      : wdaProcess || (fs.existsSync(path.join(ROOT, "vendor/build")) && !opts["no-autostart"])
+      : wdaProcess ||
+          (fs.existsSync(path.join(ROOT, "vendor/iportal-device-build")) && !opts["no-autostart"])
         ? null
-        : "Finish setting up iPhone Portal on your Mac.";
+        : "Finish setting up iPortal on your Mac.";
   } else if (MANUAL && !up) error = "Reconnect your iPhone.";
   const lifecycle =
     !MANUAL && !device
@@ -718,9 +717,9 @@ async function status(signal) {
           ? "ready"
           : "connecting";
   if (opts["device-kind"] === "iPad" && error)
-    error = error.replaceAll(/iPhone(?! Portal)/g, "iPad");
+    error = error.replaceAll(/iPhone(?! iPortal)/g, "iPad");
   return {
-    service: "iphone-mirror",
+    service: "iportal",
     apiVersion: 2,
     instanceId,
     observedAt,
@@ -759,14 +758,14 @@ if (positionals[0] === "devices") {
 
 const inspection = createInspection({ wda, withSession, enqueue });
 const keepAwake = createKeepAwake({ wda, withSession, enqueue: (fn) => scheduler.maintenance(fn) });
-const portalStatus = createPortalStatus({ wda, keepAwake: keepAwake.status });
+const portalStatus = createIPortalStatus({ wda, keepAwake: keepAwake.status });
 const statusEvents = createStatusEvents({ read: status });
 process.on("exit", () => portalStatus.stop());
 let commands;
 const commandLedger = () =>
   (commands ??= createCommands({
     file:
-      process.env.MIRROR_COMMANDS_FILE ??
+      process.env.IPORTAL_COMMANDS_FILE ??
       path.join(
         ROOT,
         "vendor",
@@ -907,7 +906,7 @@ if (!MANUAL) {
 startServer({
   port: +opts.port,
   instanceId,
-  html: loadMirrorHTML(),
+  html: loadIPortalHTML(),
   mjpeg: MJPEG,
   dispatch,
   statusEvents,
@@ -917,9 +916,9 @@ startServer({
     const url = `http://localhost:${port}`;
     if (opts.managed)
       console.log(
-        JSON.stringify({ event: "mirror-listening", owner: opts.owner, udid: pinnedUdid, port }),
+        JSON.stringify({ event: "iportal-listening", owner: opts.owner, udid: pinnedUdid, port }),
       );
-    console.log(`\n  iPhone Mirror running at ${url}\n`);
+    console.log(`\n  iPortal running at ${url}\n`);
     if (process.platform === "darwin" && !opts["no-open"])
       spawn("open", [url], { stdio: "ignore" });
   },

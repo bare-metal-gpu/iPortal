@@ -30,7 +30,7 @@ enum CaptureSessionExecutor {
     private static func queue(for key: String) -> DispatchQueue {
         lock.lock(); defer { lock.unlock() }
         if let queue = queues[key] { return queue }
-        let queue = DispatchQueue(label: "iphone-portal.capture-\(key)", qos: .userInitiated)
+        let queue = DispatchQueue(label: "iportal.capture-\(key)", qos: .userInitiated)
         queues[key] = queue
         return queue
     }
@@ -131,7 +131,7 @@ final class PhoneCapture {
     private static var claims: [String: UUID] = [:]
     private let claimID = UUID()
     private var sourceID: String?
-    var connectedDevices: () -> [PortalUSBDevice] = { [] }
+    var connectedDevices: () -> [IPortalUSBDevice] = { [] }
     let session = AVCaptureSession()
     let layer: AVCaptureVideoPreviewLayer
     let audio = AVCaptureAudioPreviewOutput()
@@ -143,7 +143,7 @@ final class PhoneCapture {
     private let lifetime = CaptureLifetime()
     private let frames: FrameStore
     private let video = AVCaptureVideoDataOutput()
-    private let frameQueue = DispatchQueue(label: "iphone-portal.capture-frames", qos: .userInitiated)
+    private let frameQueue = DispatchQueue(label: "iportal.capture-frames", qos: .userInitiated)
     private var completion: (@MainActor (Bool) -> Void)?
     private var started = false
     private var configuring = false
@@ -175,7 +175,7 @@ final class PhoneCapture {
     /// Calls done(true) once video is running, or done(false) if access is denied or no iPhone shows up.
     func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, _ done: @escaping @MainActor (Bool) -> Void) {
         guard !started, !stopped else { return done(false) }
-        portalTrace("capture-start-entered")
+        iportalTrace("capture-start-entered")
         started = true
         completion = done
         deviceUDID = udid
@@ -186,7 +186,7 @@ final class PhoneCapture {
             mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
         var allow: UInt32 = 1
         CMIOObjectSetPropertyData(CMIOObjectID(kCMIOObjectSystemObject), &prop, 0, nil, UInt32(MemoryLayout<UInt32>.size), &allow)
-        portalTrace("capture-devices-enabled")
+        iportalTrace("capture-devices-enabled")
 
         Task { @MainActor [weak self] in
             let (video, audio) = await CapturePermissions.request()
@@ -220,13 +220,13 @@ final class PhoneCapture {
             session.outputs.forEach(session.removeOutput)
             session.commitConfiguration()
             frames.clear()
-            portalTrace("capture-stopped")
+            iportalTrace("capture-stopped")
         }
     }
 
     private func finish(_ ok: Bool) {
         guard !stopped else { return }
-        portalTrace("capture-completion", ["ok": ok])
+        iportalTrace("capture-completion", ["ok": ok])
         let callback = completion
         completion = nil
         callback?(ok)
@@ -258,7 +258,7 @@ final class PhoneCapture {
             sourceID = device.uniqueID
             Self.claims[device.uniqueID] = claimID
             configuring = true
-            portalTrace("capture-device-available")
+            iportalTrace("capture-device-available")
             return run(device, withAudio: withAudio)
         }
         if identityAmbiguous { return finish(false) }
@@ -283,7 +283,7 @@ final class PhoneCapture {
         let frames = self.frames
         let frameQueue = self.frameQueue
         CaptureSessionExecutor.start(lifetime, key: device.uniqueID, operation: {
-            portalTrace("capture-configure")
+            iportalTrace("capture-configure")
             guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return false }
             session.beginConfiguration()
             session.addInput(input)
@@ -295,7 +295,7 @@ final class PhoneCapture {
             if withAudio, session.canAddOutput(audio) { session.addOutput(audio) }
             session.commitConfiguration()
             session.startRunning() // blocks until the stream is up
-            portalTrace("capture-start-returned")
+            iportalTrace("capture-start-returned")
             return session.isRunning
         }, completion: { [weak self] ok in
             DispatchQueue.main.async {

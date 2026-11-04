@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>iPhone Portal</string>
+	<string>iPortal</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconFile</key>
@@ -11,17 +11,17 @@
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleName</key>
-	<string>iPhone Portal</string>
+	<string>iPortal</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>3</string>
-	<key>IMNodePath</key>
-	<string>$(IM_NODE_PATH)</string>
-	<key>IMRepoPath</key>
-	<string>$(IM_REPO_PATH)</string>
+	<string>4</string>
+	<key>IPortalNodePath</key>
+	<string>$(IPORTAL_NODE_PATH)</string>
+	<key>IPortalRepoPath</key>
+	<string>$(IPORTAL_REPO_PATH)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSAppTransportSecurity</key>
@@ -30,10 +30,10 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>iPhone Portal shows your iPhone’s screen by capturing it over USB, like QuickTime does.</string>
+	<string>iPortal shows your iPhone’s screen by capturing it over USB, like QuickTime does.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>iPhone Portal plays your iPhone’s sound on your Mac.</string>
+	<string>iPortal plays your iPhone’s sound on your Mac.</string>
 </dict>
 </plist>

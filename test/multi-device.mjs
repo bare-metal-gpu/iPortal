@@ -7,7 +7,7 @@ import net from "node:net";
 import { startFakeIphone } from "./fake-iphone.mjs";
 import { claimDevice, canonicalUDID } from "../device-runtime.mjs";
 
-const scratch = fs.mkdtempSync("/tmp/portal-multi-");
+const scratch = fs.mkdtempSync("/tmp/iportal-multi-");
 const socketPath = path.join(scratch, "mux.sock");
 const phoneID = "00008140-0000000000000001",
   padID = "00008140-0000000000000002";
@@ -37,7 +37,7 @@ async function start(udid, kind) {
   const child = spawn(
     process.execPath,
     [
-      "mirror.mjs",
+      "iportal.mjs",
       "--no-open",
       "--no-autostart",
       "--managed",
@@ -58,7 +58,7 @@ async function start(udid, kind) {
       env: {
         ...process.env,
         USBMUXD_SOCKET_ADDRESS: socketPath,
-        MIRROR_COMMANDS_FILE: path.join(scratch, `${kind}-commands.json`),
+        IPORTAL_COMMANDS_FILE: path.join(scratch, `${kind}-commands.json`),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -73,7 +73,9 @@ async function start(udid, kind) {
     errors += c;
   });
   for (let i = 0; i < 100; i++) {
-    const ready = output.split("\n").find((line) => line.startsWith('{"event":"mirror-listening"'));
+    const ready = output
+      .split("\n")
+      .find((line) => line.startsWith('{"event":"iportal-listening"'));
     if (ready) {
       const event = JSON.parse(ready);
       assert.equal(event.udid, udid);

@@ -1,4 +1,4 @@
-import { loadMirrorHTML } from "../web-assets.mjs";
+import { loadIPortalHTML } from "../web-assets.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -30,7 +30,7 @@ function trackedClasses() {
 }
 
 void test("browser bootstrap supplies instance binding and request ID without prompts", async () => {
-  const html = loadMirrorHTML();
+  const html = loadIPortalHTML();
   const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
   const calls = [],
     nodes = new Map();
@@ -78,7 +78,7 @@ void test("browser bootstrap supplies instance binding and request ID without pr
       return {
         json: async () =>
           url === "/api/status"
-            ? { service: "iphone-mirror", apiVersion: 2, instanceId: "instance", ok: false }
+            ? { service: "iportal", apiVersion: 2, instanceId: "instance", ok: false }
             : { ok: true },
       };
     },
@@ -86,12 +86,12 @@ void test("browser bootstrap supplies instance binding and request ID without pr
   await new Promise((resolve) => setImmediate(resolve));
   const ensure = calls.find(([url]) => url === "/api/ensure");
   assert.ok(ensure);
-  assert.equal(ensure[1].headers["x-mirror-instance"], "instance");
+  assert.equal(ensure[1].headers["x-iportal-instance"], "instance");
   assert.ok(JSON.parse(ensure[1].body).requestId);
 });
 
 void test("native loading tracks queued input, reconnects and the first fallback frame", async () => {
-  const html = loadMirrorHTML();
+  const html = loadIPortalHTML();
   const messages = [],
     releases = [],
     nodes = new Map();
@@ -153,7 +153,7 @@ void test("native loading tracks queued input, reconnects and the first fallback
         json: async () =>
           url === "/api/status"
             ? {
-                service: "iphone-mirror",
+                service: "iportal",
                 apiVersion: 2,
                 instanceId: "instance",
                 ok: true,
@@ -364,7 +364,7 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
         await beforeStatus?.();
         return {
           json: async () => ({
-            service: "iphone-mirror",
+            service: "iportal",
             apiVersion: 2,
             instanceId: "instance",
             ok: true,
@@ -404,7 +404,7 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
       return response ?? { json: async () => ({ ok: true }) };
     },
   });
-  vm.runInContext(loadMirrorHTML().match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "", context);
+  vm.runInContext(loadIPortalHTML().match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "", context);
   const run = (code) => vm.runInContext(code, context);
   const settle = async () => {
     for (let i = 0; i < 4; i++) await new Promise((resolve) => setImmediate(resolve));
@@ -1069,7 +1069,7 @@ void test("automatic browser binding blocks foreign origins and rebinding withou
   });
   checkRequest(request({}), 7100, "instance");
   checkRequest(
-    request({ origin: "http://localhost:7100", "x-mirror-instance": "instance" }),
+    request({ origin: "http://localhost:7100", "x-iportal-instance": "instance" }),
     7100,
     "instance",
   );
@@ -1080,7 +1080,7 @@ void test("automatic browser binding blocks foreign origins and rebinding withou
     { origin: "null" },
     { origin: "http://localhost:7101" },
     { "sec-fetch-site": "cross-site" },
-    { origin: "http://localhost:7100", "x-mirror-instance": "old-instance" },
+    { origin: "http://localhost:7100", "x-iportal-instance": "old-instance" },
   ])
     assert.throws(() => checkRequest(request(headers), 7100, "instance"));
 });
@@ -1210,7 +1210,7 @@ void test("pushed status wakes readiness without a poll and rejects old events/d
   );
   const count = h.calls.filter(([url]) => url === "/api/status").length;
   const event = (sequence) =>
-    `({service:'iphone-mirror',apiVersion:2,instanceId:'instance',eventSequence:${sequence},observedAt:Date.now(),ok:false,lifecycle:'disconnected',pinnedUdid:'phone-a'})`;
+    `({service:'iportal',apiVersion:2,instanceId:'instance',eventSequence:${sequence},observedAt:Date.now(),ok:false,lifecycle:'disconnected',pinnedUdid:'phone-a'})`;
   h.run(`receiveServerStatus(${event(20)}, 'retired-page')`);
   assert.equal(h.run("canInteract()"), true);
   h.run(`receiveServerStatus(${event(20)}, bridgeId)`);

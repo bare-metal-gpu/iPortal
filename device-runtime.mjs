@@ -19,7 +19,7 @@ export async function claimDevice(
   udid,
   directory = path.join(
     process.platform === "darwin" ? "/tmp" : os.tmpdir(),
-    `iphone-portal-${process.getuid?.() ?? "user"}`,
+    `iportal-${process.getuid?.() ?? "user"}`,
   ),
 ) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

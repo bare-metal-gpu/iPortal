@@ -3,9 +3,9 @@
 
 // Loaded by the host executable, before the test bundle. Keep Apple's app and
 // scene delegates intact: they own XCTest startup and background execution.
-@interface PortalStatusScreen : NSObject
+@interface IPortalStatusScreen : NSObject
 @end
-@implementation PortalStatusScreen
+@implementation IPortalStatusScreen
 + (void)installInExistingWindows {
   for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
     if (![scene isKindOfClass:UIWindowScene.class]) continue;
@@ -13,7 +13,7 @@
       if (window.windowLevel != UIWindowLevelNormal || [window.rootViewController.view viewWithTag:4102]) continue;
       // Never create or activate a window, and never replace a real app screen.
       if (window.rootViewController != nil) continue;
-      window.rootViewController = [NSClassFromString(@"PortalViewController") new];
+      window.rootViewController = [NSClassFromString(@"IPortalViewController") new];
     }
   }
 }
@@ -27,7 +27,7 @@
     void (*original)(id, SEL, BOOL) = (void *)method_getImplementation(method);
     method_setImplementation(method, imp_implementationWithBlock(^(id delegate, BOOL background) {
       NSDictionary *env = NSProcessInfo.processInfo.environment;
-      if ([env[@"PORTAL_AUTOMATION"] isEqual:@"1"] || [env[@"XCTestConfigurationFilePath"] length] || [env[@"XCTestSessionIdentifier"] length]
+      if ([env[@"IPORTAL_AUTOMATION"] isEqual:@"1"] || [env[@"XCTestConfigurationFilePath"] length] || [env[@"XCTestSessionIdentifier"] length]
           || [env[@"XCTestBundlePath"] length]) original(delegate, start, background);
     }));
   }

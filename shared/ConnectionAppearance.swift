@@ -3,7 +3,7 @@ import BorderBeamKit
 import ThinkingOrbsKit
 
 // Shared by the Mac overlay and the iPhone host; one layout and one animation.
-struct PortalConnectionMessage: View {
+struct IPortalConnectionMessage: View {
     let title: String
     var detail = ""
     var keepAwakeSeconds = 0
@@ -29,7 +29,7 @@ struct PortalConnectionMessage: View {
                                     paused: !isVisible, displaySize: orbSize)
                             .accessibilityHidden(true)
                     }
-                    PortalStatusLabel(text: title, animated: shimmer && isVisible)
+                    IPortalStatusLabel(text: title, animated: shimmer && isVisible)
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 10)
@@ -80,7 +80,7 @@ struct PortalConnectionMessage: View {
     }
 }
 
-struct PortalConnectionBorder: View {
+struct IPortalConnectionBorder: View {
     let active: Bool
     var radius: CGFloat = 42
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -99,7 +99,7 @@ struct PortalConnectionBorder: View {
     }
 }
 
-private struct PortalStatusLabel: View {
+private struct IPortalStatusLabel: View {
     let text: String
     let animated: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

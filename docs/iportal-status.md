@@ -17,7 +17,7 @@ platforms.
 | USB host detaches                                             | Disconnected; connect to your Mac                         |
 | USB host reattaches while video is loading after a connection | Reconnecting…                                             |
 | Heartbeat missing for 3 seconds, without a host event         | Disconnected (fallback)                                   |
-| Another app is open                                           | Portal remains in the background                          |
+| Another app is open                                           | iPortal remains in the background                         |
 | Phone locked                                                  | Normal iOS lock screen; the Mac asks for unlock           |
 | Helper terminated                                             | No running UI; opening the app shows the waiting screen   |
 
@@ -32,14 +32,14 @@ moving the row. Reduce Motion disables these transitions.
 
 ## Implementation
 
-Apple's generated XCTest host creates an empty window. `PortalUI.framework` fills
+Apple's generated XCTest host creates an empty window. `iPortalUI.framework` fills
 that existing window using a SwiftUI hosting controller. The framework is loaded by the host
 before the test bundle, so the screen does not depend on the HTTP server starting.
 The runner's application/scene delegates and XCTest entry point stay intact.
 One guarded hook suppresses automatic test startup on manual launches, so opening
 the app stays on its waiting screen. Launches with XCTest configuration or the
-Mac's explicit `PORTAL_AUTOMATION=1` flag call the original test-start method.
-No window is created or activated by Portal, and other apps are never brought out
+Mac's explicit `IPORTAL_AUTOMATION=1` flag call the original test-start method.
+No window is created or activated by iPortal, and other apps are never brought out
 of the foreground by a status update.
 
 The build compiles and signs this framework with the host's existing identity.
@@ -89,7 +89,7 @@ not enable keep-awake. The API uses the existing local-origin and instance check
 
 `npm test` covers presence expiry, multiple viewers, backpressure, old-helper
 compatibility, Effect schema validation, repeatable installation, and rollback,
-alongside the existing input/capture/lifecycle suite. `python3 test/portal-host.py`
+alongside the existing input/capture/lifecycle suite. `python3 test/iportal-host.py`
 covers binary-section preservation, repeated linking, and unsupported layouts.
 
 Physical-device checks: standalone launch, waiting/connecting/connected screen,

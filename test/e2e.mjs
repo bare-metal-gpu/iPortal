@@ -13,7 +13,7 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-e2e-"));
 const server = spawn(
   process.execPath,
   [
-    "mirror.mjs",
+    "iportal.mjs",
     "--port",
     String(PORT),
     "--wda-port",
@@ -26,7 +26,7 @@ const server = spawn(
     env: {
       ...process.env,
       USBMUXD_SOCKET_ADDRESS: SOCKET,
-      MIRROR_COMMANDS_FILE: path.join(scratch, "commands.json"),
+      IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
     },
     stdio: "inherit",
   },
@@ -75,7 +75,7 @@ try {
   const healthStarted = performance.now();
   const health = await readJSON(await fetch(`${base}/api/health`));
   assert.deepEqual(health, {
-    service: "iphone-mirror",
+    service: "iportal",
     apiVersion: 2,
     instanceId: status.instanceId,
     ok: true,
@@ -360,7 +360,7 @@ try {
     headers: {
       origin: base,
       "content-type": "application/json",
-      "x-mirror-instance": status.instanceId,
+      "x-iportal-instance": status.instanceId,
     },
     body: "{}",
   });

@@ -3,7 +3,7 @@
 /** @param {{wda: Function, keepAwake: Function, now?: () => number,
  * later?: (fn: () => void | Promise<void>, ms: number) => NodeJS.Timeout | number,
  * cancel?: (timer: NodeJS.Timeout | number | undefined) => void, intervalMs?: number, ttlMs?: number}} options */
-export function createPortalStatus({
+export function createIPortalStatus({
   wda,
   keepAwake,
   now = () => performance.now(),

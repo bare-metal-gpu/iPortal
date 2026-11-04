@@ -70,7 +70,7 @@
 +                 spinUntilTrue:^BOOL{ return atomic_load_explicit(&completed, memory_order_acquire); } error:error];
 +  if (!replied) return NO;
 +  if (failure || value < 1 || value > 4) {
-+    if (error) *error = failure ?: [NSError errorWithDomain:@"iphone-mirror" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Unknown interface orientation"}];
++    if (error) *error = failure ?: [NSError errorWithDomain:@"iportal" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Unknown interface orientation"}];
 +    return NO;
 +  }
 +  *orientation = (UIInterfaceOrientation)value;
@@ -104,7 +104,7 @@
    return FBResponseWithOK();
  }
  
--// iphone-mirror: injects a touch path straight into the event synthesizer. Unlike /actions it skips the
+-// iportal: injects a touch path straight into the event synthesizer. Unlike /actions it skips the
 -// active-app lookup, accessibility snapshots and the wait-for-idle, so a tap lands ~150 ms sooner. Body: { points: [[x, y, ms], ...] as 0..1 fractions of the portrait screen, end: ms }.
 +// Coordinates are fractions of the current, oriented full screen. Never reuse portrait dimensions.
  + (id<FBResponsePayload>)handleMirrorTouch:(FBRouteRequest *)request
@@ -157,7 +157,7 @@
 +    return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Interface orientation changed" traceback:nil]);
 +  }
 +  XCUIScreen *screen = [FBScreen currentScreenWithError:&error];
-+  if (!screen || screen.scale <= 0) return FBResponseWithUnknownError(error ?: [NSError errorWithDomain:@"iphone-mirror" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Screen geometry unavailable"}]);
++  if (!screen || screen.scale <= 0) return FBResponseWithUnknownError(error ?: [NSError errorWithDomain:@"iportal" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Screen geometry unavailable"}]);
 +  CGSize size = FBMirrorOrientedSize(CGSizeMake(screen.bounds.size.width / screen.scale, screen.bounds.size.height / screen.scale), orientation);
 +  if (!isfinite(size.width) || !isfinite(size.height) || size.width < 1 || size.height < 1) {
 +    return FBResponseWithStatus([FBCommandStatus invalidElementStateErrorWithMessage:@"Invalid screen geometry" traceback:nil]);

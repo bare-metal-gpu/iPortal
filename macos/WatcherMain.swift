@@ -5,23 +5,23 @@ import Darwin
 final class WatcherDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MirrorMenuBar?
     private var usbMonitor: PhoneUSBMonitor?
-    private let names = PhoneDeviceNames(defaults: PortalWatcher.preferences)
+    private let names = PhoneDeviceNames(defaults: IPortalWatcher.preferences)
     private var invitations = USBInvitationGate()
     private var workspaceObservers: [NSObjectProtocol] = []
     private var settingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Keep the user's status-item position during the one-time migration.
-        for (key, value) in PortalWatcher.preferences.dictionaryRepresentation()
+        for (key, value) in IPortalWatcher.preferences.dictionaryRepresentation()
             where key.hasPrefix("NSStatusItem") && UserDefaults.standard.object(forKey: key) == nil {
             UserDefaults.standard.set(value, forKey: key)
         }
         menuBar = MirrorMenuBar()
-        menuBar?.isLoginEnabled = { PortalWatcher.loginEnabled }
-        menuBar?.onStart = { PortalWatcher.request(.mirror($0)) }
-        menuBar?.onLogin = { PortalWatcher.request(.login($0)) }
+        menuBar?.isLoginEnabled = { IPortalWatcher.loginEnabled }
+        menuBar?.onStart = { IPortalWatcher.request(.mirror($0)) }
+        menuBar?.onLogin = { IPortalWatcher.request(.login($0)) }
         menuBar?.onQuit = {
-            PortalWatcher.mainApplications.forEach { _ = $0.terminate() }
+            IPortalWatcher.mainApplications.forEach { _ = $0.terminate() }
             NSApp.terminate(nil)
         }
         names.onUpdate = { [weak self] in self?.updateMenu() }
@@ -36,22 +36,22 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated { self?.updateMenu() }
             })
         }
-        settingsObserver = DistributedNotificationCenter.default().addObserver(forName: PortalWatcher.settingsChanged,
-            object: PortalWatcher.appURL.path, queue: .main) { [weak self] _ in
+        settingsObserver = DistributedNotificationCenter.default().addObserver(forName: IPortalWatcher.settingsChanged,
+            object: IPortalWatcher.appURL.path, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.menuBar?.refreshLoginStatus() }
             }
         if ProcessInfo.processInfo.arguments.contains("--show-devices") ||
-            (PortalWatcher.mainApplications.isEmpty && usbMonitor?.connectedDevices.isEmpty == false) {
+            (IPortalWatcher.mainApplications.isEmpty && usbMonitor?.connectedDevices.isEmpty == false) {
             menuBar?.show()
         }
-        NSLog("Portal watcher started: %d", ProcessInfo.processInfo.processIdentifier)
+        NSLog("iPortal watcher started: %d", ProcessInfo.processInfo.processIdentifier)
     }
 
     private func updateMenu() {
         let devices = (usbMonitor?.connectedDevices ?? []).map {
-            PortalUSBDevice(serial: $0.serial, name: names.name(for: $0.serial, fallback: $0.name), kind: $0.kind)
+            IPortalUSBDevice(serial: $0.serial, name: names.name(for: $0.serial, fallback: $0.name), kind: $0.kind)
         }
-        menuBar?.update(devices: devices, mirroring: !PortalWatcher.mainApplications.isEmpty)
+        menuBar?.update(devices: devices, mirroring: !IPortalWatcher.mainApplications.isEmpty)
     }
 
     private func usbChanged(_ serial: String, attached: Bool) {
@@ -61,13 +61,13 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         else { invitations.detached(serial, at: now); invite = false }
         updateMenu()
         if attached { names.refresh(usbMonitor?.connectedSerials ?? []) }
-        if invite && PortalWatcher.mainApplications.isEmpty { menuBar?.show() }
+        if invite && IPortalWatcher.mainApplications.isEmpty { menuBar?.show() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // Background launches from the main app must not flash the device list.
-        if PortalWatcher.mainApplications.isEmpty { menuBar?.show(activate: true) }
+        if IPortalWatcher.mainApplications.isEmpty { menuBar?.show(activate: true) }
         return true
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -80,17 +80,17 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct PortalWatcherApp {
+struct IPortalWatcherApp {
     @MainActor static func main() {
         // ServiceManagement and a foreground launch can arrive concurrently.
         // An atomic, process-lifetime lock prevents duplicate status items.
         let manager = FileManager.default
         guard let support = try? manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                             appropriateFor: nil, create: true) else { return }
-        let directory = support.appendingPathComponent("iPhone Portal", isDirectory: true)
+        let directory = support.appendingPathComponent("iPortal", isDirectory: true)
         do { try manager.createDirectory(at: directory, withIntermediateDirectories: true,
                                          attributes: [.posixPermissions: 0o700]) }
-        catch { NSLog("Portal watcher cannot create its session lock: %@", error.localizedDescription); return }
+        catch { NSLog("iPortal watcher cannot create its session lock: %@", error.localizedDescription); return }
         let descriptor = open(directory.appendingPathComponent("watcher.lock").path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { return }
         defer { close(descriptor) }

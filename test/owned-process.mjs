@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 void test("owned test launcher stops on lifetime-pipe closure, including an unresponsive child", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "portal-owned-"));
+  const scratch = await mkdtemp(join(tmpdir(), "iportal-owned-"));
   let guard, childPID;
   try {
     const marker = join(scratch, "pid");

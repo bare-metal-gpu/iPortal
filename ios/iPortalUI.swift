@@ -4,23 +4,23 @@ import CoreText
 import ThinkingOrbsKit
 
 @MainActor
-private final class PortalScreenState: ObservableObject {
+private final class IPortalScreenState: ObservableObject {
     @Published var phase = "waiting"
     @Published var title = "Waiting for your Mac"
-    @Published var detail = "Connect by USB and open iPhone Portal on your Mac."
+    @Published var detail = "Connect by USB and open iPortal on your Mac."
     @Published var keepAwakeSeconds = 0
     @Published var visible = false
 }
 
-private struct PortalScreen: View {
-    @ObservedObject var state: PortalScreenState
+private struct IPortalScreen: View {
+    @ObservedObject var state: IPortalScreenState
     var body: some View {
         let connecting = state.phase == "connecting" || state.phase == "reconnecting"
         let orb: OrbState = state.phase == "reconnecting" ? .solving : state.phase == "connected" ? .searching : .connecting
         ZStack {
             Color.black
-            PortalConnectionBorder(active: connecting && state.visible)
-            PortalConnectionMessage(title: state.title, detail: state.detail, keepAwakeSeconds: state.keepAwakeSeconds,
+            IPortalConnectionBorder(active: connecting && state.visible)
+            IPortalConnectionMessage(title: state.title, detail: state.detail, keepAwakeSeconds: state.keepAwakeSeconds,
                                     orb: orb, isVisible: state.visible, shimmer: connecting)
         }
         .ignoresSafeArea()
@@ -28,9 +28,9 @@ private struct PortalScreen: View {
     }
 }
 
-@objc(PortalViewController)
-public final class PortalViewController: UIViewController {
-    private let state = PortalScreenState()
+@objc(IPortalViewController)
+public final class IPortalViewController: UIViewController {
+    private let state = IPortalScreenState()
     private var observers: [NSObjectProtocol] = []
     public override func viewDidLoad() {
         super.viewDidLoad()
@@ -39,7 +39,7 @@ public final class PortalViewController: UIViewController {
         if let font = Bundle(for: Self.self).url(forResource: "InterVariable", withExtension: "ttf", subdirectory: "Fonts") {
             CTFontManagerRegisterFontsForURL(font as CFURL, .process, nil)
         }
-        let host = UIHostingController(rootView: PortalScreen(state: state))
+        let host = UIHostingController(rootView: IPortalScreen(state: state))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(host.view)
@@ -48,7 +48,7 @@ public final class PortalViewController: UIViewController {
             host.view.topAnchor.constraint(equalTo: view.topAnchor), host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         host.didMove(toParent: self)
-        observers.append(NotificationCenter.default.addObserver(forName: NSNotification.Name("PortalStatusChanged"), object: nil, queue: .main) { [weak self] note in
+        observers.append(NotificationCenter.default.addObserver(forName: NSNotification.Name("IPortalStatusChanged"), object: nil, queue: .main) { [weak self] note in
             guard let self, let info = note.userInfo else { return }
             let phase = info["phase"] as? String ?? "waiting"
             let title = info["message"] as? String ?? "Waiting for your Mac"

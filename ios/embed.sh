@@ -15,12 +15,12 @@ cleanup() {
 }
 trap cleanup EXIT
 SDK="${PLATFORM_NAME:-iphoneos}"
-FRAMEWORK="$RUNNER/Frameworks/PortalUI.framework"
-[ -d "$SOURCE/PortalUI.framework" ] || { echo 'Build PortalUI with scripts/build-portal-ui.sh first'; exit 1; }
+FRAMEWORK="$RUNNER/Frameworks/iPortalUI.framework"
+[ -d "$SOURCE/iPortalUI.framework" ] || { echo 'Build iPortalUI with scripts/build-iportal-ui.sh first'; exit 1; }
 rm -rf "$FRAMEWORK"
-ditto "$SOURCE/PortalUI.framework" "$FRAMEWORK"
+ditto "$SOURCE/iPortalUI.framework" "$FRAMEWORK"
 ditto "$SOURCE/Libraries.dev_BorderBeamKit.bundle" "$RUNNER/Libraries.dev_BorderBeamKit.bundle"
-for NAME in PortalLaunch; do
+for NAME in iPortalLaunch; do
   xcrun --sdk "$SDK" ibtool --compile "$TEMP/$NAME.storyboardc" "$SOURCE/$NAME.storyboard" \
     --minimum-deployment-target "${IPHONEOS_DEPLOYMENT_TARGET:-15.0}" --target-device iphone --target-device ipad
   rm -rf "$RUNNER/$NAME.storyboardc"
@@ -30,8 +30,8 @@ python3 - "$RUNNER/Info.plist" <<'PY'
 import plistlib, sys
 path = sys.argv[1]
 with open(path, 'rb') as f: info = plistlib.load(f)
-info['UILaunchStoryboardName'] = 'PortalLaunch'
-# Preserve the runner's delegates. PortalUI fills its empty window on launch.
+info['UILaunchStoryboardName'] = 'iPortalLaunch'
+# Preserve the runner's delegates. iPortalUI fills its empty window on launch.
 configs = info.setdefault('UIApplicationSceneManifest', {}).setdefault('UISceneConfigurations', {})
 configs['UIWindowSceneSessionRoleApplication'] = [{
     'UISceneConfigurationName': 'Default Configuration',
@@ -52,4 +52,4 @@ codesign --force --sign "$IDENTITY" "$FRAMEWORK"
 codesign --force --sign "$IDENTITY" --preserve-metadata=identifier,entitlements "$RUNNER"
 codesign --verify --strict "$RUNNER"
 SUCCESS=1
-echo 'Embedded iPhone Portal status screen'
+echo 'Embedded iPortal status screen'

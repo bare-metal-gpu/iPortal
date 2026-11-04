@@ -12,8 +12,8 @@ Managed `/api/health` responses include the selected `pinnedUdid` and launch `ow
 For CLI automation with explicit ports, run a separate process per UDID:
 
 ```bash
-node mirror.mjs --udid <first-udid> --port 7100 --wda-port 8100 --mjpeg-port 9100 --no-open
-node mirror.mjs --udid <second-udid> --port 7101 --wda-port 8101 --mjpeg-port 9101 --no-open --device-kind iPad
+node iportal.mjs --udid <first-udid> --port 7100 --wda-port 8100 --mjpeg-port 9100 --no-open
+node iportal.mjs --udid <second-udid> --port 7101 --wda-port 8101 --mjpeg-port 9101 --no-open --device-kind iPad
 ```
 
 Each device can have only one owning server. Queues, inspection observations,
@@ -129,7 +129,7 @@ An input's optional `observationId` must refer to a stable observation no older 
 
 Supply the same `requestId` when recovering a lost input reply. Concurrent and subsequent requests with the same ID and validated payload share the original result; different input with that ID is rejected. The browser generates IDs and checks receipts automatically, without resending an uncertain action.
 
-`GET /api/commands/<requestId>` returns queued/running/executed/verified/failed-or-unknown state and the result. Receipts persist in ignored `vendor/commands.json` (mode 0600); Other server ports use `vendor/commands-PORT.json`; `MIRROR_COMMANDS_FILE` overrides the location. Persistence contains hashes and sanitized receipts, not input text, screenshots or UI trees. A restart during an unfinished command marks its outcome unknown and prevents replay. The retention window is 24 hours, capped at 4096 receipts; a full store rejects new inputs rather than evicting live deduplication records. This is not an exactly-once guarantee across device failure or beyond retention. Local testing must use a separate receipt file.
+`GET /api/commands/<requestId>` returns queued/running/executed/verified/failed-or-unknown state and the result. Receipts persist in ignored `vendor/commands.json` (mode 0600); Other server ports use `vendor/commands-PORT.json`; `IPORTAL_COMMANDS_FILE` overrides the location. Persistence contains hashes and sanitized receipts, not input text, screenshots or UI trees. A restart during an unfinished command marks its outcome unknown and prevents replay. The retention window is 24 hours, capped at 4096 receipts; a full store rejects new inputs rather than evicting live deduplication records. This is not an exactly-once guarantee across device failure or beyond retention. Local testing must use a separate receipt file.
 
 ## Save a screenshot
 

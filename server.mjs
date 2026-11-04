@@ -54,7 +54,7 @@ export function checkRequest(request, port, instanceId) {
       throw apiError("Content-Type must be application/json", 415, "unsupported media type");
     if (
       (headers.origin || headers["sec-fetch-site"]) &&
-      headers["x-mirror-instance"] !== instanceId
+      headers["x-iportal-instance"] !== instanceId
     )
       throw apiError("Reload the mirror to reconnect", 409, "instance changed");
   }
@@ -146,7 +146,7 @@ export function startServer({
   let boundPort = port;
   const headers = {
     "cache-control": "no-store",
-    "x-mirror-instance": instanceId,
+    "x-iportal-instance": instanceId,
     "x-content-type-options": "nosniff",
     "cross-origin-resource-policy": "same-origin",
     "referrer-policy": "no-referrer",
@@ -159,7 +159,7 @@ export function startServer({
       const url = new URL(request.url, `http://localhost:${boundPort}`);
       if (request.method === "GET" && url.pathname === "/") {
         return HttpServerResponse.text(
-          html.replace("<head>", `<head><meta name="mirror-instance" content="${instanceId}">`),
+          html.replace("<head>", `<head><meta name="iportal-instance" content="${instanceId}">`),
           { contentType: "text/html", headers },
         );
       }
@@ -167,7 +167,7 @@ export function startServer({
         // Process liveness must not depend on USB, XCTest, lock state or a session.
         return json({
           status: 200,
-          body: { service: "iphone-mirror", apiVersion: 2, instanceId, ok: true, ...identity },
+          body: { service: "iportal", apiVersion: 2, instanceId, ok: true, ...identity },
         });
       }
       if (request.method === "GET" && url.pathname === "/api/events" && statusEvents) {

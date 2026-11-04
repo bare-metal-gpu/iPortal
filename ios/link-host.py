@@ -45,7 +45,7 @@ def link(data, library):
     name = library.encode() + b'\0'
     length = (24 + len(name) + 7) & ~7
     if end + length > first_section or any(data[end:end + length]):
-        raise ValueError('No unused header padding for Portal UI; unsupported Xcode host')
+        raise ValueError('No unused header padding for iPortal UI; unsupported Xcode host')
     command = struct.pack('<6I', 0xC, length, 24, 0, 0x10000, 0x10000) + name
     data[end:end + length] = command.ljust(length, b'\0')
     struct.pack_into('<II', data, 16, count + 1, size + length)
@@ -54,4 +54,4 @@ def link(data, library):
 
 if __name__ == '__main__':
     host = Path(sys.argv[1])
-    host.write_bytes(link(host.read_bytes(), '@executable_path/Frameworks/PortalUI.framework/PortalUI'))
+    host.write_bytes(link(host.read_bytes(), '@executable_path/Frameworks/iPortalUI.framework/iPortalUI'))

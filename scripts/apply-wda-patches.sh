@@ -8,6 +8,18 @@ SAFETY="$ROOT/scripts/wda-mirror-safety.patch"
 LATENCY="$ROOT/scripts/wda-mirror-latency.patch"
 MULTITOUCH="$ROOT/scripts/wda-multitouch.patch"
 
+# Upgrade our old diagnostic namespace before checking patch revisions. These
+# exact strings belong to our additions, not to upstream WebDriverAgent.
+python3 - "$WDA/WebDriverAgentLib/Commands/FBTouchActionCommands.m" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+source = p.read_text()
+renamed = source.replace('// iphone-mirror: injects', '// iportal: injects').replace('errorWithDomain:@"iphone-mirror"', 'errorWithDomain:@"iportal"')
+if renamed != source:
+    p.write_text(renamed)
+PY
+
 # Later patches modify earlier lines, so recognize the final state first.
 if git -C "$WDA" apply --reverse --check "$MULTITOUCH" 2>/dev/null; then
   exit 0

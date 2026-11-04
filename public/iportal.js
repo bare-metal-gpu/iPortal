@@ -1,6 +1,6 @@
-/** @typedef {{screen: HTMLCanvasElement, app: HTMLSelectElement, quality: HTMLSelectElement, [id: string]: HTMLElement}} PortalElements */
-/** @template {keyof PortalElements & string} K @param {K} id @returns {PortalElements[K]} */
-const $ = (id) => /** @type {PortalElements[K]} */ (document.getElementById(id));
+/** @typedef {{screen: HTMLCanvasElement, app: HTMLSelectElement, quality: HTMLSelectElement, [id: string]: HTMLElement}} IPortalElements */
+/** @template {keyof IPortalElements & string} K @param {K} id @returns {IPortalElements[K]} */
+const $ = (id) => /** @type {IPortalElements[K]} */ (document.getElementById(id));
 const screen = $("screen");
 const phone = $("phone");
 const bridgeId = crypto.randomUUID();
@@ -15,7 +15,7 @@ let usbConnectionID = "";
 let singleUsbDevice = false;
 let usbDevicePresent = false;
 let serverInstance = /** @type {HTMLMetaElement} */ (
-  document.querySelector('meta[name="mirror-instance"]')
+  document.querySelector('meta[name="iportal-instance"]')
 ).content;
 const controlOnly = new Set(["ensure", "quality", "lock", "unlock"]);
 function canInteract() {
@@ -89,8 +89,8 @@ function reportPresence() {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-mirror-instance": /** @type {HTMLMetaElement} */ (
-          document.querySelector('meta[name="mirror-instance"]')
+        "x-iportal-instance": /** @type {HTMLMetaElement} */ (
+          document.querySelector('meta[name="iportal-instance"]')
         ).content,
       },
       body: JSON.stringify({ clientId: bridgeId, ready }),
@@ -129,7 +129,7 @@ if (deviceKind === "iPad") {
   while (walker.nextNode()) {
     if (!["SCRIPT", "STYLE"].includes(walker.currentNode.parentElement?.tagName ?? ""))
       walker.currentNode.textContent = (walker.currentNode.textContent ?? "").replaceAll(
-        /iPhone(?! Portal)/g,
+        /iPhone/g,
         deviceKind,
       );
   }
@@ -408,8 +408,8 @@ function api(name, body = {}, fromGesture = false) {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-mirror-instance": /** @type {HTMLMetaElement} */ (
-            document.querySelector('meta[name="mirror-instance"]')
+          "x-iportal-instance": /** @type {HTMLMetaElement} */ (
+            document.querySelector('meta[name="iportal-instance"]')
           ).content,
         },
         body: JSON.stringify({ ...body, requestId }),
@@ -443,7 +443,7 @@ let lastServerEventAt = -Infinity,
   usbEventAt = 0;
 function receiveServerStatus(s, documentId) {
   if (documentId !== undefined && documentId !== bridgeId) return;
-  if (s.service !== "iphone-mirror" || s.apiVersion !== 2) return;
+  if (s.service !== "iportal" || s.apiVersion !== 2) return;
   if (s.instanceId === serverInstance && s.eventSequence <= lastServerSequence) return;
   if (s.observedAt < usbEventAt) return;
   lastServerEventAt = performance.now();
@@ -530,9 +530,9 @@ async function pollConnection() {
   reportLoading();
 }
 function applyServerStatus(s) {
-  if (s.service !== "iphone-mirror" || s.apiVersion !== 2) throw new Error("Unexpected server");
+  if (s.service !== "iportal" || s.apiVersion !== 2) throw new Error("Unexpected server");
   const fingerprint = /** @type {HTMLMetaElement} */ (
-    document.querySelector('meta[name="mirror-instance"]')
+    document.querySelector('meta[name="iportal-instance"]')
   );
   if (fingerprint.content !== s.instanceId) {
     connected = false;

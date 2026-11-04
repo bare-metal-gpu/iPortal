@@ -9,13 +9,13 @@
 #import "FBCommandStatus.h"
 
 // A missing heartbeat is a lost connection, not an active reconnect attempt.
-static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BOOL ready, BOOL wasConnected) {
+static NSString *FBIPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BOOL ready, BOOL wasConnected) {
   if (receivedAt <= 0) return @"waiting";
   if (now - receivedAt >= 3) return @"disconnected";
   return ready ? @"connected" : wasConnected ? @"reconnecting" : @"connecting";
 }
 
-@interface FBPortalStatus : NSObject
+@interface FBIPortalStatus : NSObject
 @property(nonatomic) NSTimeInterval receivedAt;
 @property(nonatomic) NSTimeInterval awakeUntil;
 @property(nonatomic) BOOL ready;
@@ -32,15 +32,15 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
 - (void)render;
 @end
 
-@implementation FBPortalStatus
+@implementation FBIPortalStatus
 + (instancetype)shared {
-  static FBPortalStatus *status; static dispatch_once_t once;
-  dispatch_once(&once, ^{ status = [FBPortalStatus new]; });
+  static FBIPortalStatus *status; static dispatch_once_t once;
+  dispatch_once(&once, ^{ status = [FBIPortalStatus new]; });
   return status;
 }
 + (void)load {
   dispatch_async(dispatch_get_main_queue(), ^{
-    FBPortalStatus *status = self.shared;
+    FBIPortalStatus *status = self.shared;
     status.usbEvents = [NSMutableArray new];
     status.phaseEvents = [NSMutableArray new];
     // lockdownd's host notifications also work when no heartbeat can cross the
@@ -71,7 +71,7 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
 }
 - (NSString *)phase {
   if (self.hostDetached) return NSProcessInfo.processInfo.systemUptime < self.detachGraceUntil ? @"reconnecting" : @"disconnected";
-  return FBPortalPhase(self.receivedAt, NSProcessInfo.processInfo.systemUptime, self.ready, self.wasConnected);
+  return FBIPortalPhase(self.receivedAt, NSProcessInfo.processInfo.systemUptime, self.ready, self.wasConnected);
 }
 - (UIView *)root {
   for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -86,7 +86,7 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
   BOOL connected = [phase isEqual:@"connected"];
   NSString *message = connected ? @"Connected" : [phase isEqual:@"connecting"] ? @"Connecting…"
     : [phase isEqual:@"reconnecting"] ? @"Reconnecting…" : [phase isEqual:@"disconnected"] ? @"Disconnected" : @"Waiting for your Mac";
-  NSString *detail = [phase isEqual:@"waiting"] ? @"Connect by USB and open iPhone Portal on your Mac."
+  NSString *detail = [phase isEqual:@"waiting"] ? @"Connect by USB and open iPortal on your Mac."
     : [phase isEqual:@"disconnected"] ? @"Connect to your Mac" : @"";
   BOOL fresh = !self.hostDetached && self.receivedAt > 0 && NSProcessInfo.processInfo.systemUptime - self.receivedAt < 3;
   NSTimeInterval remaining = fresh ? MAX(0, self.awakeUntil - NSProcessInfo.processInfo.systemUptime) : 0;
@@ -105,19 +105,19 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
     [self.phaseEvents addObject:@{@"phase":self.lastRenderedPhase, @"uptime":@(NSProcessInfo.processInfo.systemUptime)}];
     if (self.phaseEvents.count > 24) [self.phaseEvents removeObjectAtIndex:0];
   }
-  [NSNotificationCenter.defaultCenter postNotificationName:@"PortalStatusChanged" object:nil userInfo:state];
+  [NSNotificationCenter.defaultCenter postNotificationName:@"IPortalStatusChanged" object:nil userInfo:state];
 }
 @end
 
-@interface FBPortalStatusCommands : NSObject <FBCommandHandler>
+@interface FBIPortalStatusCommands : NSObject <FBCommandHandler>
 @end
-@implementation FBPortalStatusCommands
+@implementation FBIPortalStatusCommands
 + (NSArray *)routes {
   return @[[[FBRoute GET:@"/wda/mirror/portal"].withoutSession respondWithTarget:self action:@selector(read:)],
     [[FBRoute POST:@"/wda/mirror/portal"].withoutSession respondWithTarget:self action:@selector(update:)]];
 }
 + (id<FBResponsePayload>)read:(FBRouteRequest *)request {
-  return FBResponseWithObject(FBPortalStatus.shared.snapshot);
+  return FBResponseWithObject(FBIPortalStatus.shared.snapshot);
 }
 + (id<FBResponsePayload>)update:(FBRouteRequest *)request {
   NSDictionary *args = request.arguments;
@@ -128,7 +128,7 @@ static NSString *FBPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
       || ![remaining isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)remaining) == CFBooleanGetTypeID()
       || !isfinite([remaining doubleValue]) || [remaining doubleValue] < 0 || [remaining doubleValue] > 7200000)
     return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"Invalid portal presence" traceback:nil]);
-  FBPortalStatus *status = FBPortalStatus.shared;
+  FBIPortalStatus *status = FBIPortalStatus.shared;
   status.receivedAt = NSProcessInfo.processInfo.systemUptime;
   status.hostDetached = NO;
   status.ready = [ready boolValue];

@@ -5,11 +5,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WDA="$ROOT/vendor/WebDriverAgent"
-BUILD="$ROOT/vendor/build"
+BUILD="$ROOT/vendor/iportal-device-build"
 
 command -v xcodebuild >/dev/null || { echo "Xcode is required (install it from the App Store, open it once)."; exit 1; }
 
-UDID="${UDID:-$(node "$ROOT/mirror.mjs" devices --first || true)}"
+UDID="${UDID:-$(node "$ROOT/iportal.mjs" devices --first || true)}"
 [ -n "$UDID" ] || { echo "No iPhone found. Plug it in via USB, unlock it and tap Trust."; exit 1; }
 
 TEAM="${1:-}"
@@ -26,15 +26,15 @@ fi
 
 # Apply the validated, rotation-aware touch and acknowledged keepalive endpoints.
 "$ROOT/scripts/apply-wda-patches.sh" "$WDA"
-bash "$ROOT/scripts/build-portal-ui.sh" "$WDA"
+bash "$ROOT/scripts/build-iportal-ui.sh" "$WDA"
 "$ROOT/scripts/apply-wda-branding.sh" "$WDA"
 
-# Free accounts need a bundle ID nobody else has registered.
-BUNDLE="com.$(echo "$TEAM" | tr A-Z a-z).iphonemirror.WebDriverAgentRunner"
-sed -i '' "s/com\.facebook\.WebDriverAgentRunner/$BUNDLE/g" "$WDA/WebDriverAgent.xcodeproj/project.pbxproj"
+# Free accounts need a team-specific identifier. Handle both fresh upstream
+# checkouts and previously branded runners, including repeat setup runs.
+python3 "$ROOT/scripts/configure-ios.py" "$WDA/WebDriverAgent.xcodeproj/project.pbxproj" "$TEAM"
 
 echo "→ Building for $UDID with team $TEAM (first build takes a few minutes)"
-LOG="$ROOT/vendor/build.log"
+LOG="$ROOT/vendor/iportal-device-build.log"
 if ! xcodebuild build-for-testing \
   -project "$WDA/WebDriverAgent.xcodeproj" \
   -scheme WebDriverAgentRunner \
@@ -46,17 +46,17 @@ if ! xcodebuild build-for-testing \
   if grep -q "No Accounts" "$LOG"; then
     echo "Sign in to Xcode: Xcode → Settings → Accounts → + → Apple ID, then run npm run setup again."
   else
-    echo "Build failed (full log: vendor/build.log)."
+    echo "Build failed (full log: vendor/iportal-device-build.log)."
   fi
   exit 1
 fi
 
-RUNNER="$BUILD/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$RUNNER/Info.plist")" = "iPhone Portal" ] || { echo "Runner branding was not embedded."; exit 1; }
+RUNNER="$BUILD/Build/Products/Debug-iphoneos/iPortalRunner-Runner.app"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$RUNNER/Info.plist")" = "iPortal" ] || { echo "Runner branding was not embedded."; exit 1; }
 codesign --verify --strict "$RUNNER"
-[ -d "$RUNNER/PortalLaunch.storyboardc" ] || { echo "Runner launch screen was not embedded."; exit 1; }
-codesign --verify --strict "$RUNNER/Frameworks/PortalUI.framework"
-xcrun otool -L "$RUNNER/WebDriverAgentRunner-Runner" | grep -q '@executable_path/Frameworks/PortalUI.framework/PortalUI' || { echo "Runner status screen was not linked."; exit 1; }
+[ -d "$RUNNER/iPortalLaunch.storyboardc" ] || { echo "Runner launch screen was not embedded."; exit 1; }
+codesign --verify --strict "$RUNNER/Frameworks/iPortalUI.framework"
+xcrun otool -L "$RUNNER/iPortalRunner-Runner" | grep -q '@executable_path/Frameworks/iPortalUI.framework/iPortalUI' || { echo "Runner status screen was not linked."; exit 1; }
 
 cat <<MSG
 

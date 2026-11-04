@@ -6,7 +6,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('host', Path(__file__).resolve().parents[1] / 'ios/link-host.py')
 host = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host)
-LIBRARY = '@executable_path/Frameworks/PortalUI.framework/PortalUI'
+LIBRARY = '@executable_path/Frameworks/iPortalUI.framework/iPortalUI'
 
 
 def executable(padding=256):

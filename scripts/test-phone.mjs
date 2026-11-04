@@ -80,7 +80,7 @@ for (const [name, body] of /** @type {[string, object][]} */ ([
 }
 const absent = {
   using: "accessibility id",
-  value: `iphone-mirror-test-absent-${crypto.randomUUID()}`,
+  value: `iportal-test-absent-${crypto.randomUUID()}`,
 };
 assert.equal((await post("elements", { selector: absent })).length, 0);
 await post("wait", { selector: absent, condition: "absent", timeoutMs: 5000 });

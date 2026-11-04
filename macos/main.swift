@@ -1,5 +1,5 @@
-// Native device windows for iPhone Portal: no chrome, with a slim hover toolbar.
-// Each window owns a mirror.mjs process pinned to one iPhone or iPad. Video comes from direct USB capture
+// Native device windows for iPortal: no chrome, with a slim hover toolbar.
+// Each window owns a iportal.mjs process pinned to one iPhone or iPad. Video comes from direct USB capture
 // (Capture.swift), with a transparent WKWebView on top that turns clicks and keys into touches. If the capture
 // isn't available, the web view shows WebDriverAgent's MJPEG stream instead.
 import Cocoa
@@ -10,14 +10,14 @@ import Carbon
 let barHeight: CGFloat = 30
 let barGap: CGFloat = 6
 let defaultPhoneHeight: CGFloat = 844
-let preferredPort = Int(ProcessInfo.processInfo.environment["IPHONE_MIRROR_PORT"] ?? "") ?? 7100
+let preferredPort = Int(ProcessInfo.processInfo.environment["IPORTAL_PORT"] ?? "") ?? 7100
 let info = Bundle.main.infoDictionary ?? [:]
-let repoPath = info["IMRepoPath"] as? String ?? FileManager.default.currentDirectoryPath
-let nodePath = info["IMNodePath"] as? String ?? "/opt/homebrew/bin/node"
-let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/iPhoneMirror.log")
+let repoPath = info["IPortalRepoPath"] as? String ?? FileManager.default.currentDirectoryPath
+let nodePath = info["IPortalNodePath"] as? String ?? "/opt/homebrew/bin/node"
+let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/iPortal.log")
 // Opt-in, monotonic milestones; never log frames or input contents.
-private let traceQueue = DispatchQueue(label: "iphone-portal.reconnect-trace")
-func portalTrace(_ event: String, _ fields: [String: Any] = [:]) {
+private let traceQueue = DispatchQueue(label: "iportal.reconnect-trace")
+func iportalTrace(_ event: String, _ fields: [String: Any] = [:]) {
     guard FileManager.default.fileExists(atPath: repoPath + "/vendor/trace-reconnect") else { return }
     var record = fields
     record["event"] = event; record["uptime"] = ProcessInfo.processInfo.systemUptime
@@ -148,7 +148,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var serverOwner = ""
     var serverOutput = Data()
     var serverPipe: Pipe?
-    var kind: PortalDeviceKind = .iPhone
+    var kind: IPortalDeviceKind = .iPhone
     var deviceName = "iPhone"
     var usbRecovery = USBRecoveryWindow()
     var lastObservedLifecycle = "connecting"
@@ -182,7 +182,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     func trace(_ event: String, _ fields: [String: Any] = [:]) {
         var fields = fields
         fields["device"] = requestedDeviceUDID ?? "unselected"
-        portalTrace(event, fields)
+        iportalTrace(event, fields)
     }
 
     func updateLoadingBorder() {
@@ -255,7 +255,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         guard change.accepted else { return false }
         if change.newStatus { lastStatusAt = now }
         guard change.invalidated else { return true }
-        NSLog("Portal lifecycle: %@, USB %@, reattached=%d", next, connectionID, change.reattached)
+        NSLog("iPortal lifecycle: %@, USB %@, reattached=%d", next, connectionID, change.reattached)
         trace("lifecycle", ["state": observed, "usb": connectionID])
         captureBudget.failed()
         freezeVideo()
@@ -341,7 +341,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             if captureLoading {
                 captureLoading = false
                 trace("video-ready", ["sampleAt": frameAt])
-                NSLog("Portal native video ready")
+                NSLog("iPortal native video ready")
                 nativeCall("setNativeVideoReady", ready: true)
                 updateLoadingBorder()
             }
@@ -367,7 +367,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         // a fresh control-plane observation instead of spending retries on the
         // device that has just disappeared.
         videoGate.suspend(at: ProcessInfo.processInfo.systemUptime)
-        NSLog("Portal capture interrupted; waiting for fresh USB status")
+        NSLog("iPortal capture interrupted; waiting for fresh USB status")
         updateLoadingBorder()
     }
 
@@ -377,7 +377,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     init(owner: AppDelegate) { self.owner = owner; super.init() }
 
-    func bind(_ device: PortalUSBDevice) {
+    func bind(_ device: IPortalUSBDevice) {
         guard requestedDeviceUDID == nil else { return }
         requestedDeviceUDID = phoneUDID(fromUSBSerial: device.serial)
         kind = device.kind
@@ -822,7 +822,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         captureLoading = false
         waitingForVideo = true
         nextNativeAttemptAt = nativeIdentityDeferred ? .infinity : ProcessInfo.processInfo.systemUptime + 30
-        NSLog("Portal video fallback; preserving last frame")
+        NSLog("iPortal video fallback; preserving last frame")
         nativeCall("startStream")
         updateLoadingBorder()
     }
@@ -898,7 +898,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                         let json = String(line.dropFirst(6))
                         guard let data = json.data(using: .utf8),
                               let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              status["service"] as? String == "iphone-mirror", status["apiVersion"] as? Int == 2 else { continue }
+                              status["service"] as? String == "iportal", status["apiVersion"] as? Int == 2 else { continue }
                         self.lastServerEventAt = ProcessInfo.processInfo.systemUptime
                         if let instance = status["instanceId"] as? String, instance != self.serverInstance { self.ensureServer(); continue }
                         self.latestServerStatus = json
@@ -966,7 +966,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         req.timeoutInterval = 1
         URLSession.shared.dataTask(with: req) { data, resp, _ in
             let health = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-            let up = (resp as? HTTPURLResponse)?.statusCode == 200 && health?["service"] as? String == "iphone-mirror" && health?["apiVersion"] as? Int == 2
+            let up = (resp as? HTTPURLResponse)?.statusCode == 200 && health?["service"] as? String == "iportal" && health?["apiVersion"] as? Int == 2
                 && health?["owner"] as? String == expectedOwner && health?["pinnedUdid"] as? String == expectedDevice
             let instance = health?["instanceId"] as? String
             DispatchQueue.main.async { done(up && instance != nil, instance) }
@@ -979,14 +979,14 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         p.executableURL = URL(fileURLWithPath: nodePath)
         guard let target = requestedDeviceUDID else { return }
         serverOwner = UUID().uuidString
-        p.arguments = ["mirror.mjs", "--no-open", "--managed", "--owner", serverOwner,
+        p.arguments = ["iportal.mjs", "--no-open", "--managed", "--owner", serverOwner,
                        "--port", "\(preferredPort)", "--wda-port", "0", "--mjpeg-port", "0",
                        "--udid", target, "--device-kind", kind.rawValue]
         p.currentDirectoryURL = URL(fileURLWithPath: repoPath)
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "\((nodePath as NSString).deletingLastPathComponent):/usr/bin:/bin:/usr/sbin:/sbin:\(env["PATH"] ?? "")"
         p.environment = env
-        let sessionLog = logURL.deletingLastPathComponent().appendingPathComponent("iPhoneMirror-\(target).log")
+        let sessionLog = logURL.deletingLastPathComponent().appendingPathComponent("iPortal-\(target).log")
         if !FileManager.default.fileExists(atPath: sessionLog.path) {
             FileManager.default.createFile(atPath: sessionLog.path, contents: nil)
         }
@@ -1008,7 +1008,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                     let line = self.serverOutput.prefix(upTo: end)
                     self.serverOutput.removeSubrange(...end)
                     guard let ready = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                          ready["event"] as? String == "mirror-listening",
+                          ready["event"] as? String == "iportal-listening",
                           ready["owner"] as? String == self.serverOwner,
                           ready["udid"] as? String == self.requestedDeviceUDID,
                           let port = ready["port"] as? Int, (1...65535).contains(port) else { continue }
@@ -1043,7 +1043,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         } catch {
             serverRetryAt = ProcessInfo.processInfo.systemUptime + serverBackoff
             serverBackoff = min(30, serverBackoff * 2)
-            NSLog("iPhone Portal: couldn't start node: \(error)")
+            NSLog("iPortal: couldn't start node: \(error)")
         }
     }
 
@@ -1142,17 +1142,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var retiring: [MirrorSession] = []
     var usbMonitor: PhoneUSBMonitor?
     var didLaunch = false
-    var pendingRequests: [PortalWatcherRequest] = []
+    var pendingRequests: [IPortalWatcherRequest] = []
     var wakeObserver: NSObjectProtocol?
     var allSessions: [MirrorSession] { sessions.values + (pending.map { [$0] } ?? []) }
     var activeSession: MirrorSession? {
         allSessions.first { $0.window === NSApp.keyWindow } ?? allSessions.first { $0.window === NSApp.mainWindow }
     }
 
-    var devices: [PortalUSBDevice] {
+    var devices: [IPortalUSBDevice] {
         let names = UserDefaults.standard.dictionary(forKey: "PhoneDeviceNames") as? [String: String] ?? [:]
         return (usbMonitor?.connectedDevices ?? []).map {
-            PortalUSBDevice(serial: $0.serial, name: names[deviceKey($0.serial)] ?? $0.name, kind: $0.kind)
+            IPortalUSBDevice(serial: $0.serial, name: names[deviceKey($0.serial)] ?? $0.name, kind: $0.kind)
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1190,10 +1190,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if login || ProcessInfo.processInfo.arguments.contains("--background") {
                 // Replacing the watcher waits for its previous process to exit.
                 // Keep this headless owner alive until registration completes.
-                PortalWatcherService.prepare { [weak self] in
+                IPortalWatcherService.prepare { [weak self] in
                     if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
                 }
-            } else { PortalWatcherService.prepare(); startMirroring() }
+            } else { IPortalWatcherService.prepare(); startMirroring() }
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.allSessions.forEach { $0.wake() } }
@@ -1202,7 +1202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func startMirroring(serial: String? = nil) {
         if serial == nil, let existing = activeSession ?? allSessions.first { existing.startMirroring(); return }
         let preferred = UserDefaults.standard.string(forKey: "MirrorDeviceUDID") ?? ""
-        let device: PortalUSBDevice?
+        let device: IPortalUSBDevice?
         if let serial {
             if let existing = sessions.session(for: serial) { existing.startMirroring(); return }
             // A stale Play event must not start mirroring a different device.
@@ -1229,15 +1229,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { startMirroring(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func application(_ application: NSApplication, open urls: [URL]) {
-        for request in urls.compactMap(PortalWatcherRequest.init(url:)) {
+        for request in urls.compactMap(IPortalWatcherRequest.init(url:)) {
             if didLaunch { handleWatcherRequest(request) } else { pendingRequests.append(request) }
         }
     }
-    private func handleWatcherRequest(_ request: PortalWatcherRequest) {
+    private func handleWatcherRequest(_ request: IPortalWatcherRequest) {
         switch request {
-        case .mirror(let serial): PortalWatcherService.prepare(); startMirroring(serial: serial)
+        case .mirror(let serial): IPortalWatcherService.prepare(); startMirroring(serial: serial)
         case .login(let enabled):
-            PortalWatcherService.setLoginEnabled(enabled) { [weak self] in
+            IPortalWatcherService.setLoginEnabled(enabled) { [weak self] in
                 if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
             }
         }
@@ -1288,11 +1288,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             i.target = target ?? self
             return i
         }
-        menu("iPhone Portal", [
-            NSMenuItem(title: "About iPhone Portal", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        menu("iPortal", [
+            NSMenuItem(title: "About iPortal", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
             .separator(),
-            NSMenuItem(title: "Hide iPhone Portal", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
-            NSMenuItem(title: "Quit iPhone Portal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
+            NSMenuItem(title: "Hide iPortal", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
+            NSMenuItem(title: "Quit iPortal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ])
         menu("Edit", [item("Paste to iPhone", #selector(pasteToPhone), "v")])
         menu("View", [
@@ -1318,10 +1318,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 }
 
 @main
-struct IPhoneMirrorApp {
+struct IPortalApp {
     @MainActor static func main() {
         if ProcessInfo.processInfo.arguments.contains("--watcher-status") {
-            PortalWatcherService.printStatus()
+            IPortalWatcherService.printStatus()
             return
         }
         let app = NSApplication.shared

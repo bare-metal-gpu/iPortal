@@ -30,19 +30,19 @@ struct LifecycleTests {
         assert(registry.values.count == 2 && registry.session(for: "0000814000000000000000A1") === replacement)
         registry.remove(replacement, for: "0000814000000000000000A1")
         assert(registry.values.count == 1 && registry.session(for: "00008140-00000000000000A2") === tabletSession)
-        assert(PortalDeviceKind(product: "iPad Pro") == .iPad)
-        assert(PortalDeviceKind(product: "iPhone 16 Pro") == .iPhone)
-        assert(PortalDeviceKind(product: "Apple Watch") == nil)
-        assert(PortalDeviceKind.iPad.initialRatio == 0.75)
-        assert(abs(PortalDeviceKind.iPad.radius(width: 800, height: 600) - 21) < 0.001)
-        let phone = PortalUSBDevice(serial: "phone", name: "Phone")
-        let tablet = PortalUSBDevice(serial: "tablet", name: "Tablet", kind: .iPad)
+        assert(IPortalDeviceKind(product: "iPad Pro") == .iPad)
+        assert(IPortalDeviceKind(product: "iPhone 16 Pro") == .iPhone)
+        assert(IPortalDeviceKind(product: "Apple Watch") == nil)
+        assert(IPortalDeviceKind.iPad.initialRatio == 0.75)
+        assert(abs(IPortalDeviceKind.iPad.radius(width: 800, height: 600) - 21) < 0.001)
+        let phone = IPortalUSBDevice(serial: "phone", name: "Phone")
+        let tablet = IPortalUSBDevice(serial: "tablet", name: "Tablet", kind: .iPad)
         let source = CaptureSourceIdentity(id: "video-uuid", isIOS: true)
         assert(captureSourceID(for: "tablet", devices: [phone, tablet], sources: [source], singleUSB: false) == nil)
         assert(captureSourceID(for: "phone", devices: [phone, tablet], sources: [source], singleUSB: true) == nil,
                "stale single-source status cannot select the other device")
         assert(captureSourceID(for: "phone", devices: [phone], sources: [source], singleUSB: true) == source.id)
-        let duplicate = PortalUSBDevice(serial: "other", name: "Tablet")
+        let duplicate = IPortalUSBDevice(serial: "other", name: "Tablet")
         assert(captureSourceID(for: "tablet", devices: [tablet, duplicate], sources: [source], singleUSB: false) == nil)
         assert(captureSourceID(for: "tablet", devices: [tablet], sources: [source, source], singleUSB: false) == nil)
         assert(captureSourceID(for: "tablet", devices: [tablet], sources: [CaptureSourceIdentity(id: "tablet", isIOS: true)], singleUSB: false) == "tablet")
@@ -53,16 +53,16 @@ struct LifecycleTests {
         assert(padList.devices.first(where: { $0.serial == "tablet" })?.kind == .iPad)
         assert(padList.devices.first(where: { $0.serial == "tablet" })?.available == false)
         let serial = "0000814000000000000000A1"
-        for request in [PortalWatcherRequest.mirror(serial), .login(true), .login(false)] {
-            assert(PortalWatcherRequest(url: request.url) == request, "watcher commands must round-trip without losing the selected phone")
+        for request in [IPortalWatcherRequest.mirror(serial), .login(true), .login(false)] {
+            assert(IPortalWatcherRequest(url: request.url) == request, "watcher commands must round-trip without losing the selected phone")
         }
-        for malformed in ["https://mirror?serial=00008140", "iphone-portal://mirror?serial=x", "iphone-portal://login?enabled=true",
-                          "iphone-portal://login?enabled=1&enabled=0", "iphone-portal://mirror?serial=00008140;quit",
-                          "iphone-portal://login/path?enabled=1", "iphone-portal://login?enabled=1#extra"] {
-            assert(PortalWatcherRequest(url: URL(string: malformed)!) == nil, "unknown or ambiguous requests must be rejected")
+        for malformed in ["https://mirror?serial=00008140", "iportal://mirror?serial=x", "iportal://login?enabled=true",
+                          "iportal://login?enabled=1&enabled=0", "iportal://mirror?serial=00008140;quit",
+                          "iportal://login/path?enabled=1", "iportal://login?enabled=1#extra"] {
+            assert(IPortalWatcherRequest(url: URL(string: malformed)!) == nil, "unknown or ambiguous requests must be rejected")
         }
         var list = USBDeviceListState()
-        let device = PortalUSBDevice(serial: "phone", name: "My iPhone")
+        let device = IPortalUSBDevice(serial: "phone", name: "My iPhone")
         list.update([device], at: 0)
         list.update([], at: 1)
         assert(list.devices.count == 1 && !list.devices[0].available, "a mode switch keeps the row but disables play")
@@ -74,7 +74,7 @@ struct LifecycleTests {
         list.update([], at: 5)
         list.expire(at: 6)
         assert(list.devices.isEmpty, "repeated metadata updates do not postpone real removal")
-        list.update([device, PortalUSBDevice(serial: "other", name: "Second iPhone")], at: 7)
+        list.update([device, IPortalUSBDevice(serial: "other", name: "Second iPhone")], at: 7)
         assert(list.devices.count == 2, "each attached phone gets its own play action")
         assert(phoneUDID(fromUSBSerial: "0000814000000000000000A1") == "00008140-00000000000000A1")
         assert(phoneUDID(fromUSBSerial: "00008140-00000000000000A1") == "00008140-00000000000000A1")

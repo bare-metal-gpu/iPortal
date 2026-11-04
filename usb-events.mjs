@@ -40,7 +40,7 @@ export function createUSBMonitor({ address, list, onChange, retryMs = 1000, reco
     handshake.unref?.();
     s.on("connect", () => {
       const body = Buffer.from(
-        '<plist version="1.0"><dict><key>MessageType</key><string>Listen</string><key>ProgName</key><string>iphone-mirror</string><key>ClientVersionString</key><string>iphone-mirror</string></dict></plist>',
+        '<plist version="1.0"><dict><key>MessageType</key><string>Listen</string><key>ProgName</key><string>iportal</string><key>ClientVersionString</key><string>iportal</string></dict></plist>',
       );
       const header = Buffer.alloc(16);
       header.writeUInt32LE(body.length + 16);

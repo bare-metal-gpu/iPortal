@@ -27,9 +27,9 @@ struct LoadingBorder: View {
                 }
                 .accessibilityHidden(true)
             }
-            PortalConnectionBorder(active: state.active, radius: state.radius)
+            IPortalConnectionBorder(active: state.active, radius: state.radius)
             if state.showMessage {
-                PortalConnectionMessage(
+                IPortalConnectionMessage(
                     title: state.phase == "locked" ? "Locked" : state.phase == "disconnected" ? "Disconnected"
                         : state.phase == "reconnecting" ? "Reconnecting…" : "Connecting…",
                     detail: state.detail,

@@ -55,7 +55,7 @@ void test("slow event readers retain a bounded latest snapshot and can cancel", 
 });
 
 void test("usbmux events handle fragmented/coalesced frames and fall back after listener failure", async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "portal-usb-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-usb-"));
   const address = path.join(directory, "mux");
   let socket,
     lists = 0,

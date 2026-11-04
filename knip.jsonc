@@ -1,12 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
   "entry": [
-    // Spawned with a computed path by mirror.mjs.
+    // Spawned with a computed path by iportal.mjs.
     "scripts/owned-process.mjs!",
     // Invoked by apply-wda-branding.sh during the native helper build.
-    "scripts/install-portal-status.mjs",
+    "scripts/install-iportal-status.mjs",
     // Inlined by web-assets.mjs; entry points are called by WKWebView.
-    "public/mirror.js!",
+    "public/iportal.js!",
   ],
   "project": ["*.mjs!", "scripts/*.mjs", "test/*.mjs", "public/*.js!"],
 }

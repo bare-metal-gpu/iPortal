@@ -28,13 +28,13 @@ const multiHelper = multiAdded.slice(
   multiAdded.indexOf("static BOOL FBMirrorValidFingers"),
   multiAdded.indexOf("\n}\n") + 3,
 );
-const portal = await readFile(join(root, "ios/FBPortalStatus.h"), "utf8");
+const portal = await readFile(join(root, "ios/FBIPortalStatus.h"), "utf8");
 const portalPhase = portal.slice(
-  portal.indexOf("static NSString *FBPortalPhase"),
+  portal.indexOf("static NSString *FBIPortalPhase"),
   portal.indexOf("\n}\n") + 3,
 );
 assert(helpers.includes("FBMirrorValidPoints") && helpers.includes("FBMirrorOrientedSize"));
-const temporary = await mkdtemp(join(tmpdir(), "iphone-mirror-native-"));
+const temporary = await mkdtemp(join(tmpdir(), "iportal-native-"));
 try {
   if (process.platform === "darwin") {
     const source = `#import <Foundation/Foundation.h>
@@ -44,13 +44,13 @@ ${helpers}
 ${multiHelper}
 ${portalPhase}
 int main(void) { @autoreleasepool {
-  NSCAssert([FBPortalPhase(0, 10, NO, NO) isEqual:@"waiting"], @"manual launch waits for Mac");
-  NSCAssert([FBPortalPhase(10, 11, NO, NO) isEqual:@"connecting"], @"first connection");
-  NSCAssert([FBPortalPhase(10, 12.9, YES, YES) isEqual:@"connected"], @"fresh ready heartbeat");
-  NSCAssert([FBPortalPhase(10, 13, YES, YES) isEqual:@"disconnected"], @"lost cable expires locally");
-  NSCAssert([FBPortalPhase(10, 60, YES, YES) isEqual:@"disconnected"], @"lost connection cannot claim reconnecting");
-  NSCAssert([FBPortalPhase(60, 61, NO, YES) isEqual:@"reconnecting"], @"fresh heartbeat confirms reconnect attempt");
-  NSCAssert([FBPortalPhase(61, 61, YES, YES) isEqual:@"connected"], @"recovered video");
+  NSCAssert([FBIPortalPhase(0, 10, NO, NO) isEqual:@"waiting"], @"manual launch waits for Mac");
+  NSCAssert([FBIPortalPhase(10, 11, NO, NO) isEqual:@"connecting"], @"first connection");
+  NSCAssert([FBIPortalPhase(10, 12.9, YES, YES) isEqual:@"connected"], @"fresh ready heartbeat");
+  NSCAssert([FBIPortalPhase(10, 13, YES, YES) isEqual:@"disconnected"], @"lost cable expires locally");
+  NSCAssert([FBIPortalPhase(10, 60, YES, YES) isEqual:@"disconnected"], @"lost connection cannot claim reconnecting");
+  NSCAssert([FBIPortalPhase(60, 61, NO, YES) isEqual:@"reconnecting"], @"fresh heartbeat confirms reconnect attempt");
+  NSCAssert([FBIPortalPhase(61, 61, YES, YES) isEqual:@"connected"], @"recovered video");
   NSArray *finger = @[@[@0.25,@0.5,@0], @[@0.1,@0.5,@240]];
   NSCAssert(FBMirrorValidFingers(@[finger, finger], @240), @"two synchronized fingers");
   for (id fingers in @[NSNull.null, @[], @[finger], @[finger, finger, finger], @[finger, @[]], @[finger, @[@[@2,@0,@0]]]])

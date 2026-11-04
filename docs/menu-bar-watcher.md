@@ -1,10 +1,10 @@
 # Menu-bar watcher
 
-The bundled `iPhone Portal Watcher.app` owns the status item and IOKit USB
+The bundled `iPortal Watcher.app` owns the status item and IOKit USB
 observer. It is a separate `LSUIElement` app registered with
 `SMAppService.loginItem(identifier:)`. The main app owns a separate mirror, server
 and capture per selected device. Closing its last window, Dock Quit and Command-Q terminate that process
-normally. The helper remains alive. The menu-bar settings' **Quit iPhone Portal**
+normally. The helper remains alive. The menu-bar settings' **Quit iPortal**
 terminates both processes; logout and shutdown follow normal macOS behavior.
 
 Open at Login applies only to the helper. Existing main-app login registration
@@ -48,7 +48,7 @@ by the user.
 ## Building and diagnostics
 
 The Xcode project embeds and signs the helper as a target dependency. For stable
-local development signing, set `IM_CODE_SIGN_IDENTITY` and `IM_DEVELOPMENT_TEAM`
+local development signing, set `IPORTAL_CODE_SIGN_IDENTITY` and `IPORTAL_DEVELOPMENT_TEAM`
 when running `macos/build.sh --install`; a successful build caches those public
 identifiers under ignored `vendor/` files for subsequent builds. Without a
 selected identity, the default remains ad-hoc signing. Use the install command

@@ -24,7 +24,7 @@ final class PhoneDeviceNames {
         requested = serials
         if process != nil { again = true; return }
         let wanted = Set(serials.map(key))
-        let output = FileManager.default.temporaryDirectory.appendingPathComponent("iphone-portal-names-\(UUID().uuidString).json")
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("iportal-names-\(UUID().uuidString).json")
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         task.arguments = ["devicectl", "list", "devices", "--json-output", output.path]

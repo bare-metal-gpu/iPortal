@@ -9,12 +9,12 @@ const fake = startFakeIphone({ guardedTouch: true });
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-guarded-"));
 const server = spawn(
   process.execPath,
-  ["mirror.mjs", "--port", "7199", "--wda-port", "18200", "--mjpeg-port", "19200", "--no-open"],
+  ["iportal.mjs", "--port", "7199", "--wda-port", "18200", "--mjpeg-port", "19200", "--no-open"],
   {
     env: {
       ...process.env,
       USBMUXD_SOCKET_ADDRESS: SOCKET,
-      MIRROR_COMMANDS_FILE: path.join(scratch, "commands.json"),
+      IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
     },
     stdio: "inherit",
   },

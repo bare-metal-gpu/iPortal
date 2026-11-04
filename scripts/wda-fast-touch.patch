@@ -25,7 +25,7 @@ index 7788175..03a5132 100644
    return FBResponseWithOK();
  }
  
-+// iphone-mirror: injects a touch path straight into the event synthesizer. Unlike /actions it skips the
++// iportal: injects a touch path straight into the event synthesizer. Unlike /actions it skips the
 +// active-app lookup, accessibility snapshots and the wait-for-idle, so a tap lands ~150 ms sooner. Body: { points: [[x, y, ms], ...] as 0..1 fractions of the portrait screen, end: ms }.
 ++ (id<FBResponsePayload>)handleMirrorTouch:(FBRouteRequest *)request
 +{

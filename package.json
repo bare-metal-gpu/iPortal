@@ -1,15 +1,15 @@
 {
-  "name": "iphone-mirror",
+  "name": "iportal",
   "version": "0.1.0",
   "description": "Control your iPhone from your Mac, an open alternative to iPhone Mirroring that works in the EU.",
   "type": "module",
   "bin": {
-    "iphone-mirror": "mirror.mjs"
+    "iportal": "iportal.mjs"
   },
   "scripts": {
     "setup": "scripts/setup-wda.sh",
-    "start": "node mirror.mjs",
-    "test": "node --test test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs test/status-events.mjs test/portal-status.mjs test/portal-install.mjs test/startup-lock.mjs test/owned-process.mjs && node test/e2e.mjs && node test/multi-device.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
+    "start": "node iportal.mjs",
+    "test": "node --test test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs test/status-events.mjs test/iportal-status.mjs test/iportal-install.mjs test/startup-lock.mjs test/owned-process.mjs && node test/e2e.mjs && node test/multi-device.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
     "app": "macos/build.sh --install",
     "typecheck": "tsc --noEmit && tsc --project public/tsconfig.json --noEmit",
     "lint": "oxlint .",

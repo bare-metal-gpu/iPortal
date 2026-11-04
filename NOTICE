@@ -1,0 +1,11 @@
+iPortal incorporates the original iPhone Mirror codebase by Max Hager
+(yachty66), imported from https://github.com/yachty66/iphone-mirror at
+commit 877aa4f. The upstream package declares the MIT license.
+
+Subsequent iPortal development is maintained by bare-metal-gpu.
+An imported baseline in this repository records the import, not authorship
+of the upstream code. Upstream attribution is retained here independently
+of GitHub's contributor graph.
+
+WebDriverAgent, ThinkingOrbsKit, BorderBeamKit, Inter, and other dependencies
+retain their respective licenses and notices.
