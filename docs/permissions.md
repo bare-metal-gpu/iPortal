@@ -20,6 +20,9 @@ The menu-bar watcher's Open at Login setting is independent of capture permissio
 - Every displayed permission state comes from AVFoundation, not a saved preference.
 - The top-aligned overlay contains only Camera and Microphone switches. Each is
   on only when macOS reports authorization; no optimistic state is stored.
+- Opening Settings before video is ready keeps the underlying image covered
+  until the first frame supplies its blurred backdrop. Late snapshot callbacks
+  cannot update a closed overlay or a replacement video session.
 - Enabling an undecided permission shows the system prompt. Changing a previously
   decided permission opens its macOS Privacy & Security page; an app cannot grant
   or revoke its own system authorization. Restricted/unavailable switches are disabled.

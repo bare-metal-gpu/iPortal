@@ -13,6 +13,9 @@ struct SettingsOverlay: View {
 
     var body: some View {
         ZStack(alignment: .top) {
+            // Opening during connection can precede the first snapshot. Never
+            // expose sharp video underneath while waiting for it to arrive.
+            IPortalStyle.Palette.background
             MirrorBlurredSnapshot(snapshot: state.snapshot)
             IPortalStyle.Surface.settingsShade
             GeometryReader { geometry in

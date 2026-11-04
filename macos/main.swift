@@ -203,6 +203,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var web: WKWebView!
     var bar: DragBar!
     var barButtons: [NSView] = []
+    var keepOnTopButton: NSButton?
     var resizeHandles: [CornerResizeHandle] = []
     var server: Process?
     var ratio: CGFloat = 390 / 844
@@ -261,6 +262,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var settingsVisible = false
     var settingsBlocksInput: Bool { settingsVisible || settingsHost?.isHidden == false }
     var settingsGeneration = 0
+    var settingsSnapshotInFlight = false
     var settingsHost: SettingsOverlayHost!
     let settingsState = SettingsOverlayState()
     let clipboard = ClipboardBridge()
@@ -289,6 +291,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         if phase == "disconnected" { loadingBorderState.detail = "Connect your \(kind.rawValue)" }
         if phase == "reconnecting" { loadingBorderState.detail = "" }
         capture?.layer.isHidden = phase != "live"
+        updateSettingsSnapshot()
     }
 
     func nativeCall(_ function: String, ready: Bool? = nil) {
@@ -581,7 +584,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         permissionObserver = nil
         clipboard.cancel()
         CapturePermissions.shared.inspect(sessionID, visible: false)
-        settingsVisible = false; settingsGeneration += 1
+        settingsVisible = false; settingsGeneration += 1; settingsSnapshotInFlight = false
         settingsState.snapshot = nil; settingsHost = nil
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
         stopCapture()
@@ -592,7 +595,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         window?.orderOut(nil)
         window?.contentView = nil
         web = nil; phone = nil; videoHost = nil; bar = nil; loadingBorder = nil; window = nil
-        barButtons.removeAll(); resizeHandles.removeAll()
+        barButtons.removeAll(); resizeHandles.removeAll(); keepOnTopButton = nil
         loadingBorderState.snapshot = nil
         latestServerStatus = nil
         if let process = server, process.isRunning {
@@ -684,7 +687,13 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         let minimize = NSWindow.standardWindowButton(.miniaturizeButton, for: [.titled])!
         minimize.target = window
         minimize.action = #selector(NSWindow.miniaturize(_:))
-        barButtons = [close, minimize,
+        let pin = symbolButton("pin", "Keep on Top", #selector(toggleOnTop(_:)))
+        pin.setButtonType(.toggle)
+        // The pin's tall glyph needs a smaller point size to match its neighbors.
+        pin.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        pin.setAccessibilityLabel("Keep on Top")
+        keepOnTopButton = pin
+        barButtons = [close, minimize, pin,
                       symbolButton("gearshape", "Settings", #selector(toggleSettings)),
                       symbolButton("square.on.square", "App Switcher", #selector(appSwitcher)),
                       symbolButton("house", "Home", #selector(home))]
@@ -752,13 +761,14 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         capture?.layer.frame = videoHost.bounds
         CATransaction.commit()
         bar.frame = NSRect(x: 0, y: phoneHeight + barGap, width: w, height: barHeight)
-        // Traffic lights on the left; Settings, App Switcher and Home on the right.
+        // Traffic lights on the left; Pin, Settings, App Switcher and Home on the right.
         let y = (barHeight - 16) / 2
         barButtons[0].frame = NSRect(x: 10, y: y + 1, width: 14, height: 14)
         barButtons[1].frame = NSRect(x: 30, y: y + 1, width: 14, height: 14)
-        barButtons[2].frame = NSRect(x: w - 92, y: y, width: 22, height: 16)
-        barButtons[3].frame = NSRect(x: w - 62, y: y, width: 22, height: 16)
-        barButtons[4].frame = NSRect(x: w - 32, y: y, width: 22, height: 16)
+        barButtons[2].frame = NSRect(x: w - 122, y: y, width: 22, height: 16)
+        barButtons[3].frame = NSRect(x: w - 92, y: y, width: 22, height: 16)
+        barButtons[4].frame = NSRect(x: w - 62, y: y, width: 22, height: 16)
+        barButtons[5].frame = NSRect(x: w - 32, y: y, width: 22, height: 16)
         window.invalidateShadow()
     }
 
@@ -787,7 +797,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard phone != nil, loadingBorder != nil, barButtons.count == 5 else { return }
+        guard phone != nil, loadingBorder != nil, barButtons.count == 6 else { return }
         phoneHeight = window.frame.height - barGap - barHeight
         if !adjustingGeometry { preferredPhoneLongEdge = phoneHeight * max(1, ratio) }
         layout()
@@ -902,23 +912,37 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     // become phone input. Each window owns its overlay; permissions are shared.
     @objc func toggleSettings() { setSettingsVisible(!settingsVisible) }
 
+    func updateSettingsSnapshot() {
+        guard mirroringActive, settingsVisible, settingsState.snapshot == nil else { return }
+        if videoMode == "native" {
+            settingsState.snapshot = capture?.snapshot() ?? loadingBorderState.snapshot
+            return
+        }
+        guard !waitingForVideo, !settingsSnapshotInFlight, let web else { return }
+        settingsSnapshotInFlight = true
+        let generation = settingsGeneration, epoch = videoGate.epoch, bridgeID = videoGate.bridgeID
+        web.takeSnapshot(with: nil) { [weak self, weak web] image, _ in
+            guard let self, self.settingsGeneration == generation else { return }
+            self.settingsSnapshotInFlight = false
+            guard self.mirroringActive, self.settingsVisible, self.web === web,
+                  self.videoMode == "stream", self.videoGate.epoch == epoch,
+                  self.videoGate.bridgeID == bridgeID else { return }
+            self.settingsState.snapshot = image ?? self.loadingBorderState.snapshot
+        }
+    }
+
     func setSettingsVisible(_ visible: Bool) {
         guard mirroringActive, settingsVisible != visible, let settingsHost else { return }
-        settingsVisible = visible; settingsGeneration += 1
+        settingsVisible = visible; settingsGeneration += 1; settingsSnapshotInFlight = false
         let generation = settingsGeneration
         CapturePermissions.shared.inspect(sessionID, visible: visible)
         if visible { nativeCall("setNativeSettingsVisible", ready: true) }
         trackingScroll = false; trackingMagnify = false
-        if visible { for index in [3, 4] { (barButtons[index] as? NSButton)?.isEnabled = false } }
-        (barButtons[2] as? NSButton)?.contentTintColor = visible ? .labelColor : .secondaryLabelColor
+        if visible { for index in [4, 5] { (barButtons[index] as? NSButton)?.isEnabled = false } }
+        (barButtons[3] as? NSButton)?.contentTintColor = visible ? .labelColor : .secondaryLabelColor
         if visible {
             settingsState.snapshot = videoMode == "native" ? capture?.snapshot() : loadingBorderState.snapshot
-            if videoMode == "stream" {
-                web.takeSnapshot(with: nil) { [weak self] image, _ in
-                    guard let self, self.mirroringActive, self.settingsVisible, self.settingsGeneration == generation else { return }
-                    self.settingsState.snapshot = image ?? self.settingsState.snapshot
-                }
-            }
+            updateSettingsSnapshot()
             settingsHost.isHidden = false
             loadingBorder.isHidden = true
             hideBar?.cancel(); fadeBar(to: 1)
@@ -934,7 +958,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                     settingsHost.isHidden = true
                     self.loadingBorder.isHidden = false
                     self.nativeCall("setNativeSettingsVisible", ready: false)
-                    for index in [3, 4] { (self.barButtons[index] as? NSButton)?.isEnabled = true }
+                    for index in [4, 5] { (self.barButtons[index] as? NSButton)?.isEnabled = true }
                     self.settingsState.snapshot = nil
                     self.window.makeFirstResponder(self.web)
                 }
@@ -1368,10 +1392,15 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         item.state = audioVolume > 0 ? .on : .off
     }
 
-    @objc func toggleOnTop(_ item: NSMenuItem) {
+    @objc func toggleOnTop(_ sender: Any?) {
         guard let window else { return }
         window.level = window.level == .floating ? .normal : .floating
-        item.state = window.level == .floating ? .on : .off
+        let pinned = window.level == .floating
+        keepOnTopButton?.state = pinned ? .on : .off
+        keepOnTopButton?.image = NSImage(systemSymbolName: pinned ? "pin.fill" : "pin", accessibilityDescription: "Keep on Top")
+        keepOnTopButton?.contentTintColor = pinned ? .labelColor : .secondaryLabelColor
+        keepOnTopButton?.toolTip = pinned ? "Stop Keeping on Top" : "Keep on Top"
+        (sender as? NSMenuItem)?.state = pinned ? .on : .off
     }
 
 }

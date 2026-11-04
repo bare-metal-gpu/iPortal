@@ -44,6 +44,10 @@ phone/Mac team, with `bun run setup -- <TEAM_ID>` as an explicit override.
 
 Click to tap, drag to swipe, scroll to scroll, type to type.
 
+Click the pin beside Settings to keep that device window above other app windows.
+Click it again to restore normal window ordering. The pin and **Window → Keep on Top**
+stay in sync; each device window has its own state.
+
 Open the gear beside App Switcher (or press ⌘,) to manage permissions. Settings
 reflects macOS’s current state across all device windows. Without Camera access,
 mirroring uses basic video from the phone helper; without Microphone access,
