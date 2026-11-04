@@ -89,7 +89,7 @@ Invalid requests return 400; rejected origins/hosts 403; missing elements 404; s
 
 ## Element actions and verified transitions
 
-`tap` accepts exactly one `id` or `selector`. `type` accepts `text` plus an optional `id`/`selector`; without a target it preserves the original focused-keyboard behavior. Targeted operations re-resolve selectors and check enabled/hittable state before invoking XCTest's element action.
+`tap` accepts exactly one `id` or `selector`. `type` accepts `text` plus an optional `id`/`selector`; without a target it inserts into the focused field using Unicode event playback without attaching a temporary hardware keyboard. Targeted operations re-resolve selectors and check enabled/hittable state before invoking XCTest's element action.
 
 ```json
 {
@@ -223,3 +223,32 @@ readers. On a broken/silent stream, reconnect or use `/api/status` as a fallback
 Reject events from obsolete server instances and observations preceding a local USB
 transition. Readiness still requires both a verified unlocked helper and fresh video;
 receiving an event alone does not enable input. Existing local host/origin checks apply.
+
+## Clipboard
+
+`POST /api/clipboard-read {}` reads the selected device’s clipboard. Returns
+`{ok:true,value:{format:"text"|"url"|"image",content:"<base64>"}}` or
+`{ok:true,value:{empty:true}}` for an empty/unsupported clipboard.
+
+`POST /api/clipboard-write {"format":"text","content":"aVBvcnRhbA=="}` writes
+UTF-8 text; `url` writes a UTF-8 absolute URL, and `image` writes an image (the Mac
+client supplies PNG). Returns `{ok:true,value:{format:"text",bytes:7}}`.
+Text/URLs are limited to 1 MiB; images to 4 MiB and 20 megapixels. The bridge
+transfers one primary representation, preferring image, URL, then text; rich text,
+files, multiple items and continuous synchronization are not supported.
+
+Both operations are serialized with input, require an unlocked device, and use
+an instance-bound request from the Mac app. The helper briefly activates itself
+and restores the previous running app if the user has not switched elsewhere.
+Clipboard reads never auto-accept iOS Paste prompts. Denial, a pending prompt,
+timeout, stale connection or changed clipboard is surfaced without replacing the
+Mac clipboard. Writes use a local-only pasteboard item to avoid Handoff loops.
+No transfer payload or response is retained in the command receipt ledger, and
+neither direction retries automatically. Clipboard writes copy the item only;
+they do not invoke Paste in the foreground app.
+
+## Keyboard editing
+
+`POST /api/key {"key":"ArrowLeft","modifiers":["shift"]}` moves or extends the current selection. Keys: `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Backspace`, `Delete` (forward delete), `Enter`, `Tab`, `Escape`, `Home`, `End`, `PageUp`, `PageDown`, or one printable Unicode code point. Modifiers are a unique subset of `command`, `control`, `option`, `shift`; modified printable keys use lowercase Latin letters. Use `type` for composed text or strings.
+
+Untargeted text and key commands use the same touch-sender event stream: Unicode insertion for text, bounded HID chords for navigation and shortcuts. Every chord releases its modifiers in the same stream. This avoids XCTest's temporary keyboard attachment and the resulting hide/reopen cycle. Completion acknowledges playback, not application-specific editing success. Existing lock, app, device, queue, and no-replay guards apply. Command-C/X also report `clipboardChanged`; the native app uses that to transfer an actual new selection without overwriting the Mac clipboard when nothing was copied.

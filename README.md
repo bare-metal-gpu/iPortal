@@ -36,6 +36,12 @@ reflects macOS’s current state across all device windows. Without Camera acces
 mirroring uses basic video from the phone helper; without Microphone access,
 video continues silently. See [permission behavior](docs/permissions.md).
 
+Settings also shows whether the menu-bar watcher is running and starts at login.
+Use **Clipboard → To Mac / To Device** (or the Edit menu) to transfer text, links,
+or an image. Transfers happen only when requested; the phone briefly opens iPortal,
+then returns to the previous app. iOS may ask you to allow Paste. Sending a clipboard
+item makes it available to Paste on the device; ⌘V still inserts text directly.
+
 Closing the mirror, choosing Quit in the Dock, or pressing ⌘Q leaves the menu-bar
 watcher running in a separate native helper. Connect an iPhone to see its name and press the trailing play
 button to mirror it. iPads work the same way. Press Play for another connected
@@ -45,11 +51,18 @@ Keyboard shortcuts and audio controls apply to the focused window. Closing one
 mirror leaves the others running. The menu-bar settings include **Open at Login** (starts only
 the watcher) and **Quit iPortal** (stops everything).
 
-| Shortcut     | Action                          |
-| ------------ | ------------------------------- |
-| ⌘1 / ⌘2 / ⌘3 | Home / App Switcher / Spotlight |
-| ⌘V           | Paste your Mac clipboard        |
-| ⌘+ / ⌘− / ⌘0 | Window size                     |
+| Shortcut            | Action                                                      |
+| ------------------- | ----------------------------------------------------------- |
+| ⌘1 / ⌘2 / ⌘3        | Home / App Switcher / Spotlight                             |
+| ← / →, ⇧ + arrows   | Move the cursor / extend the selection                      |
+| ⌥ + arrows / Delete | Move by word / delete a word                                |
+| ⌘A / ⌘C / ⌘X        | Select all / copy / cut the device selection                |
+| ⌘Z / ⇧⌘Z            | Undo / redo in the device app                               |
+| ⌘V                  | Insert clipboard text on the device                         |
+| ⇧⌘C / ⇧⌘V           | Copy device clipboard to Mac / send Mac clipboard to device |
+| ⌘+ / ⌘− / ⌘0        | Window size                                                 |
+
+Text, deletion, and navigation preserve the on-screen keyboard. Unicode and committed Mac input-method text are supported. Editing behavior follows the focused device app. Copy and Cut transfer a changed device clipboard back to the Mac using the same brief helper handoff.
 
 Prefer the browser? Run `npm start` and open http://localhost:7100.
 

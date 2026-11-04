@@ -43,6 +43,22 @@ try {
     { stdio: "pipe" },
   );
   execFileSync(permissions, [], { stdio: "inherit" });
+  const clipboard = join(directory, "clipboard-tests");
+  execFileSync(
+    "xcrun",
+    [
+      "swiftc",
+      "-swift-version",
+      "5",
+      "-warnings-as-errors",
+      join(root, "macos/Clipboard.swift"),
+      join(root, "test/ClipboardTests.swift"),
+      "-o",
+      clipboard,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(clipboard, [], { stdio: "inherit" });
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

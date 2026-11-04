@@ -1,15 +1,20 @@
 import Cocoa
 import SwiftUI
+import ServiceManagement
 
 @MainActor
 final class SettingsOverlayState: ObservableObject {
     @Published var snapshot: NSImage?
+    @Published var visible = false
 }
 
 struct SettingsOverlay: View {
     @ObservedObject var state: SettingsOverlayState
     @ObservedObject var permissions: CapturePermissions
+    @ObservedObject var clipboard: ClipboardBridge
     let close: () -> Void
+    @State private var watcherRunning = false
+    @State private var watcherLogin = SMAppService.Status.notRegistered
 
     var body: some View {
         ZStack {
@@ -28,6 +33,10 @@ struct SettingsOverlay: View {
                             permissionRow(.camera)
                             Divider().overlay(Color.white.opacity(0.08))
                             permissionRow(.microphone)
+                            Divider().overlay(Color.white.opacity(0.08))
+                            watcherRow
+                            Divider().overlay(Color.white.opacity(0.08))
+                            clipboardRow
                         }
                         Text("Permissions apply to all your devices.")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -42,6 +51,65 @@ struct SettingsOverlay: View {
         .contentShape(Rectangle())
         .environment(\.colorScheme, .dark)
         .onExitCommand(perform: close)
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in refreshWatcher() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in refreshWatcher() }
+        .onReceive(DistributedNotificationCenter.default().publisher(for: IPortalWatcher.settingsChanged)) { _ in refreshWatcher() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshWatcher() }
+        .task(id: state.visible) {
+            // SMAppService has no status-change notification. Refresh on events;
+            // this fallback exists only while Settings is actually visible.
+            while state.visible && !Task.isCancelled {
+                refreshWatcher()
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+    }
+
+    private func refreshWatcher() {
+        guard state.visible else { return }
+        let status = IPortalWatcherService.currentStatus
+        watcherRunning = status.running; watcherLogin = status.login
+    }
+
+    private var watcherRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Menu-bar watcher", systemImage: "menubar.rectangle")
+                .font(.system(size: 15, weight: .medium))
+            HStack {
+                Text(watcherRunning ? "Running" : "Stopped")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Spacer()
+                compactButton("Manage") { IPortalWatcherService.openSettings() }
+            }
+            Text(watcherLogin == .enabled ? "Starts at login."
+                 : watcherLogin == .requiresApproval ? "Allow in Login Items to start at login."
+                 : watcherLogin == .notFound ? "Reopen iPortal to restore the watcher."
+                 : "Doesn’t start at login.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+
+    private var clipboardRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Clipboard", systemImage: "doc.on.clipboard").font(.system(size: 15, weight: .medium))
+                Spacer()
+                if clipboard.busy { ProgressView().controlSize(.small) }
+            }
+            Text(clipboard.message).font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack {
+                compactButton("To Mac") { clipboard.transfer(toDevice: false) }
+                compactButton("To Device") { clipboard.transfer(toDevice: true) }
+            }.disabled(clipboard.busy || !clipboard.available)
+        }
+    }
+
+    private func compactButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.white.opacity(0.9))
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain)
     }
 
     private func permissionRow(_ permission: CapturePermission) -> some View {

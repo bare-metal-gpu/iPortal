@@ -9,7 +9,7 @@
   "scripts": {
     "setup": "scripts/setup-wda.sh",
     "start": "node iportal.mjs",
-    "test": "node --test test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs test/status-events.mjs test/iportal-status.mjs test/iportal-install.mjs test/startup-lock.mjs test/owned-process.mjs && node test/e2e.mjs && node test/multi-device.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
+    "test": "node --test test/clipboard.mjs test/core.mjs test/keep-awake.mjs test/server-lifecycle.mjs test/status-events.mjs test/iportal-status.mjs test/iportal-install.mjs test/startup-lock.mjs test/owned-process.mjs && node test/e2e.mjs && node test/multi-device.mjs && node test/guarded-touch.mjs && node scripts/test-native-contract.mjs && node scripts/test-capture-session.mjs && node scripts/test-lifecycle.mjs",
     "app": "macos/build.sh --install",
     "typecheck": "tsc --noEmit && tsc --project public/tsconfig.json --noEmit",
     "lint": "oxlint .",

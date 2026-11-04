@@ -39,6 +39,11 @@ const coordinateHelper = coordinateAdded.slice(
   coordinateAdded.indexOf("\n}\n") + 3,
 );
 assert(coordinateHelper.includes("switch (orientation)"));
+const keyboardSource = await readFile(join(root, "ios/FBIPortalText.h"), "utf8");
+const keyboardValidation = keyboardSource.slice(
+  keyboardSource.indexOf("static NSDictionary *FBIPortalKeyboardUsages"),
+  keyboardSource.indexOf("@interface FBIPortalTextCommands"),
+);
 const portal = await readFile(join(root, "ios/FBIPortalStatus.h"), "utf8");
 const portalPhase = portal.slice(
   portal.indexOf("static NSString *FBIPortalPhase"),
@@ -55,7 +60,14 @@ ${helpers}
 ${multiHelper}
 ${coordinateHelper}
 ${portalPhase}
+${keyboardValidation}
 int main(void) { @autoreleasepool {
+  NSCAssert(FBIPortalValidKeyboard(@{@"text":@"café 👋"}, NO), @"Unicode text");
+  NSCAssert(FBIPortalValidKeyboard(@{@"text":@""}, NO), @"empty text no-op");
+  NSCAssert(FBIPortalValidKeyboard(@{@"key":@"ArrowLeft",@"modifiers":@[@"shift",@"option"]}, YES), @"navigation chord");
+  NSCAssert(FBIPortalValidKeyboard(@{@"key":@"🙂",@"modifiers":@[]}, YES), @"Unicode code point");
+  for (NSDictionary *bad in @[@{@"key":@"unknown",@"modifiers":@[]}, @{@"key":@"a",@"modifiers":@[@"shift",@"shift"]}, @{@"key":@"a",@"modifiers":@[@"invalid"]}, @{@"key":@"ä",@"modifiers":@[@"command"]}, @{@"key":@"a",@"modifiers":@[],@"extra":@1}, @{@"key":NSNull.null,@"modifiers":@[]}])
+    NSCAssert(!FBIPortalValidKeyboard(bad, YES), @"malformed keyboard input rejected");
   NSCAssert([FBIPortalPhase(0, 10, NO, NO) isEqual:@"waiting"], @"manual launch waits for Mac");
   NSCAssert([FBIPortalPhase(10, 11, NO, NO) isEqual:@"connecting"], @"first connection");
   NSCAssert([FBIPortalPhase(10, 12.9, YES, YES) isEqual:@"connected"], @"fresh ready heartbeat");

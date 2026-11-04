@@ -288,7 +288,8 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
     messages = [],
     draws = [],
     calls = [],
-    streams = [];
+    streams = [],
+    keyEvents = {};
   let now = 100,
     serial = 0,
     remoteLifecycle = "ready",
@@ -341,7 +342,9 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
       activeElement: null,
     },
     window: {
-      addEventListener() {},
+      addEventListener(name, fn) {
+        keyEvents[name] = fn;
+      },
       webkit: { messageHandlers: { native: { postMessage: (message) => messages.push(message) } } },
     },
     setTimeout: (fn, ms) => {
@@ -412,6 +415,7 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
   };
   return {
     run,
+    keyEvents,
     settle,
     element,
     messages,
@@ -1400,4 +1404,50 @@ void test("physical attachment waits for fresh USB selection data before native 
   assert.equal(h.messages.at(-1).usbDevicePresent, true);
   assert.equal(h.messages.at(-1).usbConnectionID, "20");
   assert.equal(h.messages.at(-1).singleUsbDevice, true);
+});
+
+void test("editing keys preserve modifiers, ordering, composition and settings isolation", async () => {
+  const h = browserHarness();
+  await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const request = (event) =>
+    JSON.parse(h.run(`JSON.stringify(editingKeyRequest(${JSON.stringify(event)}))`));
+  assert.deepEqual(request({ key: "ArrowLeft", altKey: true, shiftKey: true }), {
+    key: "ArrowLeft",
+    modifiers: ["option", "shift"],
+  });
+  assert.deepEqual(request({ key: "A", metaKey: true }), { key: "a", modifiers: ["command"] });
+  assert.deepEqual(request({ key: "Delete" }), { key: "Delete", modifiers: [] });
+  assert.equal(request({ key: "q", metaKey: true }), null, "Mac Quit remains local");
+  assert.equal(request({ key: "Dead", altKey: true }), null);
+  assert.equal(
+    request({ key: "ArrowLeft", isComposing: true }),
+    null,
+    "IME navigation stays local",
+  );
+  h.run("typed='first'");
+  h.keyEvents.keydown({ key: "ArrowLeft", preventDefault() {} });
+  await h.settle();
+  assert.deepEqual(
+    h.calls.filter(([url]) => ["/api/type", "/api/key"].includes(url)).map(([url]) => url),
+    ["/api/type", "/api/key"],
+  );
+  const input = h.element("keyboard-input");
+  h.run("document.activeElement = keyboardInput");
+  input.value = "日本語";
+  input.listeners.input({ isComposing: true });
+  input.listeners.compositionend();
+  input.listeners.input({ isComposing: false });
+  await h.advance(0);
+  const typed = h.calls
+    .filter(([url]) => url === "/api/type")
+    .map(([, options]) => JSON.parse(options.body).text);
+  assert.deepEqual(typed, ["first", "日本語"], "composition commits once");
+  h.run("setNativeSettingsVisible(true,videoEpoch,bridgeId)");
+  h.keyEvents.keydown({ key: "Backspace", preventDefault() {} });
+  input.value = "discard";
+  input.listeners.input({ isComposing: false });
+  await h.settle();
+  assert.equal(h.calls.filter(([url]) => url === "/api/key").length, 1);
+  assert.equal(h.calls.filter(([url]) => url === "/api/type").length, 2);
 });

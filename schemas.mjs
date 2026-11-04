@@ -1,3 +1,4 @@
+import { validKeyboardKey } from "./keyboard.mjs";
 import { Schema } from "effect";
 
 const optional = Schema.optionalKey;
@@ -74,6 +75,22 @@ const point = Schema.Tuple([
 /** @template {Schema.Struct.Fields} F @param {F} fields */
 const action = (fields) => Schema.Struct({ ...fields, ...metadata });
 export const ActionSchemas = {
+  key: action({
+    key: text(64).check(
+      filter(validKeyboardKey, "Provide a supported key name or a single character"),
+    ),
+    modifiers: optional(
+      Schema.Array(enumOf("command", "control", "option", "shift")).check(
+        Schema.isMaxLength(4),
+        filter((items) => new Set(items).size === items.length, "Modifiers must be unique"),
+      ),
+    ),
+  }).check(
+    filter(
+      (b) => !b.modifiers?.length || Array.from(b.key).length > 1 || /^[a-z]$/.test(b.key),
+      "Modified printable keys must be lowercase Latin letters",
+    ),
+  ),
   pinch: action({
     x: coordinate,
     y: coordinate,
@@ -111,6 +128,13 @@ export const ActionSchemas = {
 };
 export const RequestSchemas = {
   ...ActionSchemas,
+  "clipboard-read": Schema.Struct({}),
+  "clipboard-write": Schema.Struct({
+    format: enumOf("text", "url", "image"),
+    content: text(5592408).check(
+      Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+    ),
+  }),
   presence: Schema.Struct({ clientId: text(128), ready: Schema.Boolean }),
   state: Schema.Struct({}),
   elements: Schema.Struct({ selector: Selector }),

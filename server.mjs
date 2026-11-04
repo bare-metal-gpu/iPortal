@@ -53,14 +53,14 @@ export function checkRequest(request, port, instanceId) {
     if (!/^application\/json(?:\s*;|$)/i.test(headers["content-type"] ?? ""))
       throw apiError("Content-Type must be application/json", 415, "unsupported media type");
     if (
-      (headers.origin || headers["sec-fetch-site"]) &&
+      (headers.origin || headers["sec-fetch-site"] || headers["x-iportal-instance"]) &&
       headers["x-iportal-instance"] !== instanceId
     )
       throw apiError("Reload the mirror to reconnect", 409, "instance changed");
   }
 }
 
-function readBody(req, signal) {
+function readBody(req, signal, limit = 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let length = 0;
     const chunks = [];
@@ -73,10 +73,10 @@ function readBody(req, signal) {
     if (signal.aborted) return abort();
     req.on("data", (chunk) => {
       length += chunk.length;
-      if (length > 1024 * 1024) {
+      if (length > limit) {
         chunks.length = 0;
         cleanup();
-        reject(apiError("Request body exceeds 1 MiB", 413));
+        reject(apiError("Request body exceeds size limit", 413));
       } else chunks.push(chunk);
     });
     req.on("error", (error) => {
@@ -86,7 +86,7 @@ function readBody(req, signal) {
     req.on("aborted", abort);
     req.on("end", () => {
       cleanup();
-      if (length > 1024 * 1024) return;
+      if (length > limit) return;
       try {
         resolve(length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {});
       } catch {
@@ -206,7 +206,9 @@ export function startServer({
       }
       if (request.method !== "POST" || !name || !Object.hasOwn(RequestSchemas, name))
         return json({ status: 404, body: { ok: false, error: "Not found" } });
-      const raw = yield* Effect.tryPromise((signal) => readBody(request.source, signal));
+      const raw = yield* Effect.tryPromise((signal) =>
+        readBody(request.source, signal, name === "clipboard-write" ? 6 * 1024 * 1024 : undefined),
+      );
       const body = yield* decodeRequest(/** @type {keyof typeof RequestSchemas} */ (name), raw);
       return json(yield* Effect.tryPromise((signal) => dispatch(name, body, signal)));
     }).pipe(

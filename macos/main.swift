@@ -186,6 +186,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var settingsGeneration = 0
     var settingsHost: SettingsOverlayHost!
     let settingsState = SettingsOverlayState()
+    let clipboard = ClipboardBridge()
     var permissionObserver: NSObjectProtocol?
     var permissionSnapshot = CapturePermissions.shared.snapshot
 
@@ -196,6 +197,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func updateLoadingBorder() {
+        clipboard.available = clipboardTarget != nil
         guard mirroringActive else { return }
         let phase: String
         if deviceLifecycle == "locked" || deviceLifecycle == "disconnected" { phase = deviceLifecycle }
@@ -501,8 +503,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         hideBar?.cancel(); hideBar = nil
         if let permissionObserver { NotificationCenter.default.removeObserver(permissionObserver) }
         permissionObserver = nil
+        clipboard.cancel()
         CapturePermissions.shared.inspect(sessionID, visible: false)
-        settingsVisible = false; settingsGeneration += 1
+        settingsVisible = false; settingsState.visible = false; settingsGeneration += 1
         settingsState.snapshot = nil; settingsHost = nil
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
         stopCapture()
@@ -610,7 +613,13 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                       symbolButton("square.on.square", "App Switcher", #selector(appSwitcher)),
                       symbolButton("house", "Home", #selector(home))]
         barButtons.forEach(bar.addSubview)
-        settingsHost = SettingsOverlayHost(rootView: SettingsOverlay(state: settingsState, permissions: .shared,
+        clipboard.target = { [weak self] in self?.clipboardTarget }
+        clipboard.reportError = { [weak self] message in
+            guard let self, self.mirroringActive, !self.settingsVisible, let window = self.window else { return }
+            let alert = NSAlert(); alert.messageText = "Clipboard"; alert.informativeText = message
+            alert.beginSheetModal(for: window)
+        }
+        settingsHost = SettingsOverlayHost(rootView: SettingsOverlay(state: settingsState, permissions: .shared, clipboard: clipboard,
             close: { [weak self] in self?.setSettingsVisible(false) }))
         settingsHost.isHidden = true
         settingsHost.alphaValue = 0
@@ -818,7 +827,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func setSettingsVisible(_ visible: Bool) {
         guard mirroringActive, settingsVisible != visible, let settingsHost else { return }
-        settingsVisible = visible; settingsGeneration += 1
+        settingsVisible = visible; settingsState.visible = visible; settingsGeneration += 1
         let generation = settingsGeneration
         CapturePermissions.shared.inspect(sessionID, visible: visible)
         if visible { nativeCall("setNativeSettingsVisible", ready: true) }
@@ -1227,6 +1236,29 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     @objc func smaller() { phoneHeight /= 1.1; resize() }
     @objc func actualSize() { phoneHeight = defaultPhoneHeight / max(1, ratio); resize() }
 
+    var clipboardTarget: ClipboardTarget? {
+        guard mirroringActive, deviceLifecycle == "ready", let port, let instance = serverInstance,
+              let device = requestedDeviceUDID else { return nil }
+        return ClipboardTarget(port: port, instance: instance, device: device, generation: mirrorGeneration, epoch: videoGate.epoch)
+    }
+    @objc func copyClipboardFromPhone() { clipboard.transfer(toDevice: false) }
+    @objc func sendClipboardToPhone() { clipboard.transfer(toDevice: true) }
+
+    func editKey(_ key: String, modifiers: [String] = ["command"]) {
+        guard !settingsBlocksInput, let selected = clipboardTarget, !clipboard.busy else { return }
+        let epoch = videoGate.epoch, documentID = videoGate.bridgeID
+        web.callAsyncJavaScript("return await nativeKey(key, modifiers, epoch, documentID)",
+            arguments: ["key":key,"modifiers":modifiers,"epoch":epoch,"documentID":documentID], in: nil, in: .page) { [weak self] result in
+            MainActor.assumeIsolated {
+                guard let self, self.clipboardTarget == selected, !self.settingsBlocksInput else { return }
+                if case .success(let response) = result, let json = response as? [String: Any],
+                   json["ok"] as? Bool == true, json["clipboardChanged"] as? Bool == true {
+                    self.clipboard.transfer(toDevice: false)
+                }
+            }
+        }
+    }
+
     @objc func pasteToPhone() {
         guard !settingsBlocksInput, let text = NSPasteboard.general.string(forType: .string), !text.isEmpty,
               let data = try? JSONSerialization.data(withJSONObject: ["text": text]),
@@ -1402,11 +1434,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func smaller() { activeSession?.smaller() }
     @objc func actualSize() { activeSession?.actualSize() }
     @objc func pasteToPhone() { activeSession?.pasteToPhone() }
+    @objc func selectAllOnPhone() { activeSession?.editKey("a") }
+    @objc func copyOnPhone() { activeSession?.editKey("c") }
+    @objc func cutOnPhone() { activeSession?.editKey("x") }
+    @objc func undoOnPhone() { activeSession?.editKey("z") }
+    @objc func redoOnPhone() { activeSession?.editKey("z", modifiers: ["command", "shift"]) }
+    @objc func copyClipboardFromPhone() { activeSession?.copyClipboardFromPhone() }
+    @objc func sendClipboardToPhone() { activeSession?.sendClipboardToPhone() }
     @objc func toggleAudio(_ item: NSMenuItem) { activeSession?.toggleAudio(item) }
     @objc func toggleOnTop(_ item: NSMenuItem) { activeSession?.toggleOnTop(item) }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let kind = activeSession?.kind.rawValue ?? "iPhone"
-        if item.action == #selector(pasteToPhone) { item.title = "Paste to \(kind)" }
+        if item.action == #selector(copyClipboardFromPhone) { item.title = "Copy Clipboard from \(kind)" }
+        if item.action == #selector(sendClipboardToPhone) { item.title = "Send Clipboard to \(kind)" }
+        if item.action == #selector(copyClipboardFromPhone) || item.action == #selector(sendClipboardToPhone) {
+            return activeSession?.clipboardTarget != nil && activeSession?.clipboard.busy == false
+        }
+        if [#selector(selectAllOnPhone), #selector(copyOnPhone), #selector(cutOnPhone), #selector(undoOnPhone), #selector(redoOnPhone), #selector(pasteToPhone)].contains(item.action) {
+            return activeSession?.clipboardTarget != nil && activeSession?.settingsBlocksInput == false && activeSession?.clipboard.busy == false
+        }
         if item.action == #selector(toggleAudio(_:)) { item.title = "Play \(kind) Audio" }
         if item.action == #selector(toggleAudio(_:)) { item.state = activeSession?.audioVolume ?? 0 > 0 ? .on : .off }
         if item.action == #selector(toggleOnTop(_:)) { item.state = activeSession?.window?.level == .floating ? .on : .off }
@@ -1437,7 +1483,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             NSMenuItem(title: "Hide iPortal", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             NSMenuItem(title: "Quit iPortal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ])
-        menu("Edit", [item("Paste to iPhone", #selector(pasteToPhone), "v")])
+        let copyClipboard = item("Copy Clipboard from iPhone", #selector(copyClipboardFromPhone), "c")
+        copyClipboard.keyEquivalentModifierMask = [.command, .shift]
+        let sendClipboard = item("Send Clipboard to iPhone", #selector(sendClipboardToPhone), "v")
+        sendClipboard.keyEquivalentModifierMask = [.command, .shift]
+        let redo = item("Redo", #selector(redoOnPhone), "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        menu("Edit", [item("Undo", #selector(undoOnPhone), "z"), redo, .separator(),
+            item("Cut", #selector(cutOnPhone), "x"), item("Copy", #selector(copyOnPhone), "c"),
+            item("Paste", #selector(pasteToPhone), "v"), item("Select All", #selector(selectAllOnPhone), "a"),
+            .separator(), copyClipboard, sendClipboard])
         menu("View", [
             item("Home Screen", #selector(home), "1"),
             item("App Switcher", #selector(appSwitcher), "2"),

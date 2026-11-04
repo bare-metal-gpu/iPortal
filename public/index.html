@@ -281,6 +281,23 @@
     <main>
       <div id="phone">
         <canvas id="screen" aria-label="iPhone screen"></canvas>
+        <textarea
+          id="keyboard-input"
+          aria-label="Type on device"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          style="
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+            padding: 0;
+            border: 0;
+          "
+        ></textarea>
         <div id="overlay"><b>Connecting…</b><span id="overlayText"></span></div>
       </div>
     </main>

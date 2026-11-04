@@ -1,8 +1,9 @@
-/** @typedef {{screen: HTMLCanvasElement, app: HTMLSelectElement, quality: HTMLSelectElement, [id: string]: HTMLElement}} IPortalElements */
+/** @typedef {{screen: HTMLCanvasElement, "keyboard-input": HTMLTextAreaElement, app: HTMLSelectElement, quality: HTMLSelectElement, [id: string]: HTMLElement}} IPortalElements */
 /** @template {keyof IPortalElements & string} K @param {K} id @returns {IPortalElements[K]} */
 const $ = (id) => /** @type {IPortalElements[K]} */ (document.getElementById(id));
 const screen = $("screen");
 const phone = $("phone");
+const keyboardInput = $("keyboard-input");
 const bridgeId = crypto.randomUUID();
 let connected = false;
 let lifecycle = "connecting";
@@ -39,6 +40,7 @@ function invalidateInput() {
   wheel = null;
   pinch = null;
   typed = "";
+  keyboardInput.value = "";
   clearTimeout(wheelTimer);
   wheelTimer = undefined;
 }
@@ -436,6 +438,7 @@ function api(name, body = {}, fromGesture = false) {
         body: JSON.stringify({ ...body, requestId }),
       });
       if (!json.ok) toast(actionMessage(json));
+      return json;
     } catch {
       // Recover the receipt rather than sending the action again after a lost reply.
       try {
@@ -448,7 +451,10 @@ function api(name, body = {}, fromGesture = false) {
       reportLoading();
     }
   });
-  outbound = task.catch(() => {});
+  outbound = task.then(
+    () => {},
+    () => {},
+  );
   return task;
 }
 
@@ -642,6 +648,7 @@ function ripple(e) {
 let touch = null;
 
 screen.addEventListener("pointerdown", (e) => {
+  if (canInteract()) keyboardInput.focus?.({ preventScroll: true });
   if (e.button !== 0 || !canInteract() || pinch) return;
   e.preventDefault();
   screen.setPointerCapture(e.pointerId);
@@ -858,6 +865,7 @@ for (const [name, phase] of [
 // ---------- Keyboard ----------
 
 const inField = () =>
+  document.activeElement !== keyboardInput &&
   ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName ?? "");
 // iOS takes ~300 ms per typing request no matter how many characters it carries. So the first key goes out
 // right away, and keys typed while a request is in flight pile up and go out together when it returns.
@@ -879,19 +887,76 @@ function flush(force = false) {
   });
 }
 
+function editingKeyRequest(e) {
+  if (e.isComposing || e.key === "Dead" || e.key === "Process" || e.getModifierState?.("AltGraph"))
+    return null;
+  const special = [
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "ArrowDown",
+    "Backspace",
+    "Delete",
+    "Enter",
+    "Tab",
+    "Escape",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+  ];
+  const shortcut =
+    (e.metaKey && /^[acvxyz]$/i.test(e.key)) || (e.ctrlKey && /^[a-z]$/i.test(e.key));
+  if (!special.includes(e.key) && !shortcut) return null;
+  const modifiers = [];
+  if (e.metaKey) modifiers.push("command");
+  if (e.ctrlKey) modifiers.push("control");
+  if (e.altKey) modifiers.push("option");
+  if (e.shiftKey) modifiers.push("shift");
+  return { key: shortcut ? e.key.toLowerCase() : e.key, modifiers };
+}
+function focusKeyboard() {
+  if (canInteract() && !inField()) keyboardInput.focus?.({ preventScroll: true });
+}
+function consumeComposition() {
+  const text = keyboardInput.value;
+  keyboardInput.value = "";
+  if (!canInteract() || !text) return;
+  typed += text;
+  flush();
+}
+keyboardInput.addEventListener("input", (event) => {
+  if (!event.isComposing) consumeComposition();
+});
+keyboardInput.addEventListener("compositionend", () => setTimeout(consumeComposition, 0));
+window.addEventListener("focus", focusKeyboard);
 window.addEventListener("keydown", (e) => {
-  if (inField() || !canInteract()) return;
-  if (e.altKey && e.code === "KeyH") return (e.preventDefault(), void api("home"));
-  if (e.altKey && e.code === "KeyJ")
-    return (e.preventDefault(), void api("shortcut", { name: "switcher" }));
-  if (e.metaKey || e.ctrlKey || e.altKey) return; // let ⌘V through to the paste handler
-  const special = { Backspace: "\b", Enter: "\n", Tab: "\t" }[e.key];
-  const ch = special ?? (e.key.length === 1 ? e.key : null);
-  if (ch === null) return;
+  if (inField() || !canInteract() || e.isComposing || e.keyCode === 229) return;
+  // Preserve browser-only navigation shortcuts when no phone text input is active.
+  if (document.activeElement !== keyboardInput && e.altKey && !e.ctrlKey && !e.metaKey) {
+    if (e.code === "KeyH") return (e.preventDefault(), void api("home"));
+    if (e.code === "KeyJ") return (e.preventDefault(), void api("shortcut", { name: "switcher" }));
+  }
+  const key = editingKeyRequest(e);
+  // Browser paste carries the Mac clipboard through the paste event. The native
+  // app's Edit menu owns its own Paste command; never inject it a second time.
+  if (key && !(e.key.toLowerCase() === "v" && (e.metaKey || e.ctrlKey))) {
+    e.preventDefault();
+    void api("key", key);
+    return;
+  }
+  if (document.activeElement === keyboardInput) return; // committed text/IME arrives via input
+  if (e.metaKey || e.ctrlKey || e.altKey || e.key === "Dead") return;
+  if (Array.from(e.key).length !== 1) return;
   e.preventDefault();
-  typed += ch;
+  typed += e.key;
   flush();
 });
+function nativeKey(key, modifiers, epoch, documentId) {
+  if (epoch !== videoEpoch || documentId !== bridgeId || !canInteract())
+    return Promise.resolve(null);
+  return api("key", { key, modifiers });
+}
 
 window.addEventListener("paste", (e) => {
   if (inField() || !canInteract()) return;
@@ -953,4 +1018,5 @@ Object.assign(window, {
   usbConnectionChanged,
   nativeScroll,
   nativePinch,
+  nativeKey,
 });

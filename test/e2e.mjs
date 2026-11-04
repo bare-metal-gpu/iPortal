@@ -165,11 +165,18 @@ try {
   );
 
   await post("type", { text: "hi\n" });
-  assert.deepEqual(fake.log.findLast((l) => l.path === "/session/S1/wda/keys").body.value, [
-    "h",
-    "i",
-    "\n",
-  ]);
+  assert.deepEqual(fake.log.findLast((l) => l.path === "/wda/mirror/text").body, { text: "hi\n" });
+  assert.equal((await post("key", { key: "ArrowLeft", modifiers: ["shift"] })).ok, true);
+  assert.deepEqual(fake.log.findLast((l) => l.path === "/wda/mirror/key").body, {
+    key: "ArrowLeft",
+    modifiers: ["shift"],
+  });
+  const beforeKey = fake.log.filter((l) => l.path === "/wda/mirror/key").length;
+  fake.ui.locked = true;
+  assert.equal((await post("key", { key: "Backspace" })).code, "device locked");
+  fake.ui.locked = false;
+  assert.equal((await post("key", { key: "a", expectedApp: "wrong.app" })).code, "app changed");
+  assert.equal(fake.log.filter((l) => l.path === "/wda/mirror/key").length, beforeKey);
 
   await post("home");
   assert.ok(fake.log.some((l) => l.path === "/wda/homescreen"));

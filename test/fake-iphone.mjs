@@ -213,6 +213,8 @@ export function startFakeIphone({
           "/appium/settings",
           "/actions",
           "/wda/keys",
+          "/wda/mirror/text",
+          "/wda/mirror/key",
           "/wda/pressButton",
           "/wda/performIoHidEvent",
           "/wda/siri/activate",

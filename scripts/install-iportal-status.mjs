@@ -33,6 +33,25 @@ if (!source.includes('#import "FBIPortalStatus.h"')) {
     '#import "FBIPortalStatus.h"\n\n@implementation FBTouchActionCommands',
   );
 }
+fs.copyFileSync(
+  path.join(root, "ios/FBIPortalClipboard.h"),
+  path.join(path.dirname(commands), "FBIPortalClipboard.h"),
+);
+if (!source.includes('#import "FBIPortalClipboard.h"')) {
+  source = source.replace(
+    "@implementation FBTouchActionCommands",
+    '#import "FBIPortalClipboard.h"\n\n@implementation FBTouchActionCommands',
+  );
+}
+fs.copyFileSync(
+  path.join(root, "ios/FBIPortalText.h"),
+  path.join(path.dirname(commands), "FBIPortalText.h"),
+);
+if (!source.includes('#import "FBIPortalText.h"'))
+  source = source.replace(
+    "@implementation FBTouchActionCommands",
+    '#import "FBIPortalText.h"\n\n@implementation FBTouchActionCommands',
+  );
 fs.writeFileSync(commands, source);
 if (!script.includes(marker)) {
   script += `\n${marker}\nbash "$(dirname "$0")/../iPortalUI/embed.sh" "$RUNNER_APP"\n`;

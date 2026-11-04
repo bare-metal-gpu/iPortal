@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createClipboard } from "./clipboard.mjs";
 // iportal: control your iPhone from your computer.
 // Video comes from WebDriverAgent's MJPEG stream, input goes back through WDA's W3C actions API.
 // USB forwarding talks to usbmuxd directly, so no iproxy / libimobiledevice is needed.
@@ -227,7 +228,7 @@ async function wda(method, p, body, timeout = 8000, signal, headers = {}) {
   if (timeout <= 0) throw apiError("Command deadline expired", 408, "timeout");
   if (
     method === "POST" &&
-    /\/(?:actions|click|value)$|\/wda\/(?:mirror\/touch|keys|homescreen|pressButton|lock|unlock|apps\/launch|siri\/activate)$/.test(
+    /\/(?:actions|click|value)$|\/wda\/(?:mirror\/(?:touch|text|key)|keys|homescreen|pressButton|lock|unlock|apps\/launch|siri\/activate)$/.test(
       p,
     )
   )
@@ -478,6 +479,21 @@ const SHORTCUTS = {
 };
 
 const actions = {
+  key: async (body) => {
+    const copying =
+      body.modifiers?.includes("command") && ["c", "x"].includes(body.key.toLowerCase());
+    const before = copying
+      ? (await wda("POST", "/wda/mirror/clipboard", { operation: "status" })).value?.changeCount
+      : null;
+    await wda("POST", "/wda/mirror/key", { key: body.key, modifiers: body.modifiers ?? [] });
+    if (!copying) return;
+    const after = (await wda("POST", "/wda/mirror/clipboard", { operation: "status" })).value
+      ?.changeCount;
+    return {
+      clipboardChanged:
+        Number.isSafeInteger(before) && Number.isSafeInteger(after) && after !== before,
+    };
+  },
   pinch,
   gesture: (body) =>
     gesture(body.points, body.end, {
@@ -492,7 +508,7 @@ const actions = {
   type: (body) =>
     body.id || body.selector
       ? inspection.type(body)
-      : withSession((s) => wda("POST", `/session/${s}/wda/keys`, { value: [...body.text] })),
+      : wda("POST", "/wda/mirror/text", { text: body.text }),
   tap: (body) => inspection.tap(body),
   home: () => wda("POST", "/wda/homescreen"),
   button: ({ name }) => withSession((s) => wda("POST", `/session/${s}/wda/pressButton`, { name })),
@@ -756,6 +772,7 @@ if (positionals[0] === "devices") {
   process.exit(0);
 }
 
+const clipboard = createClipboard({ wda, withSession });
 const inspection = createInspection({ wda, withSession, enqueue });
 const keepAwake = createKeepAwake({ wda, withSession, enqueue: (fn) => scheduler.maintenance(fn) });
 const portalStatus = createIPortalStatus({ wda, keepAwake: keepAwake.status });
@@ -797,6 +814,22 @@ async function dispatch(name, body, signal) {
   }
   if (name === "keep-awake")
     return { status: 200, body: { ok: true, value: await keepAwake.configure(body) } };
+  if (name === "clipboard-read" || name === "clipboard-write") {
+    // Clipboard contents never enter the command receipt cache or disk ledger.
+    const value = await commandContext.run(
+      { signal, deadline: performance.now() + 25000, operationTimeoutMs: 25000, priority: 5 },
+      () =>
+        enqueue(async () => {
+          inspection.invalidateObservations();
+          const value = await clipboard.transfer(
+            name === "clipboard-write" ? { operation: "write", ...body } : { operation: "read" },
+          );
+          keepAwake.activity();
+          return value;
+        }),
+    );
+    return { status: 200, body: { ok: true, value, meta: { instanceId } } };
+  }
   const deadline = performance.now() + (body.timeoutMs ?? (name === "wait" ? 10000 : 15000));
   if (!Object.hasOwn(ActionSchemas, name)) {
     const value = await commandContext.run({ signal, deadline }, () =>
@@ -813,6 +846,7 @@ async function dispatch(name, body, signal) {
     let dispatched = false,
       executed = false;
     const timing = {};
+    let clipboardChanged;
     const onDispatch = () => {
       if (!dispatched) {
         dispatched = true;
@@ -859,8 +893,14 @@ async function dispatch(name, body, signal) {
             const result = await actions[name](body);
             timing.actionMs = Math.round(performance.now() - actionStarted);
             if (result?.timing) timing.native = result.timing;
+            if (typeof result?.clipboardChanged === "boolean")
+              clipboardChanged = result.clipboardChanged;
             executed = true;
-            if (["gesture", "pinch", "shortcut", "tap", "type", "home", "button"].includes(name))
+            if (
+              ["gesture", "pinch", "shortcut", "tap", "type", "key", "home", "button"].includes(
+                name,
+              )
+            )
               keepAwake.activity();
           });
           if (body.waitFor) await inspection.wait(body.waitFor, signal);
@@ -875,6 +915,7 @@ async function dispatch(name, body, signal) {
           outcome: body.waitFor ? "verified" : "executed",
           verified: Boolean(body.waitFor),
           timing,
+          ...(clipboardChanged !== undefined ? { clipboardChanged } : {}),
         },
       };
     } catch (e) {
