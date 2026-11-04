@@ -6,6 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WDA="$ROOT/vendor/WebDriverAgent"
 BUILD="$ROOT/vendor/iportal-device-build"
+REVISION="$(cat "$ROOT/scripts/wda-revision")"
+[[ "$REVISION" =~ ^[a-f0-9]{40}$ ]] || { echo "Invalid helper source revision." >&2; exit 1; }
 
 command -v xcodebuild >/dev/null || { echo "Xcode is required (install it from the App Store, open it once)."; exit 1; }
 
@@ -26,8 +28,15 @@ fi
 
 if [ ! -d "$WDA" ]; then
   echo "→ Downloading WebDriverAgent"
-  git clone --depth 1 https://github.com/appium/WebDriverAgent "$WDA"
+  git init -q "$WDA"
+  git -C "$WDA" remote add origin https://github.com/appium/WebDriverAgent
+  git -C "$WDA" fetch --depth 1 origin "$REVISION"
+  git -C "$WDA" checkout --detach FETCH_HEAD
 fi
+[ "$(git -C "$WDA" rev-parse HEAD)" = "$REVISION" ] || {
+  echo "Helper source differs from the tested revision. Move vendor/WebDriverAgent aside and run setup again; local changes were preserved." >&2
+  exit 1
+}
 
 # Apply the validated, rotation-aware touch and acknowledged keepalive endpoints.
 "$ROOT/scripts/apply-wda-patches.sh" "$WDA"

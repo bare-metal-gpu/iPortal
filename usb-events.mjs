@@ -50,7 +50,7 @@ export function createUSBMonitor({ address, list, onChange, retryMs = 1000, reco
       s.write(Buffer.concat([header, body]));
     });
     s.on("data", (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
+      buffer = Buffer.concat([buffer, typeof chunk === "string" ? Buffer.from(chunk) : chunk]);
       while (buffer.length >= 16) {
         const length = buffer.readUInt32LE(0);
         if (length < 16 || length > 1024 * 1024) return s.destroy();

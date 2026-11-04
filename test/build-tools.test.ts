@@ -5,6 +5,27 @@ import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { helperCommand } from "../helper-launch.mjs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import fs from "node:fs";
+import assert from "node:assert/strict";
+import { ensurePrivateDirectory, claimDevice } from "../device-runtime.mjs";
+
+test("runtime directories repair permissions and reject pre-created symlinks", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "iportal-permissions-"));
+  try {
+    fs.chmodSync(directory, 0o755);
+    ensurePrivateDirectory(directory);
+    expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+    const target = path.join(directory, "target");
+    const link = path.join(directory, "link");
+    await mkdir(target, { mode: 0o755 });
+    fs.symlinkSync(target, link);
+    expect(() => ensurePrivateDirectory(link)).toThrow();
+    await assert.rejects(claimDevice("TESTDEVICE01", link));
+    expect(fs.statSync(target).mode & 0o777).toBe(0o755);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("phone launcher requires one test bundle and keeps device/path arguments distinct", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "iportal-launch-"));

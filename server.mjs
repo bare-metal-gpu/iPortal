@@ -98,7 +98,8 @@ export async function readBody(req, signal, limit = 1024 * 1024) {
 
 // The handshake and each idle read are bounded independently. A permanent
 // timeout on fetch's signal would also kill healthy long-running video.
-export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 5000 } = {}) {
+/** @param {string} url @param {{connectTimeoutMs?: number, idleTimeoutMs?: number, unix?: string}} [options] */
+export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 5000, unix } = {}) {
   return Effect.gen(function* () {
     const controller = new AbortController();
     const upstream = yield* Effect.tryPromise(async (signal) => {
@@ -109,6 +110,8 @@ export function openVideoStream(url, { connectTimeoutMs = 3000, idleTimeoutMs = 
       timeout.unref?.();
       try {
         const response = await fetch(url, {
+          ...(unix ? { unix } : {}),
+          redirect: "error",
           signal: AbortSignal.any([signal, controller.signal]),
           headers: { connection: "close" },
         });
@@ -137,6 +140,7 @@ export function startServer({
   instanceId,
   html,
   mjpeg,
+  mjpegSocket,
   dispatch,
   statusEvents,
   onListening,
@@ -150,6 +154,8 @@ export function startServer({
     "x-content-type-options": "nosniff",
     "cross-origin-resource-policy": "same-origin",
     "referrer-policy": "no-referrer",
+    "x-frame-options": "DENY",
+    "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   };
   const json = (response) =>
     HttpServerResponse.jsonUnsafe(response.body, { status: response.status, headers });
@@ -185,7 +191,7 @@ export function startServer({
         );
       }
       if (request.method === "GET" && url.pathname === "/stream") {
-        const video = yield* openVideoStream(mjpeg);
+        const video = yield* openVideoStream(mjpeg, { unix: mjpegSocket });
         return HttpServerResponse.stream(video.stream, {
           // WebKit's multipart response loader rejects fetch().body reads.
           // Our canvas decoder needs the original framed bytes, without the

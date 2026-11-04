@@ -776,7 +776,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     // In MJPEG mode the page reports the stream's real size once the first frame arrives.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard mirroringActive, message.webView === web, message.frameInfo.isMainFrame, let d = message.body as? [String: Any] else { return }
+        guard mirroringActive, message.webView === web, message.frameInfo.isMainFrame,
+              MirrorWebOrigin.allows(message.frameInfo.request.url, port: port),
+              let d = message.body as? [String: Any] else { return }
         let priorBridge = videoGate.bridgeID
         if let lifecycle = d["lifecycle"] as? String, let udid = d["deviceUdid"] as? String,
            let epoch = d["videoEpoch"] as? Int, let bridgeID = d["bridgeId"] as? String,
@@ -947,6 +949,13 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     // A new document must establish its own observation epoch before input can
     // resume. Old evaluateJavaScript calls cannot bless the replacement page.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let allowed = mirroringActive && webView === web && navigationAction.targetFrame?.isMainFrame == true
+            && MirrorWebOrigin.allows(navigationAction.request.url, port: port)
+        decisionHandler(allowed ? .allow : .cancel)
+    }
+
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard mirroringActive, webView === web else { return }
         if !videoGate.bridgeID.isEmpty { retiredBridgeIDs.insert(videoGate.bridgeID) }
@@ -1098,9 +1107,10 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         guard let target = requestedDeviceUDID else { return }
         serverOwner = UUID().uuidString
         p.arguments = ["--no-open", "--managed", "--owner", serverOwner,
-                       "--port", "\(preferredPort)", "--wda-port", "0", "--mjpeg-port", "0",
+                       "--port", "\(preferredPort)",
                        "--udid", target, "--device-kind", kind.rawValue]
-        do { try FileManager.default.createDirectory(at: stateURL, withIntermediateDirectories: true) }
+        do { try FileManager.default.createDirectory(at: stateURL, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700]) }
         catch { NSLog("iPortal: couldn't create runtime directory: \(error)"); return }
         p.currentDirectoryURL = stateURL
         var env = ProcessInfo.processInfo.environment
@@ -1109,8 +1119,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         p.environment = env
         let sessionLog = logURL.deletingLastPathComponent().appendingPathComponent("iPortal-\(target).log")
         if !FileManager.default.fileExists(atPath: sessionLog.path) {
-            FileManager.default.createFile(atPath: sessionLog.path, contents: nil)
+            FileManager.default.createFile(atPath: sessionLog.path, contents: nil, attributes: [.posixPermissions: 0o600])
         }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sessionLog.path)
         let output = Pipe()
         serverPipe = output
         serverOutput = Data()

@@ -6,11 +6,24 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { startFakeIphone, SOCKET } from "./fake-iphone.mjs";
 
 const fake = startFakeIphone();
 const PORT = 7199;
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-e2e-"));
+// A complete USB session must work with the old raw TCP ports unavailable.
+// Neither browsers nor another OS user should reach WDA through those ports.
+const rawPortBlockers = [18200, 19200].map(() => net.createServer((socket) => socket.destroy()));
+await Promise.all(
+  rawPortBlockers.map(
+    (blocker, i) =>
+      new Promise((resolve, reject) => {
+        blocker.once("error", reject);
+        blocker.listen([18200, 19200][i], "127.0.0.1", () => resolve(undefined));
+      }),
+  ),
+);
 const server = spawn(
   serverCommand[0],
   [
@@ -53,6 +66,19 @@ try {
 
   const status = await readJSON(await fetch(`${base}/api/status`));
   assert.equal(status.ok, true, JSON.stringify(status));
+  const page = await fetch(base);
+  assert.equal(page.headers.get("x-frame-options"), "DENY");
+  assert.match(page.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+  for (const route of ["/", "/api/status", "/stream", "/api/events"]) {
+    assert.equal(
+      (await fetch(base + route, { headers: { origin: "https://foreign.example" } })).status,
+      403,
+    );
+    assert.equal(
+      (await fetch(base + route, { headers: { host: "rebound.example:7199" } })).status,
+      403,
+    );
+  }
   assert.equal(status.device.udid, "00008110-FAKEFAKEFAKE");
   assert.equal(status.captureIdentity.singleUsbDevice, true);
   assert.equal(
@@ -502,6 +528,7 @@ try {
 } finally {
   server.kill();
   fake.close();
+  rawPortBlockers.forEach((blocker) => blocker.close());
   fs.rmSync(scratch, { recursive: true, force: true });
   setTimeout(() => process.exit(), 100);
 }

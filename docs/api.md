@@ -2,7 +2,7 @@
 
 The server uses Effect 4 `HttpRouter` / `NodeHttpServer` and strict Effect schemas in `schemas.mjs`. All POST requests require `Content-Type: application/json`; unknown fields and malformed arguments are rejected before dispatch. Routes are `http://127.0.0.1:7100/api/<name>`. Inspection returns `{ "ok": true, "value": ... }` plus observation metadata. Inputs return `{ "ok": true, "requestId": "...", "outcome": "executed", "verified": false }`.
 
-The Mac server listens only on loopback. Exact Host/Origin checks, Fetch Metadata, JSON-only mutations and an automatically embedded server-instance fingerprint protect browser access without an authentication UI. Trusted local CLI clients need no credentials. This is not a security boundary against malicious software running as the same OS user. The bundled iPhone runner now binds both HTTP and MJPEG to device loopback via `TEST_RUNNER_USE_IP`; USB forwarding remains available, direct Wi-Fi access does not. Screenshots and UI trees are not saved by the server.
+The Mac server listens only on loopback. Exact Host/Origin checks, Fetch Metadata, JSON-only mutations and an automatically embedded server-instance fingerprint protect browser access without an authentication UI. Trusted local CLI clients need no credentials. This trusts native processes that can reach Mac loopback, including other local OS users; it is not local-process authentication. Raw USB forwarding uses per-process Unix sockets in an owner-only directory, so browsers cannot bypass the API through separate helper/video TCP ports. The bundled iPhone runner binds both HTTP and MJPEG to device loopback via `TEST_RUNNER_USE_IP`; direct Wi-Fi access does not work. Screenshots and UI trees are not saved by the server. See [security review](security.md) for the remaining trust boundaries.
 
 One device UDID is pinned for the server lifetime. Disconnecting it does not select another phone or iPad. Native video uses an exact ID match when available, or the unambiguous correspondence between one connected USB device and one iOS capture source. With multiple unmatched candidates, the app automatically uses the pinned device's screenshot stream. `/api/status` includes `service`, `apiVersion`, `instanceId`, device identity, queue and keep-awake status.
 
@@ -12,8 +12,8 @@ Managed `/api/health` responses include the selected `pinnedUdid` and launch `ow
 For CLI automation with explicit ports, run a separate process per UDID:
 
 ```bash
-bun iportal.mjs --udid <first-udid> --port 7100 --wda-port 8100 --mjpeg-port 9100 --no-open
-bun iportal.mjs --udid <second-udid> --port 7101 --wda-port 8101 --mjpeg-port 9101 --no-open --device-kind iPad
+bun iportal.mjs --udid <first-udid> --port 7100 --no-open
+bun iportal.mjs --udid <second-udid> --port 7101 --no-open --device-kind iPad
 ```
 
 Each device can have only one owning server. Queues, inspection observations,

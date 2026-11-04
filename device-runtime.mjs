@@ -4,6 +4,23 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 
+// Do not follow a pre-created symlink in the shared temporary directory, or
+// reuse another user's directory. Tighten permissions on older installations.
+export function ensurePrivateDirectory(directory) {
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const fd = fs.openSync(
+    directory,
+    fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+  );
+  try {
+    if (process.getuid && fs.fstatSync(fd).uid !== process.getuid())
+      throw new Error("Runtime directory belongs to another user");
+    fs.fchmodSync(fd, 0o700);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export function canonicalUDID(value) {
   if (!/^[a-zA-Z0-9-]{8,64}$/.test(value)) throw new Error("Invalid device identity");
   const compact = value.replaceAll("-", "");
@@ -22,7 +39,7 @@ export async function claimDevice(
     `iportal-${process.getuid?.() ?? "user"}`,
   ),
 ) {
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  ensurePrivateDirectory(directory);
   const key = canonicalUDID(udid).replaceAll("-", "").toLowerCase();
   const file = path.join(
     directory,
@@ -42,7 +59,8 @@ export async function claimDevice(
     await listen();
   } catch (error) {
     if (error.code !== "EADDRINUSE") throw error;
-    const before = fs.statSync(file);
+    const before = fs.lstatSync(file);
+    if (!before.isSocket()) throw new Error("Device lease is not a socket");
     const stale = await new Promise((resolve) => {
       const probe = net.connect(file);
       probe.setTimeout(500, () => {
@@ -55,7 +73,7 @@ export async function claimDevice(
       });
       probe.once("error", (e) => resolve("code" in e && e.code === "ECONNREFUSED"));
     });
-    if (!stale || fs.statSync(file).ino !== before.ino)
+    if (!stale || fs.lstatSync(file).ino !== before.ino)
       throw new Error("This device already has a mirror session");
     fs.unlinkSync(file);
     await listen();

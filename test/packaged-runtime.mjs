@@ -13,6 +13,12 @@ try {
     stderr: "inherit",
   });
   assert.equal(await child.exited, 0);
+  const info = Bun.spawn([binary, "--runtime-info"], { stdout: "pipe" });
+  assert.deepEqual(await new Response(info.stdout).json(), {
+    runtime: "bun",
+    version: Bun.version,
+  });
+  assert.equal(await info.exited, 0);
   for (const suite of ["e2e", "multi-device", "guarded-touch"]) {
     child = Bun.spawn([process.execPath, `test/${suite}.mjs`], {
       cwd: root,

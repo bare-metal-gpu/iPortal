@@ -5,6 +5,8 @@ import { createClipboard } from "./clipboard.mjs";
 // USB forwarding talks to usbmuxd directly, so no iproxy / libimobiledevice is needed.
 
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { loadIPortalHTML } from "./web-assets.mjs";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -45,13 +47,17 @@ const { values: opts, positionals } = parseArgs({
   },
 });
 
-let WDA_PORT = +opts["wda-port"];
-let MJPEG_PORT = +opts["mjpeg-port"];
+// Keep accepting the old forwarding flags for existing app launchers. USB
+// tunnels are now private Unix sockets, never browser-reachable TCP ports.
+const MJPEG_PORT = +opts["mjpeg-port"];
 const MANUAL = Boolean(opts.wda);
-let WDA = (opts.wda ?? `http://127.0.0.1:${WDA_PORT}`).replace(/\/$/, "");
-let MJPEG = MANUAL
+const WDA = (opts.wda ?? "http://127.0.0.1:8100").replace(/\/$/, "");
+const MJPEG = MANUAL
   ? `${new URL(WDA).protocol}//${new URL(WDA).hostname}:${MJPEG_PORT}`
-  : `http://127.0.0.1:${MJPEG_PORT}`;
+  : "http://127.0.0.1:9100";
+let wdaSocket;
+let mjpegSocket;
+if (!Bun.semver.satisfies(Bun.version, ">=1.4.4")) throw new Error("Bun 1.4.4+ is required");
 if (opts.managed && (!opts.udid || !opts.owner))
   throw new Error("Managed sessions require a device and owner");
 
@@ -177,10 +183,11 @@ async function muxConnect(deviceId, port) {
   return sock;
 }
 
-// Local TCP port -> device port, like iproxy.
+// Private Unix socket -> device port. Raw WDA allows cross-origin requests;
+// only the guarded API may expose a TCP listener on the Mac.
 const tunnels = new Set();
-/** @param {number} localPort @param {number} devicePort */
-async function forward(localPort, devicePort) {
+/** @param {string} socketPath @param {number} devicePort */
+async function forward(socketPath, devicePort) {
   const connect = async (client) => {
     client.pause();
     client.on("error", () => {});
@@ -209,11 +216,9 @@ async function forward(localPort, devicePort) {
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(localPort, "127.0.0.1", () => resolve(undefined));
+    server.listen(socketPath, () => resolve(undefined));
   });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Missing TCP listener address");
-  return address.port;
+  return socketPath;
 }
 
 // ---------- WebDriverAgent ----------
@@ -233,6 +238,8 @@ async function wda(method, p, body, timeout = 8000, signal, headers = {}) {
   )
     context?.onDispatch?.();
   const res = await fetch(WDA + p, {
+    ...(wdaSocket ? { unix: wdaSocket } : {}),
+    redirect: "error",
     method,
     headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
@@ -580,7 +587,12 @@ function maybeStartWda(udid, connectionID) {
   }
   const logPath = statePath(`wda-${udid}.log`);
   const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
-  const log = fs.openSync(logPath, "a");
+  const log = fs.openSync(
+    logPath,
+    fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW,
+    0o600,
+  );
+  fs.fchmodSync(log, 0o600);
   console.log(`  starting WebDriverAgent on ${udid}`);
   const [executable, ...args] = runtimeCommand("--owned-command", ...command);
   wdaProblem = null;
@@ -946,16 +958,21 @@ if (!MANUAL) {
   if (pinnedUdid) {
     await ensureDeviceLease();
   }
-  WDA_PORT = await forward(WDA_PORT, 8100);
-  MJPEG_PORT = await forward(MJPEG_PORT, 9100);
-  WDA = `http://127.0.0.1:${WDA_PORT}`;
-  MJPEG = `http://127.0.0.1:${MJPEG_PORT}`;
+  // /tmp keeps paths within Darwin's Unix-socket length limit. mkdtemp is
+  // atomic and creates mode 0700, so another user cannot pre-create a link.
+  const directory = fs.mkdtempSync(
+    path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "iportal-usb-"),
+  );
+  process.on("exit", () => fs.rmSync(directory, { recursive: true, force: true }));
+  wdaSocket = await forward(path.join(directory, "wda.sock"), 8100);
+  mjpegSocket = await forward(path.join(directory, "mjpeg.sock"), 9100);
 }
 startServer({
   port: +opts.port,
   instanceId,
   html: loadIPortalHTML(),
   mjpeg: MJPEG,
+  mjpegSocket,
   dispatch,
   statusEvents,
   identity: opts.owner ? { owner: opts.owner, pinnedUdid } : {},

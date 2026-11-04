@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import fs from "node:fs";
+import { ensurePrivateDirectory } from "./device-runtime.mjs";
 
 export const packaged = typeof IPORTAL_PACKAGED !== "undefined" && IPORTAL_PACKAGED;
 export const sourceRoot = import.meta.dirname;
@@ -16,7 +16,7 @@ export const stateDirectory =
     : path.join(sourceRoot, "vendor"));
 
 export function statePath(name) {
-  fs.mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
+  ensurePrivateDirectory(stateDirectory);
   return path.join(stateDirectory, name);
 }
 

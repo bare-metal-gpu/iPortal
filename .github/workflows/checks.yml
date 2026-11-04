@@ -32,4 +32,6 @@ jobs:
           persist-credentials: false
           sparse-checkout: WebDriverAgentLib/Commands
       - run: bun install --frozen-lockfile
+      - run: bun audit
+      - run: test "$(git -C vendor/WebDriverAgent rev-parse HEAD)" = "$(cat scripts/wda-revision)"
       - run: bun run verify

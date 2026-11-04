@@ -1,6 +1,14 @@
 import Foundation
 import CoreGraphics
 
+enum MirrorWebOrigin {
+    static func allows(_ url: URL?, port: Int?) -> Bool {
+        guard let url, let port, url.scheme == "http", url.port == port,
+              url.user == nil, url.password == nil else { return false }
+        return ["localhost", "127.0.0.1"].contains(url.host ?? "") && url.path == "/"
+    }
+}
+
 enum MirrorGeometry {
     static func fittedHeight(aspect: CGFloat, preferredLongEdge: CGFloat, available: CGSize, toolbar: CGFloat) -> CGFloat {
         let maximum = max(1, min(available.height - toolbar - 20, (available.width - 20) / aspect))

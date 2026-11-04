@@ -3,6 +3,15 @@ import Foundation
 @main
 struct LifecycleTests {
     static func main() {
+        for address in ["http://localhost:7100/", "http://127.0.0.1:7100/?app=1&video=native"] {
+            assert(MirrorWebOrigin.allows(URL(string: address), port: 7100))
+        }
+        for address in ["https://foreign.example/", "http://localhost:7101/", "http://localhost:7100/api/status",
+                        "http://localhost.evil.example:7100/", "file:///tmp/index.html", "about:blank",
+                        "http://user@localhost:7100/"] {
+            assert(!MirrorWebOrigin.allows(URL(string: address), port: 7100), "reject foreign documents and privileged endpoints")
+        }
+        assert(!MirrorWebOrigin.allows(URL(string: "http://localhost:7100/"), port: nil))
         let display = CGRect(x: -1440, y: 40, width: 1440, height: 900)
         let portrait = CGFloat(402.0 / 874.0), landscape = 1 / portrait
         let longEdge: CGFloat = 800, toolbar: CGFloat = 36
