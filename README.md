@@ -107,6 +107,13 @@ schemas validate API requests; existing endpoint checks validate upstream respon
 Node and browser globals are checked separately. `public/iportal.js` stays a
 classic script so the Mac can call its named entry points; `web-assets.mjs`
 inlines it into the HTML response without an extra request or compilation step.
+
+App-owned native text and colors use `shared/Appearance.swift`, compiled into
+the Mac app, menu-bar watcher, and iPhone/iPad status UI. Each process registers
+the bundled Inter variable font. The browser uses matching CSS colors and the
+same font through a locally served, fingerprinted URL. Native menus, dialogs,
+switches, and SF Symbols retain their system styling. Layout dimensions and
+animation timing belong to their existing components.
 Oxlint explicitly checks floating/misused promises, dependency cycles, duplicate
 imports, unused variables, equality, and unsafe evaluation. Intentional background
 work uses `void` after arranging its error handling. Console output and synchronous

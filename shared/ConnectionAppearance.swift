@@ -22,7 +22,7 @@ struct IPortalConnectionMessage: View {
                     if let symbol {
                         Image(systemName: symbol)
                             .font(.system(size: 24, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.85))
+                            .foregroundStyle(IPortalStyle.Palette.primary)
                             .accessibilityHidden(true)
                     } else {
                         ThinkingOrb(state: orb, size: .px64, theme: .dark,
@@ -64,18 +64,18 @@ struct IPortalConnectionMessage: View {
         let minutes = keepAwakeSeconds / 60
         let seconds = keepAwakeSeconds % 60
         return Label("Awake · \(minutes):\(String(format: "%02d", seconds))", systemImage: "timer")
-            .font(.custom("InterVariable", size: 11).weight(.medium))
+            .font(IPortalStyle.Typography.badge)
             .monospacedDigit()
-            .foregroundStyle(.white.opacity(0.7))
+            .foregroundStyle(IPortalStyle.Palette.secondary)
             .padding(.horizontal, 9).padding(.vertical, 5)
-            .background(.white.opacity(0.08), in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
+            .background(IPortalStyle.Palette.subtleFill, in: Capsule())
+            .overlay(Capsule().strokeBorder(IPortalStyle.Palette.border, lineWidth: 0.5))
             .accessibilityLabel("Keep awake: \(minutes) minutes, \(seconds) seconds remaining")
     }
 
     private func hint(_ text: String) -> some View {
-        Text(text).font(.custom("InterVariable", size: 12))
-            .foregroundStyle(.white.opacity(0.85)).multilineTextAlignment(.center)
+        Text(text).font(IPortalStyle.Typography.caption)
+            .foregroundStyle(IPortalStyle.Palette.secondary).multilineTextAlignment(.center)
             .padding(.horizontal, 24).frame(maxWidth: 300)
     }
 }
@@ -89,7 +89,7 @@ struct IPortalConnectionBorder: View {
         Group {
             if reduceMotion {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(.cyan.opacity(active ? 0.8 : 0), lineWidth: 2)
+                    .strokeBorder(IPortalStyle.Palette.accent.opacity(active ? 0.8 : 0), lineWidth: 2)
             } else {
                 BorderBeam(colorVariant: .colorful, active: active,
                            borderRadius: Double(radius), strength: 0.8) { Color.clear }
@@ -104,18 +104,18 @@ private struct IPortalStatusLabel: View {
     let animated: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var label: some View {
-        Text(text).font(.custom("InterVariable", size: 18).weight(.medium))
+        Text(text).font(IPortalStyle.Typography.status)
             .lineLimit(1).minimumScaleFactor(0.75)
     }
     var body: some View {
         if reduceMotion || !animated {
-            label.foregroundStyle(.white.opacity(0.85))
+            label.foregroundStyle(IPortalStyle.Palette.primary)
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
                 let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.4) / 2.4
                 let center = phase * 2 - 0.5
                 label.foregroundStyle(LinearGradient(
-                    colors: [.white.opacity(0.6), .white, .white.opacity(0.6)],
+                    colors: IPortalStyle.Palette.shimmer,
                     startPoint: UnitPoint(x: center - 0.35, y: 0), endPoint: UnitPoint(x: center + 0.35, y: 0)))
             }
         }

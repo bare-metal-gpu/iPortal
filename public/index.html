@@ -4,14 +4,30 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>iPortal</title>
+    <link rel="preload" href="__IPORTAL_INTER_FONT__" as="font" type="font/ttf" crossorigin />
     <style>
+      @font-face {
+        font-family: "Inter";
+        src: url("__IPORTAL_INTER_FONT__") format("truetype");
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: block;
+      }
+      /* Web equivalents of shared/Appearance.swift; geometry stays local. */
       :root {
         color-scheme: dark;
-        --bg: #0b0b0d;
+        --bg: #000;
         --panel: #16161a;
-        --line: #26262c;
-        --muted: #8a8a93;
-        --accent: #a3e635;
+        --text: rgb(255 255 255 / 90%);
+        --muted: rgb(255 255 255 / 65%);
+        --line: rgb(255 255 255 / 12%);
+        --subtle-fill: rgb(255 255 255 / 8%);
+        --hover-fill: rgb(255 255 255 / 12%);
+        --hover-line: rgb(255 255 255 / 20%);
+        --accent: #1eb9aa;
+        --error: #f87171;
+        --overlay: rgb(0 0 0 / 90%);
+        --radius-control: 8px;
       }
       * {
         box-sizing: border-box;
@@ -21,11 +37,11 @@
         height: 100vh;
         display: flex;
         background: var(--bg);
-        color: #e7e7ea;
+        color: var(--text);
         font:
-          13px/1.4 -apple-system,
+          13px/1.4 "Inter",
+          -apple-system,
           BlinkMacSystemFont,
-          "Inter",
           sans-serif;
         overflow: hidden;
       }
@@ -41,9 +57,9 @@
         position: relative;
         border-radius: 42px;
         padding: 10px;
-        background: #000;
+        background: var(--bg);
         box-shadow:
-          0 0 0 2px #2a2a30,
+          0 0 0 2px var(--line),
           0 30px 80px #0008;
       }
       #screen {
@@ -55,7 +71,7 @@
         touch-action: none;
         user-select: none;
         -webkit-user-drag: none;
-        background: #111;
+        background: var(--bg);
         min-width: 240px;
         min-height: 480px;
       }
@@ -70,14 +86,14 @@
         gap: 10px;
         padding: 30px;
         text-align: center;
-        background: #0b0b0de8;
+        background: var(--overlay);
         color: var(--muted);
       }
       #overlay[hidden] {
         display: none;
       }
       #overlay b {
-        color: #e7e7ea;
+        color: var(--text);
         font-size: 15px;
       }
       .ripple {
@@ -121,7 +137,7 @@
         width: 8px;
         height: 8px;
         border-radius: 50%;
-        background: #f87171;
+        background: var(--error);
       }
       .dot.on {
         background: var(--accent);
@@ -150,9 +166,9 @@
       input {
         font: inherit;
         color: inherit;
-        background: #1f1f24;
+        background: var(--subtle-fill);
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: var(--radius-control);
         padding: 7px 9px;
       }
       button {
@@ -160,15 +176,15 @@
         text-align: left;
       }
       button:hover {
-        border-color: #3a3a42;
-        background: #25252b;
+        border-color: var(--hover-line);
+        background: var(--hover-fill);
       }
       button kbd {
         float: right;
         color: var(--muted);
-        font:
-          11px ui-monospace,
-          monospace;
+        font-family: inherit;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
       }
       input,
       select {
@@ -187,10 +203,10 @@
         line-height: 1.6;
       }
       .hint kbd {
-        font:
-          11px ui-monospace,
-          monospace;
-        background: #1f1f24;
+        font-family: inherit;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        background: var(--subtle-fill);
         border: 1px solid var(--line);
         border-radius: 4px;
         padding: 0 4px;
@@ -200,11 +216,11 @@
         bottom: 16px;
         left: 50%;
         transform: translateX(-50%);
-        background: #3f1d1d;
-        border: 1px solid #7f2d2d;
-        color: #fecaca;
+        background: var(--overlay);
+        border: 1px solid var(--line);
+        color: var(--text);
         padding: 8px 14px;
-        border-radius: 8px;
+        border-radius: var(--radius-control);
         opacity: 0;
         transition: opacity 0.2s;
         pointer-events: none;
@@ -255,14 +271,14 @@
         background: transparent;
       }
       body.app #overlay b {
-        color: #fff;
+        color: var(--text);
         text-shadow: 0 1px 3px #0008;
       }
       body.native-loading-ui #overlay {
         display: none;
       }
       body.app #overlayText {
-        color: #ddd;
+        color: var(--muted);
         text-shadow: 0 1px 3px #0008;
       }
       /* Native video (?video=native): the Mac app draws the screen underneath, the page only handles input. */

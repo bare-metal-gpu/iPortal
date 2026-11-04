@@ -113,14 +113,13 @@ private struct NotchedBeam: View {
         if active && !reduceMotion {
             TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                 let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 5) / 5
-                let gradient = AngularGradient(colors: [.clear, .clear, .cyan.opacity(0.9), .purple,
-                    .pink.opacity(0.9), .orange.opacity(0.65), .clear], center: .center, angle: .degrees(phase * 360))
+                let gradient = AngularGradient(colors: IPortalStyle.Palette.beam, center: .center, angle: .degrees(phase * 360))
                 outline.stroke(gradient, lineWidth: 2.2).blur(radius: 3)
                     .overlay(outline.stroke(gradient, lineWidth: 1.2))
             }
             .allowsHitTesting(false).accessibilityHidden(true)
         } else {
-            outline.stroke(.white.opacity(0.13), lineWidth: 1).allowsHitTesting(false)
+            outline.stroke(IPortalStyle.Palette.border, lineWidth: 1).allowsHitTesting(false)
         }
     }
 }
@@ -134,7 +133,7 @@ private struct MirrorPopover: View {
     var body: some View {
         VStack(spacing: 0) {
             if state.devices.isEmpty {
-                Text("No device connected").font(.system(size: 13)).foregroundStyle(.secondary)
+                Text("No device connected").font(IPortalStyle.Typography.body).foregroundStyle(IPortalStyle.Palette.secondary)
                     .frame(maxWidth: .infinity).frame(height: 56)
             } else {
                 ForEach(state.devices) { device in
@@ -143,19 +142,19 @@ private struct MirrorPopover: View {
                     let label = session == nil ? "Mirror \(device.name)" : "Pause \(device.name)"
                     HStack(spacing: 12) {
                         Image(systemName: device.kind.symbol).font(.system(size: 23))
-                            .foregroundStyle(.white.opacity(0.65)).accessibilityHidden(true)
-                        Text(device.name).font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.9)).lineLimit(1).help(device.name)
+                            .foregroundStyle(IPortalStyle.Palette.secondary).accessibilityHidden(true)
+                        Text(device.name).font(IPortalStyle.Typography.compactLabel)
+                            .foregroundStyle(IPortalStyle.Palette.primary).lineLimit(1).help(device.name)
                         Spacer(minLength: 12)
                         Button {
                             if let session { pause(session) } else { start(device.serial) }
                         } label: {
                             Image(systemName: session == nil ? "play.fill" : "pause.fill").font(.system(size: 11, weight: .semibold))
                                 .contentTransition(.symbolEffect(.replace))
-                                .foregroundStyle(.white.opacity(enabled ? 0.85 : 0.3))
+                                .foregroundStyle(enabled ? IPortalStyle.Palette.primary : IPortalStyle.Palette.disabled)
                                 .frame(width: 30, height: 30)
                                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
-                                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+                                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(IPortalStyle.Palette.border, lineWidth: 0.5))
                         }
                         .buttonStyle(.plain).disabled(!enabled)
                         .help(label).accessibilityLabel(label)
@@ -167,7 +166,7 @@ private struct MirrorPopover: View {
         .padding(.top, 20).padding(.bottom, 10)
         .frame(width: 300, height: state.height)
         .background { NotchedBackdrop(notchX: state.notchX).allowsHitTesting(false) }
-        .overlay(outline.stroke(.white.opacity(0.12), lineWidth: 0.7))
+        .overlay(outline.stroke(IPortalStyle.Palette.border, lineWidth: 0.7))
         .overlay(NotchedBeam(outline: outline, active: state.visible && !state.devices.isEmpty))
         .preferredColorScheme(.dark)
     }

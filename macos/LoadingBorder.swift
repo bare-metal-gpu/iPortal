@@ -42,7 +42,7 @@ struct MirrorBlurredSnapshot: View {
             if let snapshot {
                 Image(nsImage: snapshot).resizable().scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped().blur(radius: 18).overlay(Color.black.opacity(0.25))
+                    .clipped().blur(radius: IPortalStyle.Surface.snapshotBlur).overlay(IPortalStyle.Surface.snapshotShade)
             }
         }
         .accessibilityHidden(true)

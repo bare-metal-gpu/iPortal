@@ -4,6 +4,7 @@ import { HttpRouter, HttpServerResponse } from "effect/http";
 import { NodeHttpServer } from "@effect/platform-node";
 import { apiError } from "./errors.mjs";
 import { decodeRequest, RequestSchemas } from "./schemas.mjs";
+import { interFont } from "./web-assets.mjs";
 
 /** @returns {{status: number, body: Record<string, any>}} */
 export function errorResponse(e) {
@@ -157,6 +158,12 @@ export function startServer({
     Effect.gen(function* () {
       yield* Effect.try(() => checkRequest(request, boundPort, instanceId));
       const url = new URL(request.url, `http://localhost:${boundPort}`);
+      if (request.method === "GET" && url.pathname === interFont.path) {
+        return HttpServerResponse.uint8Array(interFont.body, {
+          contentType: "font/ttf",
+          headers: { ...headers, "cache-control": "public, max-age=31536000, immutable" },
+        });
+      }
       if (request.method === "GET" && url.pathname === "/") {
         return HttpServerResponse.text(
           html.replace("<head>", `<head><meta name="iportal-instance" content="${instanceId}">`),

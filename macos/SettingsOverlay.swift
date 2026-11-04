@@ -14,7 +14,7 @@ struct SettingsOverlay: View {
     var body: some View {
         ZStack(alignment: .top) {
             MirrorBlurredSnapshot(snapshot: state.snapshot)
-            Color.black.opacity(0.16)
+            IPortalStyle.Surface.settingsShade
             GeometryReader { geometry in
                 let compact = geometry.size.width < 280
                 // Keep the first row inside the rounded corner's tangent. At
@@ -43,10 +43,11 @@ struct SettingsOverlay: View {
             if !compact {
                 Image(systemName: permission.symbol)
                     .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(IPortalStyle.Palette.secondary)
                     .frame(width: 20)
             }
-            Text(permission.title).font(.system(size: compact ? 13 : 14, weight: .medium))
+            Text(permission.title).font(compact ? IPortalStyle.Typography.compactLabel : IPortalStyle.Typography.label)
+                .foregroundStyle(IPortalStyle.Palette.primary)
                 .lineLimit(1)
             Spacer(minLength: compact ? 8 : 16)
             Toggle(permission.title, isOn: Binding(

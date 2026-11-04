@@ -4,7 +4,6 @@
 // isn't available, the web view shows WebDriverAgent's MJPEG stream instead.
 import Cocoa
 import WebKit
-import CoreText
 import Carbon
 
 let barHeight: CGFloat = 30
@@ -1309,9 +1308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
            let icon = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = icon
         }
-        if let fontURL = Bundle.main.url(forResource: "InterVariable", withExtension: "ttf", subdirectory: "Fonts") {
-            CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
-        }
+        IPortalStyle.registerFonts(in: .main)
         buildMenu()
         usbMonitor = PhoneUSBMonitor { [weak self] serial, attached in
             guard let self else { return }

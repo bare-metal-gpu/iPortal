@@ -1,6 +1,5 @@
 import UIKit
 import SwiftUI
-import CoreText
 import ThinkingOrbsKit
 
 @MainActor
@@ -18,7 +17,7 @@ private struct IPortalScreen: View {
         let connecting = state.phase == "connecting" || state.phase == "reconnecting"
         let orb: OrbState = state.phase == "reconnecting" ? .solving : state.phase == "connected" ? .searching : .connecting
         ZStack {
-            Color.black
+            IPortalStyle.Palette.background
             IPortalConnectionBorder(active: connecting && state.visible)
             IPortalConnectionMessage(title: state.title, detail: state.detail, keepAwakeSeconds: state.keepAwakeSeconds,
                                     orb: orb, isVisible: state.visible, shimmer: connecting)
@@ -36,9 +35,7 @@ public final class IPortalViewController: UIViewController {
         super.viewDidLoad()
         view.tag = 4102
         view.backgroundColor = .black
-        if let font = Bundle(for: Self.self).url(forResource: "InterVariable", withExtension: "ttf", subdirectory: "Fonts") {
-            CTFontManagerRegisterFontsForURL(font as CFURL, .process, nil)
-        }
+        IPortalStyle.registerFonts(in: Bundle(for: Self.self))
         let host = UIHostingController(rootView: IPortalScreen(state: state))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false

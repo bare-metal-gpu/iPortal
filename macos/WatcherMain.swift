@@ -11,6 +11,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
     private var sessionsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        IPortalStyle.registerFonts(in: .main)
         // Keep the user's status-item position during the one-time migration.
         for (key, value) in IPortalWatcher.preferences.dictionaryRepresentation()
             where key.hasPrefix("NSStatusItem") && UserDefaults.standard.object(forKey: key) == nil {

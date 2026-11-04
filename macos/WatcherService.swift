@@ -4,6 +4,7 @@ import Security
 
 @MainActor
 func configureIPortalMaterial(_ view: NSVisualEffectView) {
+    view.appearance = NSAppearance(named: .darkAqua)
     view.material = .hudWindow
     view.blendingMode = .behindWindow
     view.state = .active
