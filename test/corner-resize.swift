@@ -1,0 +1,104 @@
+import Cocoa
+import QuartzCore
+
+@main
+struct CornerResizeTests {
+    @MainActor static func main() {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)
+        for kind in [IPortalDeviceKind.iPhone, .iPad] {
+            for size in [NSSize(width: 185, height: 400), NSSize(width: 402, height: 874),
+                         NSSize(width: 874, height: 402), NSSize(width: 768, height: 1024)] {
+                let radius = kind.radius(width: size.width, height: size.height)
+                let root = NSView(frame: NSRect(origin: .zero, size: NSSize(width: size.width + 24, height: size.height + 32)))
+                let phone = NSView(frame: NSRect(origin: NSPoint(x: 12, y: 16), size: size))
+                let input = NSView(frame: phone.bounds)
+                phone.addSubview(input)
+                root.addSubview(phone)
+
+                // Render the actual continuous Core Animation corner used by
+                // the app. No assumptions about its curve/Bezier approximation.
+                let layer = CALayer()
+                layer.frame = phone.bounds
+                layer.backgroundColor = NSColor.white.cgColor
+                layer.cornerRadius = radius
+                layer.cornerCurve = .continuous
+                layer.masksToBounds = true
+                let width = Int(size.width), height = Int(size.height)
+                let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                    bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue)!
+                layer.render(in: context)
+                let pixels = context.data!.assumingMemoryBound(to: UInt8.self)
+                let grabSize = CornerResizeHandle.grabSize(radius: radius)
+                for corner in ResizeCorner.allCases {
+                    let handle = CornerResizeHandle(corner: corner)
+                    handle.frame = NSRect(x: corner.left ? phone.frame.minX : phone.frame.maxX - grabSize,
+                                          y: corner.bottom ? phone.frame.minY : phone.frame.maxY - grabSize,
+                                          width: grabSize, height: grabSize)
+                    root.addSubview(handle)
+                    var grabbed = 0, displayPoints = 0
+                    // Covers the old 56-point obstruction and the curved edge.
+                    for y in 0..<60 {
+                        for x in 0..<60 {
+                            let p = NSPoint(x: corner.left ? CGFloat(x) + 0.5 : size.width - CGFloat(x) - 0.5,
+                                            y: corner.bottom ? CGFloat(y) + 0.5 : size.height - CGFloat(y) - 0.5)
+                            let global = NSPoint(x: p.x + phone.frame.minX, y: p.y + phone.frame.minY)
+                            let target = root.hitTest(global)
+                            let alpha = pixels[(Int(p.y) * width + Int(p.x)) * 4 + 3]
+                            if alpha > 0 {
+                                displayPoints += 1
+                                assert(target === input, "visible screen must receive input: \(kind) \(size) \(corner) \(p)")
+                            }
+                            if target === handle {
+                                grabbed += 1
+                                assert(alpha == 0, "resize cannot overlap a visible display pixel")
+                            }
+                        }
+                    }
+                    assert(grabbed > 0 && displayPoints > 0, "both resize and phone input remain reachable")
+                    for rect in handle.grabCursorRects {
+                        for x in [rect.minX + 0.001, rect.maxX - 0.001] {
+                            for y in [rect.minY + 0.001, rect.maxY - 0.001] {
+                                assert(handle.containsGrabPoint(NSPoint(x: x, y: y)), "cursor stays inside the resize hit area")
+                            }
+                        }
+                    }
+                    handle.isHidden = true
+                    assert(handle.hitTest(handle.frame.origin) == nil, "hidden handles cannot intercept input")
+                    handle.removeFromSuperview()
+                }
+            }
+        }
+        if ProcessInfo.processInfo.environment["IPORTAL_TEST_WINDOW_SERVER"] == "1" {
+            // Opt-in local integration check: WindowServer, before NSView,
+            // ignores fully transparent pixels. This caught the first fix's
+            // unreachable resize area despite its passing view-level tests.
+            let visible = NSScreen.main!.visibleFrame
+            let window = NSWindow(contentRect: NSRect(x: visible.minX + 24, y: visible.minY + 24, width: 64, height: 64),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+            defer { window.orderOut(nil) }
+            for corner in ResizeCorner.allCases {
+                let handle = CornerResizeHandle(corner: corner)
+                window.contentView = handle
+                window.orderFrontRegardless()
+                window.display()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+                let local = NSPoint(x: corner.left ? 3 : 61, y: corner.bottom ? 3 : 61)
+                let screen = window.convertPoint(toScreen: local)
+                assert(NSWindow.windowNumber(at: screen, belowWindowWithWindowNumber: 0) == window.windowNumber,
+                       "WindowServer must deliver corner mouse events")
+                let middle = window.convertPoint(toScreen: NSPoint(x: 32, y: 32))
+                assert(NSWindow.windowNumber(at: middle, belowWindowWithWindowNumber: 0) != window.windowNumber,
+                       "the resize view must not paint/hit the phone area")
+            }
+            print("WindowServer hit testing reaches all four resize corners and excludes the screen area.")
+        }
+        print("Corner input: all visible pixels pass through, empty corners resize, and cursor regions match across device sizes/orientations.")
+    }
+}

@@ -65,6 +65,30 @@ try {
     { stdio: "pipe" },
   );
   execFileSync(geometryBinary, [], { stdio: "inherit" });
+  const main = await readFile(join(root, "macos/main.swift"), "utf8");
+  const handles = main.match(
+    /\/\/ BEGIN TESTABLE CORNER RESIZE\n([\s\S]*?)\/\/ END TESTABLE CORNER RESIZE/,
+  );
+  assert(handles, "corner resize test markers must exist");
+  const handleHelper = join(temporary, "CornerResize.swift");
+  const handleBinary = join(temporary, "corner-resize-tests");
+  await writeFile(handleHelper, `import Cocoa\n${handles[1]}`);
+  execFileSync(
+    "xcrun",
+    [
+      "swiftc",
+      "-swift-version",
+      "5",
+      "-warnings-as-errors",
+      handleHelper,
+      join(root, "macos/Lifecycle.swift"),
+      join(root, "test/corner-resize.swift"),
+      "-o",
+      handleBinary,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(handleBinary, [], { stdio: "inherit" });
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

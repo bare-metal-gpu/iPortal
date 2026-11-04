@@ -42,6 +42,7 @@ final class DragBar: NSVisualEffectView {
     override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
 }
 
+// BEGIN TESTABLE CORNER RESIZE
 enum ResizeCorner: CaseIterable {
     case topLeft, topRight, bottomLeft, bottomRight
     var left: Bool { self == .topLeft || self == .bottomLeft }
@@ -61,6 +62,54 @@ final class CornerResizeHandle: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    // Only the empty area beyond the rounded display is draggable.
+    // These views are siblings of the phone, not rectangular overlays on it.
+    static func grabSize(radius: CGFloat) -> CGFloat { max(0, radius) }
+
+    private var grabPath: NSBezierPath {
+        let size = min(bounds.width, bounds.height)
+        let center = NSPoint(x: corner.left ? bounds.maxX : bounds.minX,
+                             y: corner.bottom ? bounds.maxY : bounds.minY)
+        let radius = size + 1 // keep antialiased screen-edge pixels interactive
+        let path = NSBezierPath(rect: bounds)
+        path.appendOval(in: NSRect(x: center.x - radius, y: center.y - radius,
+                                  width: 2 * radius, height: 2 * radius))
+        path.windingRule = .evenOdd
+        return path
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // WindowServer skips completely transparent pixels before NSView hit
+        // testing. One alpha step makes only this empty corner mouse-reachable.
+        NSColor(white: 0, alpha: 1.0 / 255.0).setFill()
+        grabPath.fill()
+    }
+
+    func containsGrabPoint(_ point: NSPoint) -> Bool {
+        guard bounds.contains(point) else { return false }
+        return grabPath.contains(point)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, alphaValue > 0, containsGrabPoint(convert(point, from: superview)) else { return nil }
+        return self
+    }
+
+    var grabCursorRects: [NSRect] {
+        // AppKit cursor rectangles cannot describe a curve. Tile it with
+        // inward-rounded strips so even the resize cursor never covers content.
+        let size = min(bounds.width, bounds.height)
+        return (0..<Int(size.rounded(.down))).compactMap { row in
+            let distance = size - CGFloat(row + 1)
+            // Leave a quarter point for the oval path's cubic approximation.
+            let width = size - sqrt(pow(size + 1, 2) - distance * distance) - 0.25
+            guard width > 0 else { return nil }
+            return NSRect(x: corner.left ? bounds.minX : bounds.maxX - width,
+                          y: corner.bottom ? bounds.minY + CGFloat(row) : bounds.maxY - CGFloat(row + 1),
+                          width: width, height: 1)
+        }
+    }
+
     override func resetCursorRects() {
         let cursor: NSCursor
         if #available(macOS 15, *) {
@@ -75,7 +124,7 @@ final class CornerResizeHandle: NSView {
         } else {
             cursor = .crosshair
         }
-        addCursorRect(bounds, cursor: cursor)
+        for rect in grabCursorRects { addCursorRect(rect, cursor: cursor) }
     }
 
     private func screenLocation(_ event: NSEvent) -> NSPoint {
@@ -99,6 +148,7 @@ final class CornerResizeHandle: NSView {
     }
     override func mouseUp(with event: NSEvent) { startFrame = nil }
 }
+// END TESTABLE CORNER RESIZE
 
 final class HoverView: NSView {
     var onHover: ((Bool) -> Void)?
@@ -588,7 +638,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             handle.onResize = { [weak self] corner, frame, delta in
                 self?.resizeFromCorner(corner, initial: frame, delta: delta)
             }
-            phone.addSubview(handle)
+            root.addSubview(handle)
             return handle
         }
 
@@ -659,9 +709,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         loadingBorder.frame = phone.bounds
         settingsHost?.frame = phone.bounds
         loadingBorderState.radius = max(0, kind.radius(width: w, height: phoneHeight) - 2)
-        // Generous grab areas extend inward from every rounded phone corner.
-        // They sit above the input web view, so a resize cannot send a phone gesture.
-        let grabSize: CGFloat = 56
+        // Keep the visible display fully interactive, including controls near
+        // its curved edges. Resizing uses only the empty outer corner wedges.
+        let grabSize = CornerResizeHandle.grabSize(radius: kind.radius(width: w, height: phoneHeight))
         for handle in resizeHandles {
             handle.frame = NSRect(x: handle.corner.left ? 0 : w - grabSize,
                                   y: handle.corner.bottom ? 0 : phoneHeight - grabSize,
@@ -1188,6 +1238,10 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                 let point = self.web.convert(event.locationInWindow, from: nil)
                 guard !self.settingsBlocksInput else { return event }
                 guard self.web.bounds.contains(point) || self.trackingScroll || self.trackingMagnify else { return event }
+                if !self.trackingScroll && !self.trackingMagnify,
+                   self.resizeHandles.contains(where: { $0.containsGrabPoint($0.convert(event.locationInWindow, from: nil)) }) {
+                    return event
+                }
                 // Never also pass this event to WKWebView: its DOM wheel handler
                 // would turn the same physical gesture into a second swipe.
                 let magnifying = event.type == .magnify
