@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>iPhone Mirror</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0b0d; --panel: #16161a; --line: #26262c; --muted: #8a8a93; --accent: #a3e635; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; background: var(--bg); color: #e7e7ea; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Inter", sans-serif; overflow: hidden; }
+  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; min-width: 0; }
+  #phone { position: relative; border-radius: 42px; padding: 10px; background: #000; box-shadow: 0 0 0 2px #2a2a30, 0 30px 80px #0008; }
+  #screen { display: block; max-height: calc(100vh - 60px); max-width: calc(100vw - 340px); border-radius: 32px; cursor: default; touch-action: none; user-select: none; -webkit-user-drag: none; background: #111; min-width: 240px; min-height: 480px; }
+  #overlay { position: absolute; inset: 10px; border-radius: 32px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 30px; text-align: center; background: #0b0b0de8; color: var(--muted); }
+  #overlay[hidden] { display: none; }
+  #overlay b { color: #e7e7ea; font-size: 15px; }
+  .spinner { width: 22px; height: 22px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ripple { position: absolute; width: 34px; height: 34px; margin: -17px; border-radius: 50%; background: #ffffff55; pointer-events: none; animation: ripple 0.4s ease-out forwards; }
+  @keyframes ripple { from { transform: scale(0.4); opacity: 1; } to { transform: scale(1.4); opacity: 0; } }
+  aside { width: 300px; border-left: 1px solid var(--line); background: var(--panel); padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
+  h1 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #f87171; }
+  .dot.on { background: var(--accent); }
+  #device { color: var(--muted); font-size: 11px; margin-top: 4px; word-break: break-all; }
+  h2 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  button, select, input { font: inherit; color: inherit; background: #1f1f24; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; }
+  button { cursor: pointer; text-align: left; }
+  button:hover { border-color: #3a3a42; background: #25252b; }
+  button kbd { float: right; color: var(--muted); font: 11px ui-monospace, monospace; }
+  input, select { width: 100%; }
+  .row { display: flex; gap: 6px; }
+  .row button { flex-shrink: 0; }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .hint kbd { font: 11px ui-monospace, monospace; background: #1f1f24; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #3f1d1d; border: 1px solid #7f2d2d; color: #fecaca; padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 60vw; }
+  #toast.show { opacity: 1; }
+  /* App mode (?app): the native Mac window draws the phone shape, the page is just the screen. */
+  body.app { background: transparent; }
+  body.app aside { display: none; }
+  body.app main { padding: 0; }
+  body.app #phone { width: 100vw; height: 100vh; padding: 0; border-radius: 0; box-shadow: none; }
+  body.app #screen { width: 100%; height: 100%; max-width: none; max-height: none; min-width: 0; min-height: 0; border-radius: 0; object-fit: fill; }
+  body.app #overlay { inset: 0; border-radius: 0; }
+  /* Native video (?video=native): the Mac app draws the screen underneath, the page only handles input. */
+  body.native-video #phone { background: transparent; }
+  body.native-video #screen { opacity: 0; }
+</style>
+</head>
+<body>
+<main>
+  <div id="phone">
+    <img id="screen" alt="" draggable="false" />
+    <div id="overlay"><div class="spinner"></div><b>Connecting…</b><span id="overlayText"></span></div>
+  </div>
+</main>
+
+<aside>
+  <div>
+    <h1><span class="dot" id="dot"></span>iPhone Mirror</h1>
+    <div id="device">Looking for your iPhone…</div>
+  </div>
+
+  <section>
+    <h2>Navigate</h2>
+    <div class="grid">
+      <button data-action="home">Home <kbd>⌥H</kbd></button>
+      <button data-shortcut="switcher">App Switcher <kbd>⌥J</kbd></button>
+      <button data-shortcut="notifications">Notifications</button>
+      <button data-shortcut="control">Control Center</button>
+      <button data-shortcut="spotlight">Search</button>
+      <button data-action="lock">Lock</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Buttons</h2>
+    <div class="grid">
+      <button data-button="volumeUp">Volume +</button>
+      <button data-button="volumeDown">Volume −</button>
+      <button data-action="unlock">Wake</button>
+      <button id="siriBtn">Ask Siri…</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Open app</h2>
+    <div class="row">
+      <select id="app">
+        <option value="com.apple.mobilesafari">Safari</option>
+        <option value="com.apple.MobileSMS">Messages</option>
+        <option value="com.apple.mobilephone">Phone</option>
+        <option value="com.apple.camera">Camera</option>
+        <option value="com.apple.mobileslideshow">Photos</option>
+        <option value="com.apple.Preferences">Settings</option>
+        <option value="com.apple.Maps">Maps</option>
+        <option value="com.atebits.Tweetie2">X</option>
+        <option value="net.whatsapp.WhatsApp">WhatsApp</option>
+        <option value="custom">Bundle ID…</option>
+      </select>
+      <button id="launchBtn">Open</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Stream quality</h2>
+    <select id="quality">
+      <option value="low">Low: 20 fps, smallest</option>
+      <option value="balanced">Balanced: 30 fps</option>
+      <option value="high">High: 60 fps, sharpest</option>
+    </select>
+  </section>
+
+  <section class="hint">
+    <h2>Controls</h2>
+    Click to tap, hold for a long press, drag to swipe.<br />
+    Scroll wheel or trackpad scrolls.<br />
+    Just start typing to type. <kbd>⌘V</kbd> pastes your Mac clipboard.<br />
+    <kbd>⌥H</kbd> Home, <kbd>⌥J</kbd> App Switcher.<br />
+    Keep the iPhone unlocked and set Auto-Lock to Never while mirroring.
+  </section>
+</aside>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const screen = $("screen");
+const phone = $("phone");
+let connected = false;
+const params = new URLSearchParams(location.search);
+if (params.has("app")) document.body.classList.add("app");
+let nativeVideo = params.get("video") === "native";
+document.body.classList.toggle("native-video", nativeVideo);
+
+// Called by the Mac app if it can't capture the iPhone's screen itself.
+function startStream() {
+  nativeVideo = false;
+  document.body.classList.remove("native-video");
+  if (connected) screen.src = `/stream?${Date.now()}`;
+}
+
+function toast(msg) {
+  $("toast").textContent = msg;
+  $("toast").classList.add("show");
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => $("toast").classList.remove("show"), 3000);
+}
+
+async function api(name, body = {}) {
+  if (name !== "type") flush(true); // keep typed text in order with other actions
+  try {
+    const res = await fetch(`/api/${name}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const json = await res.json();
+    if (!json.ok) toast(json.error || "Something went wrong");
+  } catch {
+    toast("Lost connection to the mirror server");
+  }
+}
+
+// ---------- Connection ----------
+
+async function poll() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    $("dot").classList.toggle("on", s.ok);
+    $("device").textContent = s.device ? `${s.device.udid} · ${s.device.connection}` : s.ok ? "Connected over WiFi" : "No iPhone connected";
+    $("quality").value = s.quality;
+    if (s.ok && !connected) {
+      connected = true;
+      if (nativeVideo) $("overlay").hidden = true;
+      else screen.src = `/stream?${Date.now()}`;
+    }
+    if (!s.ok) {
+      connected = false;
+      screen.removeAttribute("src");
+      $("overlay").hidden = false;
+      $("overlay").querySelector("b").textContent = "Not connected";
+      $("overlayText").textContent = s.error ?? "";
+    }
+  } catch {
+    $("dot").classList.remove("on");
+    $("overlayText").textContent = "Mirror server is not running.";
+  }
+  setTimeout(poll, connected ? 4000 : 1500);
+}
+
+screen.addEventListener("load", () => {
+  $("overlay").hidden = true;
+  // Tell the native Mac app the screen's aspect ratio so it can size the window.
+  window.webkit?.messageHandlers?.native?.postMessage({ w: screen.naturalWidth, h: screen.naturalHeight });
+});
+screen.addEventListener("error", () => (connected = false));
+poll();
+fetch("/api/ensure", { method: "POST" }); // turns automation back on if it was stopped on the iPhone
+
+// ---------- Touch: click, long press, drag ----------
+
+const rel = (e) => {
+  const r = screen.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+};
+
+function ripple(e) {
+  const r = phone.getBoundingClientRect();
+  const el = document.createElement("div");
+  el.className = "ripple";
+  el.style.left = `${e.clientX - r.left}px`;
+  el.style.top = `${e.clientY - r.top}px`;
+  phone.append(el);
+  setTimeout(() => el.remove(), 400);
+}
+
+let touch = null;
+
+screen.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  screen.setPointerCapture(e.pointerId);
+  touch = { t0: performance.now(), last: 0, points: [[...rel(e), 0]] };
+  ripple(e);
+});
+
+screen.addEventListener("pointermove", (e) => {
+  if (!touch) return;
+  const t = performance.now() - touch.t0;
+  if (t - touch.last < 16) return;
+  touch.last = t;
+  touch.points.push([...rel(e), t]);
+});
+
+screen.addEventListener("pointerup", (e) => {
+  if (!touch) return;
+  const end = performance.now() - touch.t0;
+  let points = [...touch.points, [...rel(e), end]];
+  const [x0, y0] = points[0];
+  const moved = points.some(([x, y]) => Math.hypot(x - x0, y - y0) > 0.012);
+  if (!moved) points = [points[0]];
+  else if (points.length > 40) {
+    const step = (points.length - 1) / 39;
+    points = Array.from({ length: 40 }, (_, i) => points[Math.round(i * step)]);
+  }
+  touch = null;
+  api("gesture", { points, end: moved ? points.at(-1)[2] : end });
+});
+
+screen.addEventListener("pointercancel", () => (touch = null));
+screen.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// ---------- Scrolling: wheel deltas become short controlled swipes ----------
+
+let wheel = null;
+screen.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const r = screen.getBoundingClientRect();
+  wheel ??= { x: rel(e)[0], y: rel(e)[1], dx: 0, dy: 0 };
+  wheel.dx += e.deltaX / r.width;
+  wheel.dy += e.deltaY / r.height;
+  clearTimeout(wheel.t);
+  wheel.t = setTimeout(() => {
+    const lim = (v) => Math.max(-0.5, Math.min(0.5, -v));
+    const dx = lim(wheel.dx), dy = lim(wheel.dy);
+    const fit = (v, d) => Math.max(0.05 - Math.min(0, d), Math.min(0.95 - Math.max(0, d), v));
+    const x = fit(wheel.x, dx), y = fit(wheel.y, dy);
+    wheel = null;
+    if (Math.abs(dx) + Math.abs(dy) < 0.01) return;
+    api("gesture", { points: [[x, y, 0], [x + dx * 0.5, y + dy * 0.5, 60], [x + dx, y + dy, 150]], end: 250 });
+  }, 90);
+}, { passive: false });
+
+// ---------- Keyboard ----------
+
+const inField = () => ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
+// iOS takes ~300 ms per typing request no matter how many characters it carries. So the first key goes out
+// right away, and keys typed while a request is in flight pile up and go out together when it returns.
+// force: send now anyway, so pending text stays ahead of a tap or other action that follows it.
+let typed = "";
+let typing = false;
+function flush(force = false) {
+  if (!typed || (typing && !force)) return;
+  const text = typed;
+  typed = "";
+  typing = true;
+  api("type", { text }).finally(() => {
+    typing = false;
+    flush();
+  });
+}
+
+window.addEventListener("keydown", (e) => {
+  if (inField() || !connected) return;
+  if (e.altKey && e.code === "KeyH") return e.preventDefault(), api("home");
+  if (e.altKey && e.code === "KeyJ") return e.preventDefault(), api("shortcut", { name: "switcher" });
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // let ⌘V through to the paste handler
+  const special = { Backspace: "\b", Enter: "\n", Tab: "\t" }[e.key];
+  const ch = special ?? (e.key.length === 1 ? e.key : null);
+  if (ch === null) return;
+  e.preventDefault();
+  typed += ch;
+  flush();
+});
+
+window.addEventListener("paste", (e) => {
+  if (inField() || !connected) return;
+  const text = e.clipboardData.getData("text/plain");
+  if (text) {
+    e.preventDefault();
+    typed += text;
+    flush();
+  }
+});
+
+// ---------- Sidebar ----------
+
+document.querySelectorAll("[data-action]").forEach((b) => b.addEventListener("click", () => api(b.dataset.action)));
+document.querySelectorAll("[data-shortcut]").forEach((b) => b.addEventListener("click", () => api("shortcut", { name: b.dataset.shortcut })));
+document.querySelectorAll("[data-button]").forEach((b) => b.addEventListener("click", () => api("button", { name: b.dataset.button })));
+
+$("siriBtn").addEventListener("click", () => {
+  const text = prompt("Ask Siri:");
+  if (text) api("siri", { text });
+});
+
+$("launchBtn").addEventListener("click", () => {
+  let bundleId = $("app").value;
+  if (bundleId === "custom") bundleId = prompt("Bundle ID (e.g. com.spotify.client):");
+  if (bundleId) api("launch", { bundleId });
+});
+
+$("quality").addEventListener("change", async (e) => {
+  await api("quality", { level: e.target.value });
+  if (!nativeVideo) screen.src = `/stream?${Date.now()}`; // reconnect so the new scale applies right away
+});
+
+// Buttons shouldn't keep focus, otherwise Space/Enter would re-trigger them instead of typing.
+document.querySelectorAll("button").forEach((b) => b.addEventListener("mouseup", () => b.blur()));
+</script>
+</body>
+</html>

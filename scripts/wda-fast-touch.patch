@@ -1,0 +1,65 @@
+diff --git a/WebDriverAgentLib/Commands/FBTouchActionCommands.m b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+index 7788175..03a5132 100644
+--- a/WebDriverAgentLib/Commands/FBTouchActionCommands.m
++++ b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+@@ -12,6 +12,10 @@
+ #import "FBRouteRequest.h"
+ #import "FBSession.h"
+ #import "XCUIApplication+FBTouchAction.h"
++#import "FBResponsePayload.h"
++#import "FBXCTestDaemonsProxy.h"
++#import "XCPointerEventPath.h"
++#import "XCSynthesizedEventRecord.h"
+ 
+ @implementation FBTouchActionCommands
+ 
+@@ -22,6 +26,7 @@ + (NSArray *)routes
+   return
+   @[
+     [[FBRoute POST:@"/actions"] respondWithTarget:self action:@selector(handlePerformW3CTouchActions:)],
++    [[FBRoute POST:@"/wda/mirror/touch"].withoutSession respondWithTarget:self action:@selector(handleMirrorTouch:)],
+   ];
+ }
+ 
+@@ -38,4 +43,41 @@ + (NSArray *)routes
+   return FBResponseWithOK();
+ }
+ 
++// iphone-mirror: injects a touch path straight into the event synthesizer. Unlike /actions it skips the
++// active-app lookup, accessibility snapshots and the wait-for-idle, so a tap lands ~150 ms sooner. Body: { points: [[x, y, ms], ...] as 0..1 fractions of the portrait screen, end: ms }.
+++ (id<FBResponsePayload>)handleMirrorTouch:(FBRouteRequest *)request
++{
++  NSArray<NSArray<NSNumber *> *> *points = request.arguments[@"points"];
++  if (![points isKindOfClass:NSArray.class] || points.count == 0) {
++    return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"points must be a non-empty array" traceback:nil]);
++  }
++  // The runner's own UIScreen reports a legacy 320x480, so take the real size from SpringBoard once.
++  static CGSize size;
++  if (size.width == 0) {
++    CGSize sb = [[XCUIApplication alloc] initWithBundleIdentifier:@"com.apple.springboard"].frame.size;
++    size = CGSizeMake(MIN(sb.width, sb.height), MAX(sb.width, sb.height));
++  }
++  CGPoint (^at)(NSArray<NSNumber *> *) = ^CGPoint(NSArray<NSNumber *> *p) {
++    CGFloat x = MIN(1, MAX(0, p[0].doubleValue)), y = MIN(1, MAX(0, p[1].doubleValue));
++    return CGPointMake(x * (size.width - 1), y * (size.height - 1));
++  };
++  XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:at(points[0]) offset:0];
++  NSTimeInterval last = 0;
++  for (NSUInteger i = 1; i < points.count; i++) {
++    last = MAX(last, points[i][2].doubleValue / 1000);
++    [path moveToPoint:at(points[i]) atOffset:last];
++  }
++  [path liftUpAtOffset:MAX(last, [request.arguments[@"end"] doubleValue] / 1000)];
++  // Main display, portrait: the same coordinate space as the (unrotated) screen stream.
++  XCSynthesizedEventRecord *event = [[XCSynthesizedEventRecord alloc] initWithName:@"mirror" interfaceOrientation:UIInterfaceOrientationPortrait];
++  [event addPointerEventPath:path];
++  // Waits for XCTest's acknowledgement (~300 ms after the gesture plays): the daemon rejects any new
++  // touch or keystroke until then, so replying earlier would only make the next input fail.
++  NSError *error;
++  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error]) {
++    return FBResponseWithUnknownError(error);
++  }
++  return FBResponseWithOK();
++}
++
+ @end
