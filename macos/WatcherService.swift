@@ -94,9 +94,22 @@ enum IPortalWatcherService {
     }
 
     private static var codeFingerprint: String? {
+        guard let helper = codeFingerprint(at: IPortalWatcher.helperURL) else { return nil }
+        let transportURL = IPortalWatcher.appURL.appendingPathComponent("Contents/MacOS/iPortalTransport")
+        let transport: String
+        if FileManager.default.fileExists(atPath: transportURL.path) {
+            guard let fingerprint = codeFingerprint(at: transportURL) else { return nil }
+            transport = fingerprint
+        } else { transport = "absent" }
+        // The watcher owns a long-lived transport process outside its own bundle.
+        // Replacing that executable on disk does not update the running process.
+        return helper + ":" + transport
+    }
+
+    private static func codeFingerprint(at url: URL) -> String? {
         var code: SecStaticCode?
         var info: CFDictionary?
-        guard SecStaticCodeCreateWithPath(IPortalWatcher.helperURL as CFURL, [], &code) == errSecSuccess,
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess,
               let code, SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
               let data = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data else { return nil }
         return data.base64EncodedString()
