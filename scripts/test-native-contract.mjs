@@ -167,6 +167,21 @@ int main(void) { @autoreleasepool {
     execFileSync("git", ["init", "-q", checkout]);
     const source = join(checkout, "WebDriverAgentLib/Commands/FBTouchActionCommands.m");
     const installer = join(root, "scripts/apply-wda-patches.sh");
+    const lockSource = join(checkout, "WebDriverAgentLib/Categories/XCUIDevice+FBHelpers.m");
+    const upstreamLock = execFileSync(
+      "git",
+      ["-C", vendor, "show", "HEAD:WebDriverAgentLib/Categories/XCUIDevice+FBHelpers.m"],
+      { encoding: "utf8" },
+    );
+    await mkdir(join(lockSource, ".."), { recursive: true });
+    await writeFile(lockSource, upstreamLock);
+    const lockRoutes = join(checkout, "WebDriverAgentLib/Commands/FBCustomCommands.m");
+    const upstreamLockRoutes = execFileSync(
+      "git",
+      ["-C", vendor, "show", "HEAD:WebDriverAgentLib/Commands/FBCustomCommands.m"],
+      { encoding: "utf8" },
+    );
+    await writeFile(lockRoutes, upstreamLockRoutes);
     const authSources = [
       "Routing/FBHTTPServer.m",
       "Routing/FBWebServer.m",
@@ -182,8 +197,22 @@ int main(void) { @autoreleasepool {
     await writeFile(source, upstream);
     execFileSync(installer, [checkout]);
     const installed = await readFile(source, "utf8");
+    const installedLock = await readFile(lockSource, "utf8");
+    const installedLockRoutes = await readFile(lockRoutes, "utf8");
+    assert.notEqual(installedLock, upstreamLock);
     execFileSync(installer, [checkout]);
     assert.equal(await readFile(source, "utf8"), installed);
+    assert.equal(await readFile(lockSource, "utf8"), installedLock);
+    // A previously fully patched helper must receive this independent fix too.
+    await writeFile(lockSource, upstreamLock);
+    await writeFile(lockRoutes, upstreamLockRoutes);
+    execFileSync(installer, [checkout]);
+    assert.equal(await readFile(lockSource, "utf8"), installedLock);
+    assert.equal(await readFile(lockRoutes, "utf8"), installedLockRoutes);
+    await writeFile(lockSource, "incompatible lock source");
+    assert.throws(() => execFileSync(installer, [checkout], { stdio: "pipe" }));
+    assert.equal(await readFile(lockSource, "utf8"), "incompatible lock source");
+    await writeFile(lockSource, installedLock);
     for (const file of authSources) {
       const installedAuth = await readFile(join(checkout, "WebDriverAgentLib", file), "utf8");
       assert.match(installedAuth, /FBIPortal|X-iPortal-Helper-Auth/);

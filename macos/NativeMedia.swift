@@ -224,6 +224,19 @@ struct AudioDriftControl {
 }
 // END TESTABLE AUDIO CLOCK
 
+// BEGIN TESTABLE AUDIO START
+func startNativeAudioPlayer(_ player: AVAudioPlayerNode) throws {
+    if #available(macOS 27.0, *) {
+        // play() passes no NSError destination and raises an Objective-C
+        // exception when the output stops producing I/O during sleep.
+        try player.playAudio()
+    } else {
+        guard player.engine?.isRunning == true else { throw CocoaError(.featureUnsupported) }
+        player.play()
+    }
+}
+// END TESTABLE AUDIO START
+
 // Remote system audio needs no access to the Mac microphone. The existing mute
 // control still governs playback. A small queue prevents stale audio catch-up.
 private final class NativeMediaAudio {
@@ -247,6 +260,8 @@ private final class NativeMediaAudio {
     private var playing = false
     private var queueGeneration: UInt64 = 0
     private var rebufferings = 0
+    private var nextOutputAttemptAt = 0.0
+    private var outputFailures = 0
     // The paired Wi-Fi tunnel delivers 10 ms packets in bursts as far as
     // 110 ms apart. Prime 120 ms once; bound backlog to 240 ms. This buffer is
     // audio-only and never holds a video frame or input event.
@@ -261,6 +276,7 @@ private final class NativeMediaAudio {
     }
     func setVolume(_ volume: Float) { lock.lock(); self.volume = volume; lock.unlock() }
     func consume(_ data: Data, timestamp: UInt32) {
+        guard ProcessInfo.processInfo.systemUptime >= nextOutputAttemptAt else { return }
         guard !data.isEmpty, let continuity = clock.observe(timestamp) else { return }
         if continuity.reset {
             lock.lock(); queueGeneration &+= 1; queued = 0; lock.unlock()
@@ -273,7 +289,7 @@ private final class NativeMediaAudio {
             if now - lastReport >= 2 {
                 iportalTrace("paired-audio-stats", ["decoded": decodedPackets, "dropped": droppedPackets,
                     "decodeFailures": decodeFailures, "maximumQueue": maximumQueue,
-                    "maximumGapMs": maximumGap * 1000, "rebufferings": rebufferings])
+                    "maximumGapMs": maximumGap * 1000, "rebufferings": rebufferings, "outputFailures": outputFailures])
                 lastReport = now; maximumGap = 0; maximumQueue = 0
             }
         }
@@ -325,7 +341,10 @@ private final class NativeMediaAudio {
         let pendingAfterAppend = queued; maximumQueue = max(maximumQueue, queued); lock.unlock()
         lock.lock(); let currentVolume = volume; lock.unlock(); player.volume = currentVolume
         rateUnit.rate = drift.rate(pendingPackets: pendingAfterAppend)
-        if !engine.isRunning { do { try engine.start() } catch { lock.lock(); queued -= packetCount; lock.unlock(); return } }
+        if !engine.isRunning {
+            do { try engine.start() }
+            catch { outputFailed(); return }
+        }
         // Bound pending render work, not hardware latency. dataPlayedBack also
         // includes the output device's delay (notably Bluetooth); using it for
         // a small cap drops valid packets while the renderer needs more audio.
@@ -334,7 +353,20 @@ private final class NativeMediaAudio {
             if self.queueGeneration == generation { self.queued = max(0, self.queued - packetCount) }
             self.lock.unlock()
         }
-        if !playing && pendingAfterAppend >= primePackets { player.play(); playing = true }
+        if !playing && pendingAfterAppend >= primePackets {
+            do { try startNativeAudioPlayer(player); playing = true }
+            catch { outputFailed() }
+        }
+    }
+    private func outputFailed() {
+        // Output failures are audio-local. Retire old completion callbacks and
+        // re-prime fresh packets after a bounded retry; never replay stale audio.
+        lock.lock(); queueGeneration &+= 1; queued = 0; lock.unlock()
+        player.stop(); engine.stop(); playing = false; converter = nil
+        clock = AudioPacketClock(); drift = AudioDriftControl()
+        outputFailures += 1
+        nextOutputAttemptAt = ProcessInfo.processInfo.systemUptime + 1
+        iportalTrace("paired-audio-output-retry", ["failures": outputFailures])
     }
     func stop() { player.stop(); engine.stop(); converter = nil }
 }

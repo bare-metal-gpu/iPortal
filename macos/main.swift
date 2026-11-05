@@ -232,6 +232,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var serverOwner = ""
     var serverOutput = Data()
     var serverPipe: Pipe?
+    var serverLifetimePipe: Pipe?
     var kind: IPortalDeviceKind = .iPhone
     var deviceName = "iPhone"
     var usbRecovery = USBRecoveryWindow()
@@ -259,6 +260,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var webBackoff: TimeInterval = 1
     var webHealthySince: TimeInterval = 0
     var terminating = false
+    var systemSleeping = false
     var retiredBridgeIDs: Set<String> = []
     var scrollMonitor: Any?
     var trackingScroll = false
@@ -328,6 +330,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func applyLifecycle(_ next: String, udid: String?, singleUsbDevice: Bool, usbDevicePresent: Bool,
                         epoch: Int, bridgeID: String, instance: String, statusRevision: Int, connectionID: String) -> Bool {
+        guard !systemSleeping else { return false }
         let now = ProcessInfo.processInfo.systemUptime
         self.singleUsbDevice = singleUsbDevice
         capture?.updateIdentityPolicy(singleUSB: singleUsbDevice)
@@ -404,7 +407,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func checkVideoLifecycle() {
-        guard mirroringActive, !terminating else { return }
+        guard mirroringActive, !terminating, !systemSleeping else { return }
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastServerEventAt > 12, now >= nextConnectionPollAt {
             nextConnectionPollAt = now + (deviceLifecycle == "ready" ? 1 : 0.5)
@@ -497,8 +500,20 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         }
     }
 
-    func wake() {
+    func sleep() {
         guard mirroringActive else { return }
+        systemSleeping = true
+        trace("system-sleep")
+        suspendLifecycle()
+        // Cancel media before Core Audio suspends output. A late in-flight
+        // audio start still uses its error-returning API rather than aborting.
+        stopCapture()
+    }
+
+    func wake() {
+        systemSleeping = false
+        guard mirroringActive else { return }
+        trace("system-wake")
         suspendLifecycle()
         stopCapture()
         webNeedsReload = true
@@ -1032,6 +1047,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var usesPairedMedia: Bool { capture?.usesPairedMedia ?? (preferredCaptureBackend == .paired) }
 
     func startCapture(udid: String, singleUsbDevice: Bool) {
+        guard !systemSleeping else { return }
         guard mirroringActive else { return }
         CapturePermissions.shared.refresh()
         let backend = preferredCaptureBackend
@@ -1259,9 +1275,14 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         p.executableURL = serverURL
         guard let target = requestedDeviceUDID else { return }
         serverOwner = UUID().uuidString
-        p.arguments = ["--no-open", "--managed", "--owner", serverOwner,
+        // Reuse the packaged lifetime supervisor: EOF after a host crash must
+        // terminate the server and release its device lease for the next window.
+        p.arguments = ["--owned-command", serverURL.path, "--no-open", "--managed", "--owner", serverOwner,
                        "--port", "\(preferredPort)",
                        "--udid", target, "--device-kind", kind.rawValue]
+        let lifetime = Pipe()
+        serverLifetimePipe = lifetime
+        p.standardInput = lifetime
         do { try FileManager.default.createDirectory(at: stateURL, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700]) }
         catch { NSLog("iPortal: couldn't create runtime directory: \(error)"); return }
@@ -1310,6 +1331,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                 self.port = nil
                 self.serverPipe?.fileHandleForReading.readabilityHandler = nil
                 self.serverPipe = nil
+                try? self.serverLifetimePipe?.fileHandleForWriting.close()
+                self.serverLifetimePipe = nil
                 self.statusEventTask?.cancel(); self.statusEventTask = nil
                 self.owner?.serverStopped(self)
                 self.serverStopping = false
@@ -1465,6 +1488,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var didLaunch = false
     var pendingRequests: [IPortalWatcherRequest] = []
     var wakeObserver: NSObjectProtocol?
+    var sleepObserver: NSObjectProtocol?
     var allSessions: [MirrorSession] { sessions.values + (pending.map { [$0] } ?? []) }
     var activeSession: MirrorSession? {
         allSessions.first { $0.window === NSApp.keyWindow } ?? allSessions.first { $0.window === NSApp.mainWindow }
@@ -1519,6 +1543,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
                 }
             } else { IPortalWatcherService.prepare(); startMirroring() }
+        }
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.allSessions.forEach { $0.sleep() } }
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.allSessions.forEach { $0.wake() } }
@@ -1595,6 +1622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         publishSessions()
         usbMonitor?.stop()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
         let deadline = Date().addingTimeInterval(3)
         while closing.contains(where: { $0.server?.isRunning == true }) && Date() < deadline { usleep(50_000) }
         for session in closing { if let p = session.server, p.isRunning { kill(p.processIdentifier, SIGKILL) } }

@@ -9,6 +9,8 @@ LATENCY="$ROOT/scripts/wda-mirror-latency.patch"
 MULTITOUCH="$ROOT/scripts/wda-multitouch.patch"
 COORDINATES="$ROOT/scripts/wda-mirror-coordinates.patch"
 AUTH="$ROOT/scripts/wda-helper-auth.patch"
+LOCK="$ROOT/scripts/wda-lock-timing.patch"
+LOCK_STATE="$ROOT/scripts/wda-lock-state.patch"
 
 apply_touch_patches() {
 
@@ -70,3 +72,19 @@ if ! git -C "$WDA" apply --reverse --check "$AUTH" 2>/dev/null; then
   git -C "$WDA" apply "$AUTH"
 fi
 install -m 644 "$ROOT/ios/FBIPortalAuthentication.h" "$WDA/WebDriverAgentLib/Routing/FBIPortalAuthentication.h"
+
+if ! git -C "$WDA" apply --reverse --check "$LOCK" 2>/dev/null; then
+  if ! git -C "$WDA" apply --check "$LOCK" 2>/dev/null; then
+    echo "Cannot apply lock timing fix: incompatible helper source." >&2
+    exit 1
+  fi
+  git -C "$WDA" apply "$LOCK"
+fi
+
+if ! git -C "$WDA" apply --reverse --check "$LOCK_STATE" 2>/dev/null; then
+  if ! git -C "$WDA" apply --check "$LOCK_STATE" 2>/dev/null; then
+    echo "Cannot apply independent lock observation: incompatible helper source." >&2
+    exit 1
+  fi
+  git -C "$WDA" apply "$LOCK_STATE"
+fi

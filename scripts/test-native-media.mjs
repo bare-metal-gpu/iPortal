@@ -14,6 +14,9 @@ const rotation = source
 const audioClock = source
   .split("// BEGIN TESTABLE AUDIO CLOCK")[1]
   .split("// END TESTABLE AUDIO CLOCK")[0];
+const audioStart = source
+  .split("// BEGIN TESTABLE AUDIO START")[1]
+  .split("// END TESTABLE AUDIO START")[0];
 const directory = await mkdtemp(path.join(tmpdir(), "iportal-media-test-"));
 try {
   const file = path.join(directory, "input.swift");
@@ -22,9 +25,21 @@ try {
     `import Foundation
 import CoreImage
 import CoreVideo
+import AVFoundation
 ${input}
 ${rotation}
 ${audioClock}
+${audioStart}
+// Reproduce the invalid output state without sleeping the test host. The
+// recoverable start API must return an error, not terminate the process.
+let stoppedEngine = AVAudioEngine(), stoppedPlayer = AVAudioPlayerNode()
+stoppedEngine.attach(stoppedPlayer)
+stoppedEngine.connect(stoppedPlayer, to: stoppedEngine.mainMixerNode,
+                      format: AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!)
+var rejectedStoppedOutput = false
+do { try startNativeAudioPlayer(stoppedPlayer) } catch { rejectedStoppedOutput = true }
+precondition(rejectedStoppedOutput, "Stopped output must fail without aborting")
+print("Native audio: unavailable output returns a recoverable error.")
 var audioClock = AudioPacketClock()
 precondition(audioClock.observe(UInt32.max - 479)?.silence == 0)
 precondition(audioClock.observe(0)?.silence == 0)
