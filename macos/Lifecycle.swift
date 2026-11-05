@@ -146,11 +146,14 @@ struct DeviceSessionRegistry<Session: AnyObject> {
     }
 }
 
+enum IPortalConnectionTransport: String { case usb, wifi }
+
 struct IPortalUSBDevice: Identifiable, Equatable {
     let serial: String
     let name: String
     var kind: IPortalDeviceKind = .iPhone
-    var id: String { serial }
+    var transport: IPortalConnectionTransport = .usb
+    var id: String { deviceKey(serial) }
 }
 
 struct CaptureSourceIdentity {
@@ -174,7 +177,8 @@ struct IPortalDeviceRow: Identifiable, Equatable {
     let name: String
     var available: Bool
     var kind: IPortalDeviceKind = .iPhone
-    var id: String { serial }
+    var transport: IPortalConnectionTransport = .usb
+    var id: String { deviceKey(serial) }
 }
 
 // Keep the label through brief USB enumeration gaps, but disable its action
@@ -186,10 +190,11 @@ struct USBDeviceListState {
     var nextExpiry: TimeInterval? { deadlines.values.min() }
 
     mutating func update(_ devices: [IPortalUSBDevice], at now: TimeInterval) {
-        let connected = Set(devices.map(\.serial))
+        let connected = Set(devices.map { deviceKey($0.serial) })
         for device in devices {
-            rows[device.serial] = IPortalDeviceRow(serial: device.serial, name: device.name, available: true, kind: device.kind)
-            deadlines.removeValue(forKey: device.serial)
+            let key = deviceKey(device.serial)
+            rows[key] = IPortalDeviceRow(serial: device.serial, name: device.name, available: true, kind: device.kind, transport: device.transport)
+            deadlines.removeValue(forKey: key)
         }
         for serial in rows.keys where !connected.contains(serial) {
             rows[serial]?.available = false

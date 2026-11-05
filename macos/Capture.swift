@@ -150,6 +150,7 @@ final class PhoneCapture {
     let session = AVCaptureSession()
     let layer: AVSampleBufferDisplayLayer
     private let audio = AVCaptureAudioPreviewOutput()
+    private var nativeMedia: NativeMediaReceiver?
     private var audioEnabled = false
     private var preferredVolume: Float = 1
     var onSize: ((CGSize) -> Void)?
@@ -169,8 +170,10 @@ final class PhoneCapture {
     private(set) var startupTimeoutAt: TimeInterval? = nil
     private(set) var lastFrameAt: TimeInterval = 0
     private var presentedSize = CGSize.zero
+    private var presentedFrames = 0
     private var waitingForFreshFrame = false
     func snapshot() -> NSImage? { frames.snapshot() }
+    func setOrientation(_ value: String) { nativeMedia?.setOrientation(value) }
     func awaitFreshFrame() { waitingForFreshFrame = true }
     private var deviceUDID = ""
     private var allowSingleDeviceFallback = false
@@ -205,6 +208,8 @@ final class PhoneCapture {
             onSize?(frame.size)
         }
         renderer.enqueue(sample)
+        presentedFrames += 1
+        if presentedFrames % 60 == 0 { iportalTrace("paired-presentation", ["frames":presentedFrames]) }
         CATransaction.commit()
         lastFrameAt = frame.timestamp
         if waitingForFreshFrame {
@@ -214,13 +219,23 @@ final class PhoneCapture {
     }
 
     /// Calls done(true) once video is running, or done(false) if access is denied or no iPhone shows up.
-    func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, _ done: @escaping @MainActor (Bool) -> Void) {
+    func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, paired: Bool = false, _ done: @escaping @MainActor (Bool) -> Void) {
         guard !started, !stopped else { return done(false) }
         iportalTrace("capture-start-entered")
         started = true
         completion = done
         deviceUDID = udid
         allowSingleDeviceFallback = singleUsbDevice
+        if paired, NativeMediaReceiver.available {
+            startupTimeoutAt = ProcessInfo.processInfo.systemUptime + timeout
+            let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames) { [weak self] in
+                DispatchQueue.main.async { self?.failed() }
+            }
+            nativeMedia = receiver
+            receiver.setVolume(preferredVolume)
+            do { try receiver.start(udid: udid); finish(true) } catch { finish(false) }
+            return
+        }
         var prop = CMIOObjectPropertyAddress(
             mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyAllowScreenCaptureDevices),
             mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
@@ -254,6 +269,7 @@ final class PhoneCapture {
     func setVolume(_ volume: Float) {
         preferredVolume = min(1, max(0, volume))
         audio.volume = audioEnabled ? preferredVolume : 0
+        nativeMedia?.setVolume(preferredVolume)
     }
 
     func setAudioEnabled(_ enabled: Bool) {
@@ -274,6 +290,9 @@ final class PhoneCapture {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        lifetime.cancel()
+        nativeMedia?.stop()
+        nativeMedia = nil
         layer.sampleBufferRenderer.flush()
         discoveryRetry?.cancel()
         completion = nil

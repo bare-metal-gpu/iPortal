@@ -15,6 +15,7 @@ let deviceUdid = "";
 let usbConnectionID = "";
 let singleUsbDevice = false;
 let usbDevicePresent = false;
+let deviceOrientation = null;
 let serverInstance = /** @type {HTMLMetaElement} */ (
   document.querySelector('meta[name="iportal-instance"]')
 ).content;
@@ -132,6 +133,7 @@ function reportLoading() {
     usbConnectionID,
     singleUsbDevice,
     usbDevicePresent,
+    deviceOrientation,
     serverInstance,
     videoEpoch,
     statusRevision,
@@ -575,6 +577,7 @@ function applyServerStatus(s) {
   $("quality").value = s.quality;
   singleUsbDevice = s.captureIdentity?.singleUsbDevice === true;
   usbDevicePresent = Boolean(s.device);
+  deviceOrientation = s.orientation ?? null;
   setLifecycle(
     s.lifecycle,
     s.device?.udid ?? s.pinnedUdid ?? "",

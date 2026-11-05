@@ -146,6 +146,8 @@ private struct MirrorPopover: View {
                         Text(device.name).font(IPortalStyle.Typography.compactLabel)
                             .foregroundStyle(IPortalStyle.Palette.primary).lineLimit(1).help(device.name)
                         Spacer(minLength: 12)
+                        IPortalWiFiIndicator(visible: state.visible && device.available && device.transport == .wifi)
+                            .help(device.available && device.transport == .wifi ? "Available over Wi-Fi" : "")
                         Button {
                             if let session { pause(session) } else { start(device.serial) }
                         } label: {

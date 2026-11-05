@@ -4,6 +4,9 @@ import { ensurePrivateDirectory } from "./device-runtime.mjs";
 
 export const packaged = typeof IPORTAL_PACKAGED !== "undefined" && IPORTAL_PACKAGED;
 export const sourceRoot = import.meta.dirname;
+export const nativeTransport = packaged
+  ? path.join(path.dirname(process.execPath), "iPortalTransport")
+  : path.join(sourceRoot, "vendor/native/iPortalTransport");
 export const deviceBuild =
   process.env.IPORTAL_DEVICE_BUILD ??
   (packaged

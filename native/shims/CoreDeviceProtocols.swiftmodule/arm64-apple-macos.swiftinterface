@@ -1,0 +1,19 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 6.4
+// swift-module-flags: -target arm64-apple-macosx14.0 -enable-library-evolution -module-name CoreDeviceProtocols
+import Foundation
+public enum DeviceState {
+ case unavailable
+ case disconnected
+ case connecting
+ case connected
+ public var rawValue: Swift.String { get }
+}
+public struct DeviceInfo {
+ public var state: CoreDeviceProtocols.DeviceState { get }
+ public var udid: Swift.String? { get }
+ public var name: Swift.String? { get }
+ public var productType: Swift.String? { get }
+ public var osVersion: Swift.String? { get }
+ public var tunnelIPAddressString: Swift.String? { get }
+}

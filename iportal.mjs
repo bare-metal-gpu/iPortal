@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { createPairedMonitor, selectDevice } from "./paired-devices.ts";
 import { createClipboard } from "./clipboard.mjs";
 // iportal: control your iPhone from your computer.
 // Video comes from WebDriverAgent's MJPEG stream, input goes back through WDA's W3C actions API.
@@ -144,6 +145,7 @@ async function listDevices() {
 let pinnedUdid = opts.udid ? canonicalUDID(opts.udid) : null;
 let connectedUsbUdids = [];
 let usbMonitor;
+let pairedMonitor;
 let deviceLease;
 async function ensureDeviceLease() {
   if (pinnedUdid && !deviceLease) {
@@ -161,9 +163,10 @@ async function pickDevice() {
   connectedUsbUdids = [
     ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
   ];
-  if (!pinnedUdid) pinnedUdid = devices.find((d) => d.connection === "USB")?.udid ?? null;
+  const device = selectDevice(devices, pairedMonitor?.devices() ?? [], pinnedUdid);
+  if (!pinnedUdid) pinnedUdid = device?.udid ?? null;
   await ensureDeviceLease();
-  return devices.find((d) => d.udid === pinnedUdid && d.connection === "USB") ?? null;
+  return device;
 }
 
 async function muxConnect(deviceId, port) {
@@ -185,6 +188,17 @@ async function muxConnect(deviceId, port) {
   return sock;
 }
 
+async function pairedConnect(host, port) {
+  const socket = net.connect({ host, port });
+  const timer = setTimeout(() => socket.destroy(new Error("Paired connection timed out")), 3000);
+  try {
+    await once(socket, "connect");
+    return socket;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Private Unix socket -> device port. Raw WDA allows cross-origin requests;
 // only the guarded API may expose a TCP listener on the Mac.
 const tunnels = new Set();
@@ -197,7 +211,9 @@ async function forward(socketPath, devicePort) {
       const dev = await pickDevice();
       if (!dev) throw new Error("no device");
       const generation = transport.signal;
-      const remote = await muxConnect(dev.id, devicePort);
+      const remote = dev.address
+        ? await pairedConnect(dev.address, devicePort)
+        : await muxConnect(dev.id, devicePort);
       if (generation.aborted || client.destroyed) {
         remote.destroy();
         client.destroy();
@@ -581,7 +597,7 @@ let wdaRetryAt = 0;
 let launchLockedDevice = null;
 let shuttingDown = false;
 const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
-function maybeStartWda(udid, connectionID) {
+function maybeStartWda(udid, connectionID, address) {
   if (
     shuttingDown ||
     wdaProcess ||
@@ -615,7 +631,8 @@ function maybeStartWda(udid, connectionID) {
     env: {
       ...process.env,
       UDID: udid,
-      TEST_RUNNER_USE_IP: "127.0.0.1",
+      TEST_RUNNER_USE_IP: address ?? "127.0.0.1",
+      TEST_RUNNER_IPORTAL_PAIRED: address ? "1" : "0",
       TEST_RUNNER_IPORTAL_AUTOMATION: "1",
       ...helperAuth.runnerEnvironment,
     },
@@ -673,7 +690,7 @@ function restartWda() {
     wdaRetryAt = 0;
     void pickDevice()
       .then((device) => {
-        if (device) maybeStartWda(device.udid, device.id);
+        if (device) maybeStartWda(device.udid, device.id, device.address);
       })
       .catch(() => {});
   }
@@ -695,6 +712,7 @@ async function shutdown() {
   portalStatus.stop();
   statusEvents.stop();
   usbMonitor?.stop();
+  pairedMonitor?.stop();
   transport.abort(apiError("Mirror closed", 409, "session closed"));
   for (const tunnel of tunnels) tunnel.destroy();
   // Retain the per-device lease until its owned test launcher has exited. A
@@ -759,8 +777,25 @@ async function status(signal) {
     launchLockedDevice = null;
     startupLock.reset();
   }
+  let orientation = null;
+  if (device?.connection === "Paired" && up && locked === false) {
+    try {
+      const value = (await wda("GET", "/orientation", null, 1200, signal)).value;
+      if (
+        [
+          "PORTRAIT",
+          "LANDSCAPE",
+          "UIA_DEVICE_ORIENTATION_LANDSCAPERIGHT",
+          "UIA_DEVICE_ORIENTATION_PORTRAIT_UPSIDEDOWN",
+        ].includes(value)
+      )
+        orientation = value;
+    } catch {
+      /* Keep the last confirmed frame orientation during a transient query failure. */
+    }
+  }
   if (device && !up) {
-    maybeStartWda(device.udid, device.id);
+    maybeStartWda(device.udid, device.id, device.address);
     error = wdaProblem
       ? wdaProblem
       : wdaProcess || (fs.existsSync(deviceBuild) && !opts["no-autostart"])
@@ -787,6 +822,7 @@ async function status(signal) {
     pinnedUdid,
     locked,
     lifecycle,
+    orientation,
     captureIdentity: {
       singleUsbDevice: Boolean(
         pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid,
@@ -1013,50 +1049,67 @@ startServer({
 });
 if (!MANUAL) {
   let observedDeviceID;
+  let usbInventory = [];
+  const onDevicesChanged = () => {
+    let devices = usbInventory;
+    devices = devices.map((d) => ({ ...d, udid: canonicalUDID(d.udid) }));
+
+    connectedUsbUdids = [
+      ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
+    ];
+    const device = selectDevice(devices, pairedMonitor?.devices() ?? [], pinnedUdid);
+    if (!pinnedUdid) pinnedUdid = device?.udid ?? null;
+    if (!device) {
+      keepAwake.stop("disconnected");
+      startupLock.reset();
+      launchLockedDevice = null;
+    }
+    if (observedDeviceID === (device?.id ?? null)) {
+      statusEvents.invalidate();
+      return;
+    }
+    if (observedDeviceID !== undefined) {
+      transport.abort(apiError("Device connection changed", 409, "device changed"));
+      transport = new AbortController();
+      helperAuth.reset();
+      for (const tunnel of tunnels) tunnel.destroy();
+      if (wdaProcess && device?.address !== observedAddress) {
+        wdaProcess.stdin.end();
+        wdaProcess.kill();
+      }
+      sid = null;
+      guardedTouch = undefined;
+      fastTouch = true;
+      multiTouch = undefined;
+    }
+    observedDeviceID = device?.id ?? null;
+    observedAddress = device?.address;
+    statusEvents.invalidate({
+      device,
+      pinnedUdid,
+      observedAt: Date.now(),
+      ok: false,
+      locked: null,
+      lifecycle: device ? "connecting" : "disconnected",
+      captureIdentity: {
+        singleUsbDevice: connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid,
+      },
+    });
+  };
+  let observedAddress;
+  pairedMonitor = createPairedMonitor(onDevicesChanged);
   usbMonitor = createUSBMonitor({
     address: USBMUXD,
     list: listDevices,
     onChange(devices) {
-      devices = devices.map((d) => ({ ...d, udid: canonicalUDID(d.udid) }));
-      if (!pinnedUdid) pinnedUdid = devices.find((d) => d.connection === "USB")?.udid ?? null;
-      connectedUsbUdids = [
-        ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
-      ];
-      const device = devices.find((d) => d.udid === pinnedUdid && d.connection === "USB") ?? null;
-      if (!device) {
-        keepAwake.stop("disconnected");
-        startupLock.reset();
-        launchLockedDevice = null;
-      }
-      if (observedDeviceID === (device?.id ?? null)) {
-        statusEvents.invalidate();
-        return;
-      }
-      if (observedDeviceID !== undefined) {
-        transport.abort(apiError("Device connection changed", 409, "device changed"));
-        transport = new AbortController();
-        helperAuth.reset();
-        for (const tunnel of tunnels) tunnel.destroy();
-        sid = null;
-        guardedTouch = undefined;
-        fastTouch = true;
-        multiTouch = undefined;
-      }
-      observedDeviceID = device?.id ?? null;
-      statusEvents.invalidate({
-        device,
-        pinnedUdid,
-        observedAt: Date.now(),
-        ok: false,
-        locked: null,
-        lifecycle: device ? "connecting" : "disconnected",
-        captureIdentity: {
-          singleUsbDevice: connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid,
-        },
-      });
+      usbInventory = devices;
+      onDevicesChanged();
     },
   });
-  process.on("exit", () => usbMonitor.stop());
+  process.on("exit", () => {
+    usbMonitor.stop();
+    pairedMonitor.stop();
+  });
 }
 void statusEvents.refresh();
 process.on("exit", () => statusEvents.stop());

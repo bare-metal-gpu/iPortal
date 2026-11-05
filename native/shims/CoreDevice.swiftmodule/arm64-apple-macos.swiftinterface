@@ -1,0 +1,33 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 6.4
+// swift-module-flags: -target arm64-apple-macosx14.0 -enable-library-evolution -module-name CoreDevice
+// Minimal ABI declarations for the optional Xcode 27 transport sidecar.
+import Foundation
+import CoreDeviceProtocols
+public enum TransportType {
+ case wired
+ case localNetwork
+ case cloud
+ case sameMachine
+ public var rawValue: Swift.String { get }
+}
+extension CoreDeviceProtocols.DeviceInfo {
+ // The real getter belongs to CoreDeviceProtocols but returns a CoreDevice
+ // type. Bind its exact ABI without making these minimal shims import cyclically.
+ @_silgen_name("$s19CoreDeviceProtocols0B4InfoV13transportType0aB009TransportF0OSgvg")
+ public func iportalTransportType() -> CoreDevice.TransportType?
+}
+public class DeviceManager {
+ public static var shared: CoreDevice.DeviceManager { get }
+ public func awaitFullInitialization() async
+ public final func allDevices() -> [CoreDevice.RemoteDevice]
+ public func addDevicesAddedHandler(on: Dispatch.DispatchQueue?, invoking: @escaping ([CoreDevice.RemoteDevice]) -> Swift.Void)
+ public func addDevicesChangedHandler(on: Dispatch.DispatchQueue?, invoking: @escaping ([CoreDevice.RemoteDevice]) -> Swift.Void)
+}
+public class RemoteDevice {
+ public var deviceIdentifier: Foundation.UUID { get }
+ public var deviceInfo: CoreDeviceProtocols.DeviceInfo { get }
+ public func addDeviceInfoChangedHandler(on: Dispatch.DispatchQueue?, invoking: @escaping (Foundation.UUID, CoreDeviceProtocols.DeviceInfo) -> Swift.Void)
+ public func createSocket(toServiceNamed: Swift.String, completingOn: Dispatch.DispatchQueue?, completion: @escaping (Swift.Result<Foundation.FileHandle, any Swift.Error>) -> Swift.Void)
+ public func connect() async throws
+}

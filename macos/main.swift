@@ -5,6 +5,7 @@
 import Cocoa
 import WebKit
 import Carbon
+import SwiftUI
 
 let barHeight: CGFloat = 30
 let barGap: CGFloat = 6
@@ -204,6 +205,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var bar: DragBar!
     var barButtons: [NSView] = []
     var keepOnTopButton: NSButton?
+    var wifiIndicator: NSHostingView<IPortalWiFiIndicator>?
+    var indicatedTransport: IPortalConnectionTransport?
     var resizeHandles: [CornerResizeHandle] = []
     var server: Process?
     var ratio: CGFloat = 390 / 844
@@ -451,7 +454,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func recoverCapture() {
         CapturePermissions.shared.refresh()
-        if CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
+        if !usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
         freezeVideo()
         captureBudget.failed()
         stopCapture()
@@ -494,10 +497,19 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func captureInventoryChanged() {
+        updateTransportIndicator()
         guard nativeIdentityDeferred else { return }
         nativeIdentityDeferred = false
         nextNativeAttemptAt = 0
         captureBudget = CaptureRetryBudget()
+    }
+
+    func updateTransportIndicator() {
+        let transport = requestedDeviceUDID.flatMap { owner?.usbMonitor?.transport(for: $0) }
+        guard transport != indicatedTransport || wifiIndicator == nil else { return }
+        indicatedTransport = transport
+        wifiIndicator?.rootView = IPortalWiFiIndicator(visible: transport == .wifi)
+        trace("connection-transport", ["transport": transport?.rawValue ?? "unavailable"])
     }
 
     func usbChanged(_ serial: String, attached: Bool) {
@@ -596,6 +608,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         window?.contentView = nil
         web = nil; phone = nil; videoHost = nil; bar = nil; loadingBorder = nil; window = nil
         barButtons.removeAll(); resizeHandles.removeAll(); keepOnTopButton = nil
+        wifiIndicator = nil; indicatedTransport = nil
         loadingBorderState.snapshot = nil
         latestServerStatus = nil
         if let process = server, process.isRunning {
@@ -698,6 +711,12 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                       symbolButton("square.on.square", "App Switcher", #selector(appSwitcher)),
                       symbolButton("house", "Home", #selector(home))]
         barButtons.forEach(bar.addSubview)
+        let wifi = NSHostingView(rootView: IPortalWiFiIndicator(visible: false))
+        wifi.sizingOptions = []
+        wifi.toolTip = "Connected over Wi-Fi"
+        bar.addSubview(wifi)
+        wifiIndicator = wifi
+        updateTransportIndicator()
         clipboard.target = { [weak self] in self?.clipboardTarget }
         clipboard.reportError = { [weak self] message in
             guard let self, self.mirroringActive, let window = self.window else { return }
@@ -765,6 +784,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         let y = (barHeight - 16) / 2
         barButtons[0].frame = NSRect(x: 10, y: y + 1, width: 14, height: 14)
         barButtons[1].frame = NSRect(x: 30, y: y + 1, width: 14, height: 14)
+        wifiIndicator?.frame = NSRect(x: 54, y: y, width: 22, height: 16)
         barButtons[2].frame = NSRect(x: w - 122, y: y, width: 22, height: 16)
         barButtons[3].frame = NSRect(x: w - 92, y: y, width: 22, height: 16)
         barButtons[4].frame = NSRect(x: w - 62, y: y, width: 22, height: 16)
@@ -884,6 +904,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                                  epoch: epoch, bridgeID: bridgeID, instance: instance, statusRevision: revision,
                                  connectionID: d["usbConnectionID"] as? String ?? "") else { return }
             videoMode = d["videoMode"] as? String ?? "native"
+            if let orientation = d["deviceOrientation"] as? String { capture?.setOrientation(orientation) }
         }
         guard d["bridgeId"] as? String == videoGate.bridgeID,
               d["videoEpoch"] as? Int == videoGate.epoch else { return }
@@ -972,7 +993,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         permissionSnapshot = next
         capture?.setAudioEnabled(next.canPlayAudio)
         guard previous.camera != next.camera else { return }
-        if !next.canCaptureVideo {
+        if !next.canCaptureVideo && !usesPairedMedia {
             if capture != nil || videoMode != "stream" { fallbackToStream() }
         } else {
             captureBudget = CaptureRetryBudget()
@@ -985,10 +1006,15 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     // MARK: Video
 
+    var usesPairedMedia: Bool {
+        guard let udid = requestedDeviceUDID else { return false }
+        return NativeMediaReceiver.available && owner?.usbMonitor?.isPaired(udid) == true
+    }
+
     func startCapture(udid: String, singleUsbDevice: Bool) {
         guard mirroringActive else { return }
         CapturePermissions.shared.refresh()
-        if CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
+        if !usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
         let now = ProcessInfo.processInfo.systemUptime
         guard captureBudget.beginAttempt(at: now) else {
             nextNativeAttemptAt = now + 30
@@ -1023,10 +1049,10 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         capture = c
         nativeCall("useNativeVideo")
         updateLoadingBorder()
-        c.start(udid: udid, singleUsbDevice: singleUsbDevice) { [weak self, weak c] ok in
+        c.start(udid: udid, singleUsbDevice: singleUsbDevice, paired: usesPairedMedia) { [weak self, weak c] ok in
             guard let self, self.capture === c else { return }
             if !ok {
-                if CapturePermissions.shared.snapshot.blocksNativeCapture {
+                if !usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture {
                     self.fallbackToStream()
                 } else if c?.identityAmbiguous == true {
                     self.nativeIdentityDeferred = true
@@ -1043,7 +1069,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         captureFailed = true
         captureLoading = false
         waitingForVideo = true
-        nextNativeAttemptAt = nativeIdentityDeferred || CapturePermissions.shared.snapshot.blocksNativeCapture ? .infinity : ProcessInfo.processInfo.systemUptime + 30
+        nextNativeAttemptAt = nativeIdentityDeferred || (!usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture) ? .infinity : ProcessInfo.processInfo.systemUptime + 30
         NSLog("iPortal video fallback; preserving last frame")
         nativeCall("startStream")
         updateLoadingBorder()
@@ -1422,7 +1448,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var devices: [IPortalUSBDevice] {
         let names = UserDefaults.standard.dictionary(forKey: "PhoneDeviceNames") as? [String: String] ?? [:]
         return (usbMonitor?.connectedDevices ?? []).map {
-            IPortalUSBDevice(serial: $0.serial, name: names[deviceKey($0.serial)] ?? $0.name, kind: $0.kind)
+            IPortalUSBDevice(serial: $0.serial, name: names[deviceKey($0.serial)] ?? $0.name, kind: $0.kind, transport: $0.transport)
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1434,7 +1460,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         IPortalStyle.registerFonts(in: .main)
         buildMenu()
-        usbMonitor = PhoneUSBMonitor { [weak self] serial, attached in
+        usbMonitor = PhoneUSBMonitor(metadataChanged: { [weak self] in
+            self?.allSessions.forEach { $0.updateTransportIndicator() }
+        }) { [weak self] serial, attached in
             guard let self else { return }
             if attached, let pending = self.pending, let device = self.devices.first(where: { deviceKey($0.serial) == deviceKey(serial) }) {
                 self.pending = nil

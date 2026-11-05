@@ -9,3 +9,7 @@ of GitHub's contributor graph.
 
 WebDriverAgent, ThinkingOrbsKit, BorderBeamKit, Inter, and other dependencies
 retain their respective licenses and notices.
+
+The optional native media backend uses idevice (MIT), copyright 2026 Jackson
+Coxson, pinned by native/Cargo.lock. Its license is in native/LICENSE-idevice.txt.
+Apple CoreDevice framework binaries are provided by Xcode and are not redistributed.

@@ -18,6 +18,11 @@ if [ -z "$SIGN_TEAM" ] && [ -f "$ROOT/vendor/mac-signing-team" ]; then
   SIGN_TEAM="$(cat "$ROOT/vendor/mac-signing-team")"
 fi
 echo "→ Building iPortal with Xcode"
+XCODE_MAJOR="$(xcodebuild -version | awk '/^Xcode / { split($2, version, "."); print version[1] }')"
+if [ "$(uname -m)" = arm64 ] && [ "${XCODE_MAJOR:-0}" -ge 27 ] && [ -d /Library/Developer/PrivateFrameworks/CoreDevice.framework ] && [ -x "${CARGO:-$HOME/.cargo/bin/cargo}" ]; then
+  echo "→ Building paired-device transport"
+  "$ROOT/native/build.sh"
+fi
 if ! xcodebuild -project "$ROOT/macos/iPortal.xcodeproj" -scheme iPortal \
   -configuration Release -destination 'platform=macOS' -derivedDataPath "$BUILD" \
   IPORTAL_BUN_PATH="$BUN" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$SIGN_IDENTITY" DEVELOPMENT_TEAM="$SIGN_TEAM" build >"$ROOT/vendor/mac-build.log" 2>&1; then

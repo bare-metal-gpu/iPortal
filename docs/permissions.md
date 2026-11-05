@@ -10,6 +10,11 @@ decisions belong to the signed Mac app and apply to every device window.
 | Microphone       | Device audio with native USB video    | Silent video; input and video startup are unaffected                       |
 
 Both can be declined. Basic video has lower performance and no device audio.
+These capture permissions apply to the legacy AVFoundation USB backend. The
+optional iOS 27 paired native backend receives video and system audio from the
+phone; it does not access the Mac camera or microphone, and works with both
+permissions declined. The switches continue to show the actual Mac grants.
+
 The phone helper must still be installed, trusted, connected and unlocked. Mac
 permissions cannot replace USB trust, Developer Mode or the phone's UI automation
 approval. iPortal does not request Mac Screen Recording or Accessibility access.

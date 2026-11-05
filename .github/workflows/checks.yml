@@ -38,3 +38,8 @@ jobs:
       - run: bun audit
       - run: test "$(git -C vendor/WebDriverAgent rev-parse HEAD)" = "$(cat scripts/wda-revision)"
       - run: bun run verify
+      # Protocol parsing tests need no paired device or private Apple framework.
+      - run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
+      - run: cargo +1.95.0 fmt --manifest-path native/Cargo.toml --check
+      - run: cargo +1.95.0 test --manifest-path native/Cargo.toml --locked
+      - run: cargo +1.95.0 clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings

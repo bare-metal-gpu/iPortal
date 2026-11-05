@@ -27,6 +27,27 @@ bun run app     # installs "iPortal" to ~/Applications
 5. Open **iPortal**. Camera access enables smoother USB video; Microphone access enables device audio. Both are optional.
 6. First launch only: on the iPhone, go to Settings → General → VPN & Device Management → trust your Apple ID.
 
+### Wireless
+
+On an Apple silicon Mac with Xcode 27 and an iPhone/iPad running iOS/iPadOS 27+,
+iPortal can use Xcode's existing paired network connection. Complete the USB setup
+above, keep the device on the same local network, and enable **Connect via network**
+in Xcode's Devices and Simulators window if it is not already available. The same
+menu-bar device list and mirror window are used; no extra iPortal pairing is needed.
+
+Plugging USB in lets the paired connection move to the wired route; unplugging
+returns it to the network without replacing the device window or helper session.
+A small Wi-Fi symbol beside the traffic lights shows the reported network
+route. The same symbol in the device list identifies a reachable paired network
+device; Play keeps its existing behavior. The symbol fades on route changes and
+respects Reduce Motion.
+
+Building this optional transport also requires Rust/Cargo (`~/.cargo/bin/cargo`,
+or the `CARGO` environment variable). It is compiled into the app; users of the
+built app do not need Rust. Without the optional transport, USB capture still works.
+See [wireless implementation and verification](docs/wireless-implementation.md)
+for compatibility limits and measured results.
+
 The installed Mac app contains its compiled Bun/Effect server, browser assets,
 font, and signed phone helper. It can run after the checkout is moved or removed,
 without Node, Python, or a separately installed Bun. Xcode is still required to
@@ -49,9 +70,11 @@ Click it again to restore normal window ordering. The pin and **Window → Keep 
 stay in sync; each device window has its own state.
 
 Open the gear beside App Switcher (or press ⌘,) to manage permissions. Settings
-reflects macOS’s current state across all device windows. Without Camera access,
+reflects macOS’s current state across all device windows. With legacy USB capture, without Camera access,
 mirroring uses basic video from the phone helper; without Microphone access,
-video continues silently. See [permission behavior](docs/permissions.md).
+video continues silently. Paired native capture obtains video and device audio
+from the phone and does not use either Mac capture permission.
+See [permission behavior](docs/permissions.md).
 
 Settings shows Camera and Microphone as native switches that reflect macOS authorization.
 Use the Edit menu to transfer clipboard text, links, or an image. Transfers happen
@@ -86,9 +109,9 @@ Prefer the browser? Run `bun start` and open http://localhost:7100.
 
 ## Good to know
 
-- Connect the iPhone by USB. Locking blurs the last frame; unlocking automatically restores control after a fresh frame arrives.
+- Connect the iPhone by USB or use its supported paired network connection. Locking blurs the last frame; unlocking automatically restores control after a fresh frame arrives.
 - With a free Apple ID, run `bun run setup` and `bun run app` again every 7 days to refresh the bundled phone helper.
-- The iPhone's sound plays on your Mac with native USB video and Microphone access.
+- The iPhone's sound plays on your Mac with paired native capture, or with legacy native USB video and Microphone access. Protected media may omit capture audio.
 - Each additional iPhone or iPad needs the same one-time helper setup and trust.
   Select it with `UDID=<device-udid> bun run setup`, then run `bun run app` to update the installed helper; `bun iportal.mjs devices` lists connected IDs.
 - When macOS cannot identify a native USB video source unambiguously among several

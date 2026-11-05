@@ -6,3 +6,6 @@ dist/
 xcuserdata/
 
 __pycache__/
+
+# Optional native transport build products
+native/target/

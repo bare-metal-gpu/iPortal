@@ -48,6 +48,9 @@ static NSString *FBIPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, B
     for (NSString *name in @[@"com.apple.mobile.lockdown.host_detached", @"com.apple.mobile.lockdown.host_attached"]) {
       int token;
       notify_register_dispatch(name.UTF8String, &token, dispatch_get_main_queue(), ^(int notification) {
+        // A paired tunnel survives removing USB. Presence still expires if the
+        // authenticated Mac heartbeat stops, including Wi-Fi loss.
+        if ([NSProcessInfo.processInfo.environment[@"IPORTAL_PAIRED"] isEqual:@"1"]) return;
         BOOL detached = [name hasSuffix:@"host_detached"];
         NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
         BOOL recovering = !status.ready && now < status.recoveringUntil;
@@ -86,7 +89,7 @@ static NSString *FBIPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, B
   BOOL connected = [phase isEqual:@"connected"];
   NSString *message = connected ? @"Connected" : [phase isEqual:@"connecting"] ? @"Connecting…"
     : [phase isEqual:@"reconnecting"] ? @"Reconnecting…" : [phase isEqual:@"disconnected"] ? @"Disconnected" : @"Waiting for your Mac";
-  NSString *detail = [phase isEqual:@"waiting"] ? @"Connect by USB and open iPortal on your Mac."
+  NSString *detail = [phase isEqual:@"waiting"] ? @"Open iPortal on your Mac."
     : [phase isEqual:@"disconnected"] ? @"Connect to your Mac" : @"";
   BOOL fresh = !self.hostDetached && self.receivedAt > 0 && NSProcessInfo.processInfo.systemUptime - self.receivedAt < 3;
   NSTimeInterval remaining = fresh ? MAX(0, self.awakeUntil - NSProcessInfo.processInfo.systemUptime) : 0;

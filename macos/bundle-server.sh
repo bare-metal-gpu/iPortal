@@ -5,6 +5,12 @@ BUN="${IPORTAL_BUN_PATH:-$(command -v bun)}"
 OUTPUT="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/iportal-server"
 "$BUN" "$ROOT/scripts/build-server.ts" "$OUTPUT"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$OUTPUT"
+NATIVE="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/iPortalTransport"
+rm -f "$NATIVE"
+if [ -x "$ROOT/vendor/native/iPortalTransport" ]; then
+  cp "$ROOT/vendor/native/iPortalTransport" "$NATIVE"
+  codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$NATIVE"
+fi
 # Keep signed device products beside the server. __TESTROOT__ in xctestrun
 # remains relative to Build/Products, so moving the Mac app is safe.
 DEVICE="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Device"

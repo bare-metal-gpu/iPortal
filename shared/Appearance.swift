@@ -51,3 +51,23 @@ enum IPortalStyle {
         }
     }
 }
+
+#if os(macOS)
+// The same restrained symbol is used in the window and device list. It carries
+// connection information only; it is not another button or setup flow.
+struct IPortalWiFiIndicator: View {
+    let visible: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        Image(systemName: "wifi").font(.system(size: 13, weight: .regular))
+            .foregroundStyle(IPortalStyle.Palette.secondary)
+            .symbolEffect(.pulse, options: .repeating, isActive: visible && !reduceMotion)
+            .opacity(visible ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: visible)
+            .frame(width: 22, height: 16)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Wi-Fi")
+            .accessibilityHidden(!visible)
+    }
+}
+#endif

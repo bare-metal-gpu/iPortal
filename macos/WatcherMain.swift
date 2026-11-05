@@ -28,7 +28,9 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
         names.onUpdate = { [weak self] in self?.updateMenu() }
-        usbMonitor = PhoneUSBMonitor { [weak self] serial, attached in self?.usbChanged(serial, attached: attached) }
+        usbMonitor = PhoneUSBMonitor(metadataChanged: { [weak self] in self?.updateMenu() }) {
+            [weak self] serial, attached in self?.usbChanged(serial, attached: attached)
+        }
         let now = ProcessInfo.processInfo.systemUptime
         for serial in usbMonitor?.connectedSerials ?? [] { _ = invitations.attached(serial, at: now) }
         updateMenu()
@@ -55,7 +57,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenu() {
         let devices = (usbMonitor?.connectedDevices ?? []).map {
-            IPortalUSBDevice(serial: $0.serial, name: names.name(for: $0.serial, fallback: $0.name), kind: $0.kind)
+            IPortalUSBDevice(serial: $0.serial, name: names.name(for: $0.serial, fallback: $0.name), kind: $0.kind, transport: $0.transport)
         }
         menuBar?.update(devices: devices, sessions: IPortalWatcher.currentSessions())
     }

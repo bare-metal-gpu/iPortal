@@ -110,6 +110,18 @@ struct LifecycleTests {
         assert(list.devices.isEmpty, "repeated metadata updates do not postpone real removal")
         list.update([device, IPortalUSBDevice(serial: "other", name: "Second iPhone")], at: 7)
         assert(list.devices.count == 2, "each attached phone gets its own play action")
+        var handoverList = USBDeviceListState()
+        let wirelessPhone = IPortalUSBDevice(serial: "00008140-00000000000000A1", name: "Test Phone", transport: .wifi)
+        handoverList.update([wirelessPhone], at: 0)
+        let rowIdentity = handoverList.devices[0].id
+        handoverList.update([IPortalUSBDevice(serial: "0000814000000000000000a1", name: "Test Phone", transport: .usb)], at: 1)
+        assert(handoverList.devices.count == 1 && handoverList.devices[0].id == rowIdentity,
+               "route changes and USB serial spelling cannot create a duplicate device row")
+        assert(handoverList.devices[0].available && handoverList.devices[0].transport == .usb)
+        handoverList.update([wirelessPhone], at: 2)
+        assert(handoverList.devices.count == 1 && handoverList.devices[0].transport == .wifi)
+        handoverList.update([], at: 3)
+        assert(!handoverList.devices[0].available, "a cached wireless row must not claim current readiness")
         assert(phoneUDID(fromUSBSerial: "0000814000000000000000A1") == "00008140-00000000000000A1")
         assert(phoneUDID(fromUSBSerial: "00008140-00000000000000A1") == "00008140-00000000000000A1")
         assert(phoneUDID(fromUSBSerial: "0123456789012345678901234567890123456789") == "0123456789012345678901234567890123456789")

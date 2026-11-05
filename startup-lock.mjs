@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
-async function readStartupLock(udid) {
+async function readStartupLock(udid, connection) {
+  const seconds = connection === "Paired" ? 12 : 5;
   const directory = await mkdtemp(join(tmpdir(), "iportal-lock-"));
   try {
     const output = join(directory, "state.json");
@@ -19,11 +20,11 @@ async function readStartupLock(udid) {
         "--device",
         udid,
         "--timeout",
-        "5",
+        String(seconds),
         "--json-output",
         output,
       ],
-      { timeout: 6500, maxBuffer: 64 * 1024 },
+      { timeout: seconds * 1000 + 1500, maxBuffer: 64 * 1024 },
     );
     const value = JSON.parse(await readFile(output, "utf8"))?.result?.passcodeRequired;
     return typeof value === "boolean" ? value : null;
@@ -57,7 +58,7 @@ export function createStartupLock({ read = readStartupLock, changed = () => {} }
       queried = pending = true;
       const request = generation;
       Promise.resolve()
-        .then(() => read(device.udid))
+        .then(() => read(device.udid, device.connection))
         .then((result) => {
           if (generation !== request) return;
           value = typeof result === "boolean" ? result : null;
