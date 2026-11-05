@@ -11,6 +11,22 @@ if (process.platform !== "darwin") {
 const root = fileURLToPath(new URL("../", import.meta.url));
 const directory = await mkdtemp(join(tmpdir(), "iportal-lifecycle-"));
 try {
+  const discovery = join(directory, "discovery-recovery-tests");
+  execFileSync(
+    "xcrun",
+    [
+      "swiftc",
+      "-swift-version",
+      "5",
+      "-warnings-as-errors",
+      join(root, "native/DiscoveryRecovery.swift"),
+      join(root, "test/DiscoveryRecoveryTests.swift"),
+      "-o",
+      discovery,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(discovery, [], { stdio: "inherit" });
   const binary = join(directory, "lifecycle-tests");
   execFileSync(
     "xcrun",

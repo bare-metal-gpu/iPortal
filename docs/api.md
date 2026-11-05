@@ -1,14 +1,16 @@
-# Mirror API
+# API reference
 
-The server uses Effect 4 `HttpRouter` / `BunHttpServer` and strict Effect schemas in `schemas.mjs`. All POST requests require `Content-Type: application/json`; unknown fields and malformed arguments are rejected before dispatch. Routes are `http://127.0.0.1:7100/api/<name>`. Inspection returns `{ "ok": true, "value": ... }` plus observation metadata. Inputs return `{ "ok": true, "requestId": "...", "outcome": "executed", "verified": false }`.
+Use `http://127.0.0.1:7100/api/<name>`. POST requests require
+`Content-Type: application/json`; unknown fields and malformed arguments are
+rejected. Inspection returns `{ "ok": true, "value": ... }`. Inputs return
+`{ "ok": true, "requestId": "...", "outcome": "executed", "verified": false }`
+unless a requested postcondition has been verified.
 
-The Mac server listens only on loopback. Exact Host/Origin checks, Fetch Metadata, JSON-only mutations and an automatically embedded server-instance fingerprint protect browser access without an authentication UI. Trusted local CLI clients need no credentials. This trusts native processes that can reach Mac loopback, including other local OS users; it is not local-process authentication. Helper forwarding uses per-process Unix sockets in an owner-only directory, so browsers cannot bypass the API through separate helper/video TCP ports. The bundled iPhone runner binds HTTP and MJPEG to device loopback for legacy USB, or to Apple's paired tunnel address for supported paired connections, via `TEST_RUNNER_USE_IP`. It does not expose an unauthenticated LAN listener. Screenshots and UI trees are not saved by the server. See [security review](security.md) for the remaining trust boundaries.
+The API is local to the Mac. Native CLI clients need no credentials; browser requests require the server's host/origin and instance checks. Local native processes are trusted. Do not publish this API through a tunnel or proxy. See [security and privacy](security.md).
 
-The phone helper requires a random per-mirror-session credential for **every command and video connection**. The Mac creates and provisions it automatically; browser/API clients do not receive it or need to manage it. It survives cable reconnects within a session and changes when that device's mirror server restarts. There is no unauthenticated fallback for older helpers: rebuild with `bun run setup` and `bun run app` when upgrading.
+Phone-helper authentication is automatic and separate from the Mac API. Rebuild with `bun run setup` and `bun run app` if an older helper is rejected.
 
-For developer-only manual helper launches or `--wda` endpoints, provision the same `IPORTAL_HELPER_TOKEN` (32 random bytes encoded as 64 lowercase hex characters) in both process environments. `scripts/run-wda.sh` forwards it to the runner; direct Xcode launches need `IPORTAL_HELPER_TOKEN` in the test runner's environment. Never put it in URLs, command arguments, checked-in configuration, or bug reports. Normal app startup needs none of this configuration.
-
-One device UDID is pinned for the server lifetime. Disconnecting it does not select another phone or iPad. Native video uses an exact ID match when available, or the unambiguous correspondence between one connected USB device and one iOS capture source. With multiple unmatched candidates, the app automatically uses the pinned device's screenshot stream. `/api/status` includes `service`, `apiVersion`, `instanceId`, device identity, queue and keep-awake status.
+One device UDID is pinned for the server lifetime. Disconnecting it never selects another phone or iPad.
 
 The Mac app runs one isolated server per mirrored device. The first available
 session uses port 7100; additional sessions receive an available port automatically.
@@ -16,8 +18,8 @@ Managed `/api/health` responses include the selected `pinnedUdid` and launch `ow
 For CLI automation with explicit ports, run a separate process per UDID:
 
 ```bash
-bun iportal.mjs --udid <first-udid> --port 7100 --no-open
-bun iportal.mjs --udid <second-udid> --port 7101 --no-open --device-kind iPad
+bun iportal.mjs --udid "<first-udid>" --port 7100 --no-open
+bun iportal.mjs --udid "<second-udid>" --port 7101 --no-open --device-kind iPad
 ```
 
 Each device can have only one owning server. Queues, inspection observations,
@@ -52,7 +54,7 @@ Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate str
 
 Element attributes: `type`, `name`, `label`, `value`, `enabled`, `visible`, `selected`, `hittable`, `accessible`, `rect`. Defaults are all except `selected` and `accessible`. Attribute values retain WDA's JSON types, including null. Bounds use logical screen points, not screenshot pixels. IDs are temporary and can become stale after UI changes; re-run the selector to recover. An element existing does not imply it is visible or hittable.
 
-Inspection uses WDA's accessibility hierarchy, so an app must expose meaningful accessible elements. Selector-based element attributes reuse WDA’s expanded lookup response, avoiding separate USB requests for each attribute. Hittability is checked freshly; ID-based or missing attributes are read sequentially. Combined state is not an atomic snapshot. Hierarchy snapshots use a depth of 50 rather than the original mirror's depth of 1; deep inspections can be slower than raw touch input.
+Inspection depends on the app exposing meaningful accessibility elements. Element IDs can become stale; resolve selectors again after UI changes. Combined state is not an atomic snapshot, and deep hierarchy inspection can be slow.
 
 ## Waits
 
@@ -89,7 +91,7 @@ A timeout returns HTTP 408:
 }
 ```
 
-Invalid requests return 400; rejected origins/hosts 403; missing elements 404; stale, ambiguous or conflicting requests 409; bodies over 1 MiB 413; non-JSON mutations 415; full queues 429; upstream failures generally 502. Errors have `ok`, `error`, and `code`. Inspect HTTP status and `ok`; do not assume a completed fetch means success.
+Invalid requests return 400; rejected origins/hosts 403; missing elements 404; stale, ambiguous or conflicting requests 409; oversized bodies 413 (1 MiB normally, 6 MiB for clipboard writes); non-JSON mutations 415; full queues 429; upstream failures generally 502. Errors have `ok`, `error`, and `code`. Inspect HTTP status and `ok`; do not assume a completed fetch means success.
 
 ## Element actions and verified transitions
 
@@ -115,13 +117,11 @@ Send this to `/api/tap`. A visible label is not necessarily an accessibility ide
 
 Gesture points use normalized coordinates in the **current interface orientation**. They must be 1–256 triples `[x,y,ms]`, x/y within 0–1, initial time zero, nondecreasing timestamps, and `end` at least the last timestamp and no more than 10000 ms. Both Effect and the patched native route validate these constraints. Native touch independently checks lock state and optional app/orientation guards. Screen dimensions are read for each native gesture instead of caching portrait dimensions.
 
-The helper converts oriented viewport points to XCTest's portrait screen coordinates before building each pointer path. The event record still carries the current interface orientation. This conversion is shared by taps, long presses, drags, scroll swipes, shortcuts and both pinch fingers; clients must not rotate their coordinates again. Ordinary W3C actions already obtain this conversion through `XCUICoordinate.screenPoint`. Helper capability version 5 includes the corrected direct-path conversion.
-
-Helpers advertising `guardedTouch` perform gesture lock/app/orientation checks together on the phone, avoiding duplicate host round trips. Older helpers retain host checks. Touch playback uses the daemon's completion callback with a 50 ms maximum implicit confirmation wait and 10 ms polling. This does not prove the app has finished reacting; use `waitFor` when the next action depends on a transition.
-
 Successful input replies also include diagnostic `timing`: `queueMs` (admission and queue), `preflightMs`, `actionMs`, and `totalMs`, plus `native.guardMs`, `native.playbackMs` and `native.confirmationMs` when supplied by the helper. These use monotonic elapsed time. They are not input-to-display measurements and are not retained in receipts across a server restart.
 
-Ordinary mouse clicks shorter than 250 ms play a 40 ms tap; longer holds and drag paths retain their recorded durations. Each scroll gesture plays one 120 ms swipe, as described below. Drags and pinches submit complete gestures after finger-up; true streaming touches are not enabled.
+## Pinch zoom
+
+`POST /api/pinch` accepts `{ "x": 0.5, "y": 0.5, "scale": 2, "durationMs": 240 }` plus the normal action metadata. Coordinates are normalized in the current interface orientation; scale is 0.25–4 (below 1 zooms out, above 1 zooms in, 1 does nothing), and duration is 80–1000 ms, default 240. Both fingers start together, settle for 40 ms, then move for the requested duration and lift together. The center is clamped near screen edges so neither finger leaves the display. Dimensions are read for every pinch; lock/app/orientation checks, serialization and receipt recovery use the existing action pipeline. Supported behavior depends on the foreground app; Photos supports zooming an open photo.
 
 ## Observations
 
@@ -135,7 +135,7 @@ An input's optional `observationId` must refer to a stable observation no older 
 
 Supply the same `requestId` when recovering a lost input reply. Concurrent and subsequent requests with the same ID and validated payload share the original result; different input with that ID is rejected. The browser generates IDs and checks receipts automatically, without resending an uncertain action.
 
-`GET /api/commands/<requestId>` returns queued/running/executed/verified/failed-or-unknown state and the result. Receipts persist in ignored `vendor/commands.json` (mode 0600); Other server ports use `vendor/commands-PORT.json`; `IPORTAL_COMMANDS_FILE` overrides the location. Persistence contains hashes and sanitized receipts, not input text, screenshots or UI trees. A restart during an unfinished command marks its outcome unknown and prevents replay. The retention window is 24 hours, capped at 4096 receipts; a full store rejects new inputs rather than evicting live deduplication records. This is not an exactly-once guarantee across device failure or beyond retention. Local testing must use a separate receipt file.
+`GET /api/commands/<requestId>` returns queued/running/executed/verified/failed-or-unknown state and the result. Receipts persist in the server's runtime directory with mode 0600, separated by device or port; `IPORTAL_COMMANDS_FILE` overrides the location. Persistence contains hashes and sanitized receipts, not input text, screenshots or UI trees. A restart during an unfinished command marks its outcome unknown and prevents replay. The retention window is 24 hours, capped at 4096 receipts; a full store rejects new inputs rather than evicting live deduplication records. This is not an exactly-once guarantee across device failure or beyond retention. Local testing must use a separate receipt file.
 
 ## Save a screenshot
 
@@ -143,7 +143,7 @@ Supply the same `requestId` when recovering a lost input reply. Concurrent and s
 curl -s http://127.0.0.1:7100/api/screenshot \
   -H 'Content-Type: application/json' -d '{}' > screenshot.json
 # Inspect mimeType before choosing the extension.
-bun -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("screenshot.json")); if(!r.ok) throw Error(r.error); fs.writeFile("screen."+r.value.mimeType.split("/")[1],Buffer.from(r.value.data,"base64"));'
+bun -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("screenshot.json")); if(!r.ok) throw Error(r.error); fs.writeFileSync("screen."+r.value.mimeType.split("/")[1],Buffer.from(r.value.data,"base64"));'
 ```
 
 ## Keep-awake
@@ -163,60 +163,21 @@ curl -s http://127.0.0.1:7100/api/keep-awake \
 
 Opt-in only: the server starts with keep-awake disabled. `durationMs` defaults to 30 minutes and accepts 1000–7200000 ms (up to two hours). Enabling again replaces the previous lease and immediately sends a pulse. The lease belongs to the server and survives completion/disconnection of the HTTP request; it ends on expiration, explicit disable, server exit, an API lock request, or detection of a locked phone or upstream failure. It never unlocks a phone or restarts itself after a failure. GET and POST `{}` return status without querying the device.
 
-Pulses run immediately and then 15 seconds after completion, with priority over queued input/inspection. Successful touch, typing, Home and button input postpones the next pulse by 15 seconds because it already provides activity; obsolete queued maintenance pulses are skipped. Activity never extends the lease’s absolute expiry. Maintenance has its own deadline and cancellation scope, independent of the HTTP input that scheduled it. Long in-flight device operations can still delay a pulse; timeout does not undo already-dispatched device work. Each pulse first checks the lock state. Status includes `enabled`, `method`, `remainingMs`, `pulses`, `lastPulseAt`, `backend` and `lastPulseMs` while active; after stopping it includes `reason` and any upstream `error`. A successful pulse means WDA accepted the event, not proof that every iOS version honors it. Normal Auto-Lock resumes when pulses stop; no phone settings are changed. An already-dispatched event can finish after disabling; a volume pair attempts to finish both presses.
+Normal Auto-Lock resumes when keep-awake stops; no phone settings are changed. Activity does not extend the lease's absolute expiry. Long device operations can delay a pulse. Status includes `enabled`, `method`, `remainingMs`, and pulse diagnostics; stopped leases include `reason` and any upstream `error`.
 
 Methods:
 
-- `hid` (default): sends Consumer-page AC Idle Keep Alive (`page:12, usage:688`) through the patched acknowledged event-stream route `/wda/mirror/keepalive`. Older helpers without that route, or reporting it unsupported, fall back to WDA's slower `performIoHidEvent`; other errors stop the lease. Avoids volume/button presses. Verified on an iPhone 16 Pro running iOS 26.7.1 with 30-second Auto-Lock; verify effectiveness on other iOS/device combinations. There is no automatic fallback to volume presses.
-- `volume`: explicit fallback sending volume-up then volume-down. May display the volume HUD, affect camera behavior, and change the final volume at its limits. If the second press fails, the first press is not undone. The fallback has automated stub coverage but was not used for the real-phone keep-awake verification.
+- `hid` (default): sends an idle keep-alive event without pressing volume buttons. Effectiveness depends on the device/OS. It never automatically falls back to volume presses.
+- `volume`: explicitly sends volume-up then volume-down. May show the volume HUD, affect the camera, or change the final volume at its limits. A failed second press does not undo the first.
 
-The old WDA route takes about 5.24 seconds because Apple's daemon waits five seconds for a button confirmation before implicitly reporting success. The patched route uses synthesized event-stream playback with a shorter confirmation interval and waits for its daemon callback. Five final server pulse measurements on the same phone had a median of 0.67 seconds, roughly 87% lower latency than the legacy route. End-to-end HTTP renewal requests had a median of 0.70 seconds. This requires rebuilding the helper with `bun run setup`. A completed callback is not proof that application animations or accessibility state have settled.
+## Status and connection events
 
-## Verification
-
-`bun run test` covers Effect schema validation, browser binding, queue priority/deadlines/cancellation, persisted receipt recovery, real HTTP regression checks, fake USB forwarding, element actions, observations, waits, and device pinning. Unimplemented fake-WDA routes fail explicitly. On macOS it also compiles the exact native input-validation and rotation helpers and verifies fresh/repeated/upgrade/incompatible patch installation. Native tests do not simulate physical touchscreen behavior. On the connected iPhone, lookup, state, screenshots, waits, an observation-guarded tap, targeted typing, a portrait gesture, and duplicate-request recovery passed. Rotation geometry has native contract coverage for all four orientations. A physical iPhone touch recorder verified 16 cases across portrait, both landscape directions and a return to portrait: off-center taps, horizontal/vertical drags and off-center two-finger pinches. The largest observed endpoint error was 0.21 points; converted points also matched XCTest’s own coordinate conversion. Upside-down portrait remains covered by native contract tests rather than a physical iPhone check. Seven-attribute lookup measured a 199 ms median using a selector’s expanded response versus 603 ms with separate ID-based attribute reads (three pairs on the same Settings navigation element).
-
-For an explicitly opted-in real phone test, unlock and connect the phone, then run:
-
-```bash
-bun scripts/test-phone.mjs http://127.0.0.1:7100 /absolute/path/to/local-test-output
-```
-
-This opens Settings, briefly goes Home, returns to Settings, and changes no settings. It checks lookup, attributes, hierarchy, full/element screenshots, and waits for appearance, disappearance, attribute equality and timeout. The optional output directory receives screenshots and a report. Keep that output out of Git.
-
-## Reproducing touch latency measurements
-
-`scripts/benchmark-touch.ts` is an explicitly opted-in real-phone test using Bun and a native Swift image sampler (built automatically with Xcode). With the phone unlocked and connected, run `bun scripts/benchmark-touch.ts /absolute/path/report.json`. The sampler uses CoreGraphics rather than the historical Pillow implementation; compare new reports within the same sampler version. It opens Settings, navigates to Display & Brightness and back, and performs small alternating scrolls. It changes no settings and enables keep-awake for 30 minutes.
-
-The report separates HTTP completion from the first changed central-region MJPEG frame, using the host monotonic clock. It waits for quiet video before each sample to avoid counting residual scroll inertia. Video timing includes capture and transport delay; it is not a direct panel measurement or a measurement of the native USB preview. Mouse recording time is excluded. Raw drag duration remains part of playback. Frame samples and screenshots are not saved by this benchmark.
-
-### Device lifecycle
-
-`GET /api/status` includes `locked` (`true`, `false`, or `null` when unknown) and `lifecycle` (`ready`, `locked`, `connecting`, or `disconnected`). `ok` still describes WDA reachability; it does not imply that the phone is unlocked. Lock state is read without creating an XCTest session. Unknown or failed observations never count as unlocked.
-
-The app polls once a second, blurs its last captured frame while unavailable, and blocks input until both the phone is ready and a fresh frame arrives. Queued UI input is discarded across lifecycle changes. Native capture and the MJPEG fallback both monitor frame freshness. Capture teardown and replacement are serialized; a rolling retry budget limits native attempts to two per minute until ten seconds of continuous healthy video reset the budget. Exhausted attempts use MJPEG and retry native capture after a cooldown. Both backends preserve a fixed blurred frame while unavailable. Manual locking ends the keep-awake lease; unlocking does not silently start a new lease.
-
-`GET /api/health` returns `{ service, apiVersion, instanceId, ok: true }` without contacting the phone. The Mac app uses this endpoint to distinguish a failed local server from slow or unavailable WDA. It restarts only its own server process, retaining the pinned UDID, and reloads failed WebKit content with backoff.
-
-Native readiness is scoped to the document, video epoch, and device identity. A poll-only status revision prevents cached UI messages from undoing a suspension. Old readiness callbacks cannot reactivate a replaced page or phone. Mouse, drag, scroll, and typing share the same readiness gate. Client action requests expire after 18 seconds and receipt lookups after 3 seconds; timed-out input is never blindly replayed. MJPEG has a 3-second connection/first-frame deadline, a 3-second presented-frame watchdog, and a server-side 5-second idle-read deadline.
-
-Regression checks now include real CSS class tracking and pointer handlers, stale document/device callbacks, transient outages, frozen fallback frames, multipart parsing, stalled streams, hung command queues, cheap health probes under slow WDA, capture serialization/cancellation, and native readiness/retry-budget tests.
-
-### Scroll gestures
-
-The Mac app forwards explicit trackpad begin/change/end phases and consumes those events before WebKit can dispatch them a second time. A trackpad gesture sends one phone swipe when the fingers lift; inertial momentum is ignored. Mouse-wheel events without phases are grouped into a single burst ending after 80 ms of inactivity. Lock/reconnect cancels unfinished gestures. A cancelled or abandoned gesture cannot be replayed by a later input.
-
-### Pinch zoom
-
-Pinch the Mac trackpad over the mirror to zoom, or hold Command while scrolling with a mouse. Each completed pinch sends one simultaneous two-finger gesture to the iPhone, centered near the pointer. Ordinary scrolling still swipes. The browser also accepts Ctrl-wheel (Chromium trackpad pinch) and Safari gesture events. Magnification follows [AppKit's incremental magnification](https://developer.apple.com/documentation/appkit/nsevent/magnification). Lock, reconnect, cancellation and stale document callbacks discard unfinished pinches.
-
-Helpers advertising `multiTouch` accept exactly two validated `fingers` paths through `/wda/mirror/touch`. Both paths share one on-device lock/app/orientation check and one acknowledged event record with the existing 50 ms confirmation interval. Older helpers use [W3C touch actions](https://appium.github.io/appium-xcuitest-driver/12.3/guides/gestures/) with host guards; that fallback has a longer completion delay. Uncertain playback is never retried through the fallback.
-
-`POST /api/pinch` accepts `{ "x": 0.5, "y": 0.5, "scale": 2, "durationMs": 240 }` plus the normal action metadata. Coordinates are normalized in the current interface orientation; scale is 0.25–4 (below 1 zooms out, above 1 zooms in, 1 does nothing), and duration is 80–1000 ms, default 240. Both fingers start together, settle for 40 ms, then move for the requested duration and lift together. The center is clamped near screen edges so neither finger leaves the display. Dimensions are read for every pinch; lock/app/orientation checks, serialization and receipt recovery use the existing action pipeline. Supported behavior depends on the foreground app; Photos supports zooming an open photo.
-
-Live Photos checks on the connected iPhone verified zoom-in and zoom-out. The two fast-route requests completed in 587 ms and 580 ms, versus 4126 ms and 3922 ms through W3C actions; these are server command durations, not input-to-display measurements. Physical trackpad pinch and Command-scroll were also confirmed on the installed Mac app.
-
-### Connection events
+`GET /api/status` reports the selected device, server instance, queue, keep-awake,
+`locked` (`true`, `false`, or `null` when unknown), and `lifecycle` (`ready`, `locked`,
+`connecting`, or `disconnected`). `ok` describes helper reachability, not whether
+the phone is unlocked. `GET /api/health` checks the local server without contacting
+the phone. Input requires a ready, unlocked device; queued work is discarded when
+its device connection is invalidated.
 
 `GET /api/events` returns `text/event-stream`. Each `data:` record contains the same
 connection snapshot as `/api/status`, plus an increasing `eventSequence` and
@@ -255,4 +216,4 @@ they do not invoke Paste in the foreground app.
 
 `POST /api/key {"key":"ArrowLeft","modifiers":["shift"]}` moves or extends the current selection. Keys: `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Backspace`, `Delete` (forward delete), `Enter`, `Tab`, `Escape`, `Home`, `End`, `PageUp`, `PageDown`, or one printable Unicode code point. Modifiers are a unique subset of `command`, `control`, `option`, `shift`; modified printable keys use lowercase Latin letters. Use `type` for composed text or strings.
 
-Untargeted text and key commands use the same touch-sender event stream: Unicode insertion for text, bounded HID chords for navigation and shortcuts. Every chord releases its modifiers in the same stream. This avoids XCTest's temporary keyboard attachment and the resulting hide/reopen cycle. Completion acknowledges playback, not application-specific editing success. Existing lock, app, device, queue, and no-replay guards apply. Command-C/X also report `clipboardChanged`; the native app uses that to transfer an actual new selection without overwriting the Mac clipboard when nothing was copied.
+Completion acknowledges key playback, not application-specific editing success. Command-C/X also report `clipboardChanged`, allowing a client to transfer a newly copied selection without overwriting its clipboard when nothing was copied.

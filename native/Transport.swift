@@ -48,12 +48,47 @@ func emit(_ kind: UInt32, _ flags: UInt32, _ time: UInt32, _ data: Data) {
 
 @main struct NativeTransport {
     @MainActor private static var observedDevices: [UUID: ObjectIdentifier] = [:]
+    @MainActor private static var recovery = PairedDiscoveryRecovery()
+    @MainActor private static var connections: [String: Process] = [:]
     @MainActor private static func refreshInventory() {
-        for device in DeviceManager.shared.allDevices() {
+        let devices = DeviceManager.shared.allDevices()
+        recovery.retain(Set(devices.compactMap { $0.deviceInfo.udid }.map(key)))
+        for device in devices {
             let identity = ObjectIdentifier(device)
-            guard observedDevices[device.deviceIdentifier] != identity else { continue }
-            observedDevices[device.deviceIdentifier] = identity
-            device.addDeviceInfoChangedHandler(on: .main) { _, _ in emitInventory() }
+            if observedDevices[device.deviceIdentifier] != identity {
+                observedDevices[device.deviceIdentifier] = identity
+                device.addDeviceInfoChangedHandler(on: .main) { _, _ in
+                    MainActor.assumeIsolated { refreshInventory() }
+                }
+            }
+            let info = device.deviceInfo
+            guard let udid = info.udid else { continue }
+            let id = key(udid)
+            guard recovery.begin(id: id, state: info.state.rawValue, paired: info.iportalPairingState().rawValue == "paired", product: info.productType,
+                                 version: info.osVersion, transport: info.iportalTransportType()?.rawValue,
+                                 now: ProcessInfo.processInfo.systemUptime) else { continue }
+            // A separate process gives connect() a hard deadline even when the
+            // framework ignores task cancellation. Never block inventory updates.
+            let child = Process()
+            child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            child.arguments = ["--connect", udid]
+            child.standardInput = Pipe()
+            child.standardOutput = FileHandle.nullDevice; child.standardError = FileHandle.nullDevice
+            connections[id] = child
+            child.terminationHandler = { process in
+                DispatchQueue.main.async {
+                    guard connections[id] === process else { return }
+                    connections.removeValue(forKey: id)
+                    recovery.finished(id: id, connected: process.terminationStatus == 0,
+                                      now: ProcessInfo.processInfo.systemUptime)
+                    refreshInventory()
+                }
+            }
+            do { try child.run() }
+            catch {
+                connections.removeValue(forKey: id)
+                recovery.finished(id: id, connected: false, now: ProcessInfo.processInfo.systemUptime)
+            }
         }
         emitInventory()
     }
@@ -71,15 +106,24 @@ func emit(_ kind: UInt32, _ flags: UInt32, _ time: UInt32, _ data: Data) {
         await manager.awaitFullInitialization()
         initializationDeadline.cancel()
         if arguments == ["--check"] { emitInventory(); return }
+        if arguments.count == 2, arguments[0] == "--connect" {
+            guard let device = manager.allDevices().first(where: { key($0.deviceInfo.udid ?? "") == key(arguments[1]) }) else { exit(2) }
+            let info = device.deviceInfo
+            guard PairedDiscoveryRecovery.eligible(paired: info.iportalPairingState().rawValue == "paired",
+                product: info.productType, version: info.osVersion, transport: info.iportalTransportType()?.rawValue) else { exit(2) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 8) { exit(75) }
+            do { try await device.connect(); exit(descriptor(device) == nil ? 2 : 0) }
+            catch { exit(3) }
+        }
         if arguments == ["--watch"] {
             manager.addDevicesAddedHandler(on: .main) { _ in MainActor.assumeIsolated { refreshInventory() } }
             manager.addDevicesChangedHandler(on: .main) { _ in MainActor.assumeIsolated { refreshInventory() } }
             refreshInventory()
             let path = NWPathMonitor()
-            path.pathUpdateHandler = { _ in DispatchQueue.main.async { refreshInventory() } }
+            path.pathUpdateHandler = { _ in DispatchQueue.main.async { recovery.networkChanged(); refreshInventory() } }
             path.start(queue: .global(qos: .utility))
             let wake = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
-                object: nil, queue: .main) { _ in MainActor.assumeIsolated { refreshInventory() } }
+                object: nil, queue: .main) { _ in MainActor.assumeIsolated { recovery.networkChanged(); refreshInventory() } }
             // Heartbeat and slow reconciliation are fallbacks; device events are primary.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))

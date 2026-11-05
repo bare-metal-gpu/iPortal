@@ -516,6 +516,11 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func updateTransportIndicator() {
         let transport = requestedDeviceUDID.flatMap { owner?.usbMonitor?.transport(for: $0) }
+        // Keep the last confirmed route when discovery removes the endpoint.
+        // The disconnected overlay must describe the connection that was lost.
+        if let transport {
+            loadingBorderState.disconnectedSymbol = transport == .wifi ? "wifi.slash" : "cable.connector.slash"
+        }
         guard transport != indicatedTransport || wifiIndicator == nil else { return }
         indicatedTransport = transport
         wifiIndicator?.rootView = IPortalWiFiIndicator(visible: transport == .wifi)

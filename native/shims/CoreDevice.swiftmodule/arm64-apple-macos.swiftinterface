@@ -11,11 +11,20 @@ public enum TransportType {
  case sameMachine
  public var rawValue: Swift.String { get }
 }
+public enum PairingState {
+ case unpaired
+ case paired
+ case pairingInProgress
+ case unsupported
+ public var rawValue: Swift.String { get }
+}
 extension CoreDeviceProtocols.DeviceInfo {
  // The real getter belongs to CoreDeviceProtocols but returns a CoreDevice
  // type. Bind its exact ABI without making these minimal shims import cyclically.
  @_silgen_name("$s19CoreDeviceProtocols0B4InfoV13transportType0aB009TransportF0OSgvg")
  public func iportalTransportType() -> CoreDevice.TransportType?
+ @_silgen_name("$s19CoreDeviceProtocols0B4InfoV12pairingState0aB007PairingF0Ovg")
+ public func iportalPairingState() -> CoreDevice.PairingState
 }
 public class DeviceManager {
  public static var shared: CoreDevice.DeviceManager { get }

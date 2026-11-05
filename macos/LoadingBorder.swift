@@ -4,6 +4,7 @@ import CoreImage
 
 @MainActor
 final class LoadingBorderState: ObservableObject {
+    @Published var disconnectedSymbol = "cable.connector.slash"
     @Published var active = true
     @Published var radius: CGFloat = 42
     @Published var showMessage = true
@@ -25,7 +26,7 @@ struct LoadingBorder: View {
                     title: state.phase == "locked" ? "Locked" : state.phase == "disconnected" ? "Disconnected"
                         : state.phase == "reconnecting" ? "Reconnecting…" : "Connecting…",
                     detail: state.detail,
-                    symbol: state.phase == "locked" ? "lock.fill" : state.phase == "disconnected" ? "cable.connector.slash" : nil,
+                    symbol: state.phase == "locked" ? "lock.fill" : state.phase == "disconnected" ? state.disconnectedSymbol : nil,
                     orb: state.phase == "reconnecting" ? .solving : .connecting,
                     shimmer: state.phase != "locked" && state.phase != "disconnected")
                 .transition(.opacity)
