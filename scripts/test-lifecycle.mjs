@@ -19,6 +19,7 @@ try {
       "-swift-version",
       "5",
       "-warnings-as-errors",
+      join(root, "shared/DeviceCapabilities.swift"),
       join(root, "macos/Lifecycle.swift"),
       join(root, "test/LifecycleTests.swift"),
       "-o",
@@ -27,6 +28,26 @@ try {
     { stdio: "pipe" },
   );
   execFileSync(binary, [], { stdio: "inherit" });
+  const usbMonitor = join(directory, "usb-monitor-tests");
+  execFileSync(
+    "xcrun",
+    [
+      "swiftc",
+      "-swift-version",
+      "5",
+      "-warnings-as-errors",
+      join(root, "shared/DeviceCapabilities.swift"),
+      join(root, "macos/Lifecycle.swift"),
+      join(root, "macos/USBMonitor.swift"),
+      join(root, "test/USBMonitorTests.swift"),
+      "-o",
+      usbMonitor,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(usbMonitor, [join(root, "test/fixtures/paired-inventory.json")], {
+    stdio: "inherit",
+  });
   const permissions = join(directory, "permission-tests");
   execFileSync(
     "xcrun",

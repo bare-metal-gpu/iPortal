@@ -7,6 +7,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
     private var usbMonitor: PhoneUSBMonitor?
     private let names = PhoneDeviceNames(defaults: IPortalWatcher.preferences)
     private var invitations = USBInvitationGate()
+    private var networkInvitations = USBInvitationGate()
     private var workspaceObservers: [NSObjectProtocol] = []
     private var sessionsObserver: NSObjectProtocol?
 
@@ -28,11 +29,13 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
         names.onUpdate = { [weak self] in self?.updateMenu() }
-        usbMonitor = PhoneUSBMonitor(metadataChanged: { [weak self] in self?.updateMenu() }) {
-            [weak self] serial, attached in self?.usbChanged(serial, attached: attached)
+        usbMonitor = PhoneUSBMonitor(usbChanged: { [weak self] serial, attached in
+            self?.usbChanged(serial, attached: attached)
+        }, metadataChanged: { [weak self] in self?.updateMenu() }) {
+            [weak self] serial, attached in self?.availabilityChanged(serial, attached: attached)
         }
         let now = ProcessInfo.processInfo.systemUptime
-        for serial in usbMonitor?.connectedSerials ?? [] { _ = invitations.attached(serial, at: now) }
+        for serial in usbMonitor?.usbSerials ?? [] { _ = invitations.attached(serial, at: now) }
         updateMenu()
         names.refresh(usbMonitor?.connectedSerials ?? [])
         let center = NSWorkspace.shared.notificationCenter
@@ -70,6 +73,19 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         updateMenu()
         if attached { names.refresh(usbMonitor?.connectedSerials ?? []) }
         if invite && IPortalWatcher.mainApplications.isEmpty { menuBar?.show() }
+    }
+
+    private func availabilityChanged(_ serial: String, attached: Bool) {
+        updateMenu()
+        let now = ProcessInfo.processInfo.systemUptime
+        if !attached { networkInvitations.detached(serial, at: now); return }
+        names.refresh(usbMonitor?.connectedSerials ?? [])
+        // A USB plug has its own invitation, including when this endpoint was
+        // already reachable. Paired discovery must not consume that invitation.
+        guard usbMonitor?.isUSBConnected(serial) == false else { return }
+        if networkInvitations.attached(serial, at: now), IPortalWatcher.mainApplications.isEmpty {
+            menuBar?.show()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

@@ -1,3 +1,4 @@
+mod audio;
 mod hevc;
 mod reports;
 use idevice::core_device::{
@@ -131,24 +132,6 @@ async fn receive(
     };
     let id = uuid::Uuid::new_v4();
     let ssrc = uuid::Uuid::new_v4().as_u128() as u32;
-    let offer = build_screen_audio_offer(&uuid::Uuid::new_v4().to_string(), &info)?;
-    let mut p = build_start_audio_parameters(
-        &local.to_string(),
-        audio.local_addr()?.port(),
-        &remote.to_string(),
-        50000,
-        offer,
-        140,
-        id,
-    );
-    p.insert("timeout".into(), idevice::xpc::XPCObject::UInt64(2));
-    let answer = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.invoke("com.apple.coredevice.feature.startmediastream", Some(p)),
-    )
-    .await??;
-    let an = negotiation(&answer, remote, true)?;
-    audio.connect(an.peer).await?;
     let offer = build_screen_video_offer(&uuid::Uuid::new_v4().to_string(), &info, ssrc)?;
     let mut p = build_start_video_parameters(
         &local.to_string(),
@@ -166,12 +149,58 @@ async fn receive(
         client.invoke("com.apple.coredevice.feature.startmediastream", Some(p)),
     )
     .await??;
-    let vn = negotiation(&answer, remote, false)?;
+    let vn = match negotiation(&answer, remote, false) {
+        Ok(value) => value,
+        Err(error) => {
+            events.send(
+                7,
+                0,
+                0,
+                br#"{"control":"eligible","video":"unavailable","audio":"unavailable"}"#,
+            );
+            return Err(error);
+        }
+    };
     video.connect(vn.peer).await?;
+    // Video is independently useful. Audio rejection, unsupported codec, or a
+    // negotiation timeout must not discard an already negotiated picture.
+    let audio_negotiation = async {
+        let offer = build_screen_audio_offer(&uuid::Uuid::new_v4().to_string(), &info)?;
+        let mut p = build_start_audio_parameters(
+            &local.to_string(),
+            audio.local_addr()?.port(),
+            &remote.to_string(),
+            50000,
+            offer,
+            140,
+            id,
+        );
+        p.insert("timeout".into(), idevice::xpc::XPCObject::UInt64(2));
+        let answer = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.invoke("com.apple.coredevice.feature.startmediastream", Some(p)),
+        )
+        .await??;
+        let an = negotiation(&answer, remote, true)?;
+        audio.connect(an.peer).await?;
+        Ok::<Negotiation, Error>(an)
+    };
+    tokio::pin!(audio_negotiation);
+    let mut audio_pending = true;
+    let mut an: Option<Negotiation> = None;
+    events.send(
+        7,
+        0,
+        0,
+        br#"{"control":"eligible","video":"supported","audio":"eligible"}"#,
+    );
+    let mut audio_queue = audio::AudioQueue::default();
     let mut video_reports = reports::Reports::default();
     let mut audio_reports = reports::Reports::default();
     let start = Instant::now();
     let mut last_packet = start;
+    let mut completed_sequence = None;
+    let mut completed_timestamp = 0;
     let mut last_keyframe = start - Duration::from_secs(1);
     let mut keyframe_sequence = 0;
     let mut seq = 0;
@@ -190,26 +219,51 @@ async fn receive(
     alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-         d=video.recv(&mut vb)=>{let len=d?;last_packet=Instant::now();if is_rtcp(&vb[..len]){video_reports.control(&vb[..len],vn.sender);continue};
+         result=&mut audio_negotiation, if audio_pending=>{
+          audio_pending = false; an = result.ok();
+          events.send(7, 0, 0, if an.is_some() {
+           br#"{"control":"eligible","video":"supported","audio":"supported"}"#
+          } else {
+           br#"{"control":"eligible","video":"supported","audio":"unavailable"}"#
+          });
+         },
+         d=video.recv(&mut vb)=>{let len=d?;last_packet=Instant::now();if is_rtcp(&vb[..len]){
+           if video_reports.control(&vb[..len],vn.sender) && video_reports.confirms_idle(completed_sequence) { events.send(8,0,completed_timestamp,&[]); }
+           continue
+          };
           let p=RtpPacket::parse(&vb[..len]).ok_or("Invalid video RTP")?;
           if p.payload_type!=vn.payload||p.ssrc!=vn.sender{return Err("Unexpected video sender".into())}
           received+=1; if p.extension { ext=format!("{:04x}:{:02x?}",p.ext_profile,p.ext_data); } seq=p.sequence_number;video_reports.packet(seq);
           match assembler.push(p.sequence_number,p.timestamp,p.marker,p.payload){
-           Ok(Some(frame))=>{completed+=1;if !frame.configuration.is_empty(){events.send(2,0,p.timestamp,&frame.configuration)}events.send(1,u32::from(frame.sync),p.timestamp,&frame.bytes);frames=frames.wrapping_add(1);video.send(&build_frame_ack(vn.receiver,p.timestamp)).await?;},
+           Ok(Some(frame))=>{completed_sequence=Some(p.sequence_number);completed_timestamp=p.timestamp;completed+=1;if !frame.configuration.is_empty(){events.send(2,0,p.timestamp,&frame.configuration)}events.send(1,u32::from(frame.sync),p.timestamp,&frame.bytes);frames=frames.wrapping_add(1);video.send(&build_frame_ack(vn.receiver,p.timestamp)).await?;},
            Ok(None)=>{},
            Err(())=>{lost+=1;events.send(5,0,0,&[]);if last_keyframe.elapsed()>=Duration::from_millis(250){video.send(&build_keyframe_request(vn.receiver,"iportal",vn.sender,&[],keyframe_sequence)).await?;keyframe_sequence=keyframe_sequence.wrapping_add(1);last_keyframe=Instant::now();}}
           }
          },
-         d=audio.recv(&mut ab)=>{let len=d?;if is_rtcp(&ab[..len]){audio_reports.control(&ab[..len],an.sender);continue};let p=RtpPacket::parse(&ab[..len]).ok_or("Invalid audio RTP")?;if p.payload_type!=an.payload||p.ssrc!=an.sender{return Err("Unexpected audio sender".into())}audio_reports.packet(p.sequence_number);events.send(3,0,p.timestamp,p.payload);},
+         d=audio.recv(&mut ab), if an.is_some()=>{
+          if let (Ok(len), Some(an)) = (d, an) {
+           if is_rtcp(&ab[..len]) { audio_reports.control(&ab[..len],an.sender); continue; }
+           if let Some(p) = RtpPacket::parse(&ab[..len]) && p.payload_type == an.payload && p.ssrc == an.sender {
+             audio_reports.packet(p.sequence_number);
+             audio_queue.push(p.sequence_number,p.timestamp,p.payload,Instant::now());
+             for packet in audio_queue.drain(Instant::now()) { events.send(3,0,packet.timestamp,&packet.bytes); }
+           }
+          }
+         },
+         _=async { if let Some(at) = audio_queue.deadline() { tokio::time::sleep_until(at.into()).await; } else { std::future::pending::<()>().await; } }=>{
+          for packet in audio_queue.drain(Instant::now()) { events.send(3,0,packet.timestamp,&packet.bytes); }
+         },
          _=report.tick()=>{video.send(&build_rctl(vn.receiver,start.elapsed().as_millis() as u16,frames,seq)).await?;},
          _=alive.tick()=>{
           if last_stats.elapsed()>=Duration::from_secs(2) {
-           events.send(6,0,0,format!("{{\"packets\":{received},\"frames\":{completed},\"losses\":{lost},\"extension\":\"{ext}\"}}").as_bytes());
+           let (sender_packets,sequence_span) = video_reports.counts();
+           let idle = video_reports.confirms_idle(completed_sequence);
+           events.send(6,0,0,format!("{{\"packets\":{received},\"frames\":{completed},\"losses\":{lost},\"senderPackets\":{sender_packets},\"sequenceSpan\":{sequence_span},\"idleConfirmed\":{idle},\"extension\":\"{ext}\"}}").as_bytes());
            last_stats=Instant::now();
           }
           if last_packet.elapsed()>Duration::from_secs(5){return Err("Stream stopped responding".into())}
           video.send(&build_liveness(vn.receiver,"iportal",&[video_reports.block(vn.sender)])).await?;
-          audio.send(&build_liveness(an.receiver,"iportal",&[audio_reports.block(an.sender)])).await?;
+          if let Some(an) = an { let _ = audio.send(&build_liveness(an.receiver,"iportal",&[audio_reports.block(an.sender)])).await; }
          },
         }
     }

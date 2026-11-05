@@ -3,14 +3,16 @@
 import Foundation
 import CoreDevice
 import Darwin
+import AppKit
+import Network
 
 func key(_ value: String) -> String { value.lowercased().filter { $0.isLetter || $0.isNumber } }
-func descriptor(_ device: RemoteDevice) -> [String: String]? {
+func descriptor(_ device: RemoteDevice) -> PairedDeviceDescriptor? {
     let info = device.deviceInfo
     guard info.state.rawValue == "connected" else { return nil }
     guard let udid = info.udid, let product = info.productType,
           product.hasPrefix("iPhone") || product.hasPrefix("iPad"),
-          let version = info.osVersion, let major = Int(version.split(separator: ".").first ?? ""), major >= 27,
+          let version = info.osVersion, let major = Int(version.split(separator: ".").first ?? ""),
           let address = info.tunnelIPAddressString else { return nil }
     let transport: String
     switch info.iportalTransportType()?.rawValue {
@@ -18,17 +20,19 @@ func descriptor(_ device: RemoteDevice) -> [String: String]? {
     case "localNetwork": transport = "wifi"
     default: return nil
     }
-    return ["udid": udid, "identifier": device.deviceIdentifier.uuidString,
-            "name": info.name ?? (product.hasPrefix("iPad") ? "iPad" : "iPhone"),
-            "kind": product.hasPrefix("iPad") ? "iPad" : "iPhone", "address": address,
-            "transport": transport]
+    let eligibility: DeviceCapability = major >= 27 ? .eligible : .unavailable
+    return PairedDeviceDescriptor(udid: udid, identifier: device.deviceIdentifier.uuidString,
+        name: info.name ?? (product.hasPrefix("iPad") ? "iPad" : "iPhone"),
+        kind: product.hasPrefix("iPad") ? "iPad" : "iPhone", transport: transport, address: address,
+        osVersion: version, capabilities: PairedCapabilities(control: eligibility, video: eligibility, audio: eligibility))
 }
 func emitInventory() {
-    let devices = DeviceManager.shared.allDevices().compactMap(descriptor)
-        .sorted { $0["udid", default: ""] < $1["udid", default: ""] }
-    guard let data = try? JSONSerialization.data(withJSONObject: ["devices": devices], options: [.sortedKeys]) else { return }
+    let devices = DeviceManager.shared.allDevices().compactMap(descriptor).sorted { $0.key < $1.key }
+    guard let data = try? JSONEncoder().encode(PairedInventory(devices: devices)),
+          (try? PairedInventory.decode(data)) != nil else { return }
     try? FileHandle.standardOutput.write(contentsOf: data + Data([10]))
 }
+
 func emit(_ kind: UInt32, _ flags: UInt32, _ time: UInt32, _ data: Data) {
     guard data.count <= 8 * 1024 * 1024 else { return }
     var header = Data()
@@ -53,32 +57,52 @@ func emit(_ kind: UInt32, _ flags: UInt32, _ time: UInt32, _ data: Data) {
         }
         emitInventory()
     }
-    static func main() async {
+    @MainActor static func main() async {
         signal(SIGPIPE, SIG_IGN)
         let arguments = Array(CommandLine.arguments.dropFirst())
+        // Also covers an ABI/framework hang before CoreDevice initialization.
+        let initializationDeadline = DispatchWorkItem { exit(78) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 8, execute: initializationDeadline)
+        // EOF must cancel even while initialization or createSocket is pending.
+        if !arguments.contains("--check") && !arguments.contains("--duration") {
+            DispatchQueue.global().async { _ = try? FileHandle.standardInput.readToEnd(); exit(0) }
+        }
         let manager = DeviceManager.shared
         await manager.awaitFullInitialization()
+        initializationDeadline.cancel()
+        if arguments == ["--check"] { emitInventory(); return }
         if arguments == ["--watch"] {
             manager.addDevicesAddedHandler(on: .main) { _ in MainActor.assumeIsolated { refreshInventory() } }
             manager.addDevicesChangedHandler(on: .main) { _ in MainActor.assumeIsolated { refreshInventory() } }
             refreshInventory()
-            // This is a foreground-owned child; closing its stdin ends it.
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().async { _ = try? FileHandle.standardInput.readToEnd(); continuation.resume() }
+            let path = NWPathMonitor()
+            path.pathUpdateHandler = { _ in DispatchQueue.main.async { refreshInventory() } }
+            path.start(queue: .global(qos: .utility))
+            let wake = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+                object: nil, queue: .main) { _ in MainActor.assumeIsolated { refreshInventory() } }
+            // Heartbeat and slow reconciliation are fallbacks; device events are primary.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                refreshInventory()
             }
+            path.cancel()
+            NSWorkspace.shared.notificationCenter.removeObserver(wake)
             return
         }
         guard arguments.count >= 2, arguments[0] == "--stream",
               let device = manager.allDevices().first(where: { key($0.deviceInfo.udid ?? "") == key(arguments[1]) }),
-              descriptor(device) != nil else { exit(2) }
+              descriptor(device)?.capabilities.video != .unavailable, descriptor(device) != nil else { exit(2) }
         do {
+            let socketDeadline = DispatchWorkItem { exit(75) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 8, execute: socketDeadline)
             let socket: FileHandle = try await withCheckedThrowingContinuation { continuation in
                 device.createSocket(toServiceNamed: "com.apple.coredevice.displayservice", completingOn: nil) {
                     continuation.resume(with: $0)
                 }
             }
+            socketDeadline.cancel()
             defer { try? socket.close() }
-            if let value = descriptor(device), let data = try? JSONSerialization.data(withJSONObject: value) {
+            if let value = descriptor(device), let data = try? JSONEncoder().encode(value) {
                 emit(0, 0, 0, data)
             }
             var pair: [Int32] = [-1, -1]
@@ -86,8 +110,6 @@ func emit(_ kind: UInt32, _ flags: UInt32, _ time: UInt32, _ data: Data) {
             let cancellationWriter = FileHandle(fileDescriptor: pair[1], closeOnDealloc: true)
             if arguments.count == 4, arguments[2] == "--duration", let seconds = Double(arguments[3]), seconds > 0, seconds <= 300 {
                 DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { try? cancellationWriter.close() }
-            } else {
-                DispatchQueue.global().async { _ = try? FileHandle.standardInput.readToEnd(); try? cancellationWriter.close() }
             }
             let fd = dup(socket.fileDescriptor), cancelFD = pair[0]
             let result: Int32 = await withCheckedContinuation { continuation in

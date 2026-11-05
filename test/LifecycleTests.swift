@@ -57,6 +57,30 @@ struct LifecycleTests {
         assert(IPortalDeviceKind(product: "Apple Watch") == nil)
         assert(IPortalDeviceKind.iPad.initialRatio == 0.75)
         assert(abs(IPortalDeviceKind.iPad.radius(width: 800, height: 600) - 21) < 0.001)
+        var policy = MediaCapabilityPolicy()
+        var descriptor = PairedDeviceDescriptor(udid: "phone", identifier: "fixture", name: "Phone", kind: "iPhone",
+            transport: "wifi", address: "fd00::1", osVersion: "27.3",
+            capabilities: PairedCapabilities(control: .eligible, video: .eligible, audio: .eligible))
+        assert(policy.select(descriptor, usb: true, cameraAllowed: true, at: 0) == .paired)
+        policy.failed(at: 1)
+        assert(policy.select(descriptor, usb: true, cameraAllowed: true, at: 2) == .usb)
+        assert(policy.select(descriptor, usb: false, cameraAllowed: true, at: 2) == .screenshots)
+        assert(policy.select(descriptor, usb: true, cameraAllowed: false, at: 2) == .screenshots)
+        assert(policy.select(descriptor, usb: false, cameraAllowed: false, at: 32) == .paired)
+        policy.negotiated(PairedCapabilities(control: .eligible, video: .unavailable, audio: .unavailable))
+        assert(policy.select(descriptor, usb: true, cameraAllowed: true, at: 10000) == .usb)
+        descriptor.osVersion = "27.4"
+        assert(policy.select(descriptor, usb: false, cameraAllowed: true, at: 10001) == .paired)
+        policy.negotiated(PairedCapabilities(control: .eligible, video: .supported, audio: .supported))
+        policy.failed(at: 10001)
+        assert(policy.select(descriptor, usb: true, cameraAllowed: true, at: 10001) == .paired,
+               "a proven backend gets one media-only recovery before changing capture transports")
+        policy.failed(at: 10002)
+        assert(policy.select(descriptor, usb: true, cameraAllowed: true, at: 10002) == .usb,
+               "repeated transient failure must still take the fallback")
+        descriptor.osVersion = "26.5"; descriptor.capabilities.video = .unavailable
+        assert(policy.select(descriptor, usb: true, cameraAllowed: true, at: 10002) == .usb)
+        assert(policy.select(descriptor, usb: false, cameraAllowed: true, at: 10002) == .screenshots)
         let phone = IPortalUSBDevice(serial: "phone", name: "Phone")
         let tablet = IPortalUSBDevice(serial: "tablet", name: "Tablet", kind: .iPad)
         let source = CaptureSourceIdentity(id: "video-uuid", isIOS: true)
@@ -177,8 +201,13 @@ struct LifecycleTests {
         assert(gate.lifecycle == "connecting")
         _ = observe("ready", 6, 113)
         assert(!gate.acceptsFrame(at: 114, now: 118), "stalled frames are not live")
+        assert(gate.acceptsFrame(at: 114, now: 118, idleConfirmedAt: 117), "verified unchanged picture remains interactive")
+        assert(!gate.acceptsFrame(at: 114, now: 118, idleConfirmedAt: 115), "expired idle confirmation is not liveness")
+        assert(!gate.acceptsFrame(at: 112, now: 118, idleConfirmedAt: 117), "idle proof cannot bless an old lifecycle frame")
+        assert(!gate.acceptsFrame(at: 114, now: 118, idleConfirmedAt: 119), "future idle confirmations are rejected")
         gate.suspend(at: 119)
         assert(!gate.acceptsFrame(at: 120, now: 120), "wake/navigation waits for a new observation")
+        assert(!gate.acceptsFrame(at: 114, now: 120, idleConfirmedAt: 120), "suspension cannot be undone by idle media")
 
         // Cached readiness echoes cannot undo a native suspension.
         let stale = gate.observe("ready", deviceID: "A", epoch: 6, bridgeID: "page1", serverInstance: "server1", statusRevision: 6, now: 121)

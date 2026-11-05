@@ -151,6 +151,8 @@ final class PhoneCapture {
     let layer: AVSampleBufferDisplayLayer
     private let audio = AVCaptureAudioPreviewOutput()
     private var nativeMedia: NativeMediaReceiver?
+    var usesPairedMedia: Bool { nativeMedia != nil }
+    var onMediaCapabilities: ((PairedCapabilities) -> Void)?
     private var audioEnabled = false
     private var preferredVolume: Float = 1
     var onSize: ((CGSize) -> Void)?
@@ -169,6 +171,8 @@ final class PhoneCapture {
     private var failureReported = false
     private(set) var startupTimeoutAt: TimeInterval? = nil
     private(set) var lastFrameAt: TimeInterval = 0
+    private(set) var idleConfirmedAt: TimeInterval = 0
+    private var presentedRTPTime: UInt32?
     private var presentedSize = CGSize.zero
     private var presentedFrames = 0
     private var waitingForFreshFrame = false
@@ -212,6 +216,8 @@ final class PhoneCapture {
         if presentedFrames % 60 == 0 { iportalTrace("paired-presentation", ["frames":presentedFrames]) }
         CATransaction.commit()
         lastFrameAt = frame.timestamp
+        idleConfirmedAt = 0
+        presentedRTPTime = usesPairedMedia ? UInt32(truncatingIfNeeded: CMSampleBufferGetPresentationTimeStamp(frame.sample).value) : nil
         if waitingForFreshFrame {
             waitingForFreshFrame = false
             onFrame?()
@@ -228,7 +234,14 @@ final class PhoneCapture {
         allowSingleDeviceFallback = singleUsbDevice
         if paired, NativeMediaReceiver.available {
             startupTimeoutAt = ProcessInfo.processInfo.systemUptime + timeout
-            let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames) { [weak self] in
+            let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames, capabilities: { [weak self] capabilities in
+                DispatchQueue.main.async { guard let self, !self.stopped else { return }; self.onMediaCapabilities?(capabilities) }
+            }, unchanged: { [weak self] time in
+                DispatchQueue.main.async {
+                    guard let self, !self.stopped, self.presentedRTPTime == time else { return }
+                    self.idleConfirmedAt = ProcessInfo.processInfo.systemUptime
+                }
+            }) { [weak self] in
                 DispatchQueue.main.async { self?.failed() }
             }
             nativeMedia = receiver

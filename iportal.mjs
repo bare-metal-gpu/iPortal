@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
-import { createPairedMonitor, selectDevice } from "./paired-devices.ts";
+import {
+  awaitInitialPairedDiscovery,
+  createPairedMonitor,
+  selectDevice,
+} from "./paired-devices.ts";
 import { createClipboard } from "./clipboard.mjs";
 // iportal: control your iPhone from your computer.
 // Video comes from WebDriverAgent's MJPEG stream, input goes back through WDA's W3C actions API.
@@ -146,6 +150,17 @@ let pinnedUdid = opts.udid ? canonicalUDID(opts.udid) : null;
 let connectedUsbUdids = [];
 let usbMonitor;
 let pairedMonitor;
+const pairedDiscoveryStartedAt = Date.now();
+/** @type {ReturnType<typeof selectDevice>} */
+let selectedDevice = null;
+let lastControlSuccess = 0;
+let reconcileConnection = () => {};
+function chooseDevice(devices) {
+  return selectDevice(devices, pairedMonitor?.devices() ?? [], pinnedUdid, {
+    previous: selectedDevice,
+    retainPaired: pairedMonitor?.health() !== "ready" && Date.now() - lastControlSuccess < 5000,
+  });
+}
 let deviceLease;
 async function ensureDeviceLease() {
   if (pinnedUdid && !deviceLease) {
@@ -163,7 +178,7 @@ async function pickDevice() {
   connectedUsbUdids = [
     ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
   ];
-  const device = selectDevice(devices, pairedMonitor?.devices() ?? [], pinnedUdid);
+  const device = chooseDevice(devices);
   if (!pinnedUdid) pinnedUdid = device?.udid ?? null;
   await ensureDeviceLease();
   return device;
@@ -598,6 +613,10 @@ let launchLockedDevice = null;
 let shuttingDown = false;
 const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
 function maybeStartWda(udid, connectionID, address) {
+  // Select the migratable endpoint before binding a helper to legacy loopback.
+  // Only the first snapshot is awaited; unsupported hosts proceed immediately.
+  if (awaitInitialPairedDiscovery(pairedMonitor?.health(), Date.now() - pairedDiscoveryStartedAt))
+    return;
   if (
     shuttingDown ||
     wdaProcess ||
@@ -752,6 +771,16 @@ async function status(signal) {
   }
   signal?.throwIfAborted();
   const up = (MANUAL || device) && (await wdaUp(signal));
+  if (up) lastControlSuccess = Date.now();
+  else {
+    lastControlSuccess = 0;
+    if (
+      selectedDevice?.connection === "Paired" &&
+      pairedMonitor?.health() !== "ready" &&
+      !pairedMonitor?.devices().length
+    )
+      queueMicrotask(reconcileConnection);
+  }
   if (!MANUAL && process.platform === "darwin" && !up) startupLock.observe(device);
   let locked =
     !MANUAL && device
@@ -1057,7 +1086,7 @@ if (!MANUAL) {
     connectedUsbUdids = [
       ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
     ];
-    const device = selectDevice(devices, pairedMonitor?.devices() ?? [], pinnedUdid);
+    const device = chooseDevice(devices);
     if (!pinnedUdid) pinnedUdid = device?.udid ?? null;
     if (!device) {
       keepAwake.stop("disconnected");
@@ -1065,6 +1094,7 @@ if (!MANUAL) {
       launchLockedDevice = null;
     }
     if (observedDeviceID === (device?.id ?? null)) {
+      selectedDevice = device;
       statusEvents.invalidate();
       return;
     }
@@ -1082,6 +1112,7 @@ if (!MANUAL) {
       fastTouch = true;
       multiTouch = undefined;
     }
+    selectedDevice = device;
     observedDeviceID = device?.id ?? null;
     observedAddress = device?.address;
     statusEvents.invalidate({
@@ -1097,6 +1128,7 @@ if (!MANUAL) {
     });
   };
   let observedAddress;
+  reconcileConnection = onDevicesChanged;
   pairedMonitor = createPairedMonitor(onDevicesChanged);
   usbMonitor = createUSBMonitor({
     address: USBMUXD,

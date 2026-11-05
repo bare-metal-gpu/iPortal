@@ -148,6 +148,36 @@ struct DeviceSessionRegistry<Session: AnyObject> {
 
 enum IPortalConnectionTransport: String { case usb, wifi }
 
+enum CaptureBackend { case paired, usb, screenshots }
+struct MediaCapabilityPolicy {
+    private var endpoint: String?
+    private var retryAt: TimeInterval = 0
+    private var nextImmediateRetry: TimeInterval = 0
+    private(set) var video: DeviceCapability = .eligible
+    private(set) var audio: DeviceCapability = .eligible
+    mutating func select(_ descriptor: PairedDeviceDescriptor?, usb: Bool, cameraAllowed: Bool,
+                         at now: TimeInterval) -> CaptureBackend {
+        if let descriptor, endpoint != descriptor.mediaKey {
+            endpoint = descriptor.mediaKey; retryAt = 0; nextImmediateRetry = 0
+            video = descriptor.capabilities.video; audio = descriptor.capabilities.audio
+        }
+        if descriptor != nil, descriptor?.capabilities.video != .unavailable,
+           video != .unavailable, now >= retryAt { return .paired }
+        return usb && cameraAllowed ? .usb : .screenshots
+    }
+    mutating func negotiated(_ capabilities: PairedCapabilities) {
+        video = capabilities.video; audio = capabilities.audio
+    }
+    mutating func failed(at now: TimeInterval) {
+        // A transport hiccup after successful negotiation is not evidence of
+        // incompatibility. Retry this media session once without rebinding the
+        // helper; repeated failures still take the bounded USB/image fallback.
+        if video == .supported, now >= nextImmediateRetry {
+            nextImmediateRetry = now + 60; retryAt = 0
+        } else { retryAt = now + 30 }
+    }
+}
+
 struct IPortalUSBDevice: Identifiable, Equatable {
     let serial: String
     let name: String
@@ -226,13 +256,14 @@ struct USBInvitationGate {
     private var detachedAt: [String: TimeInterval] = [:]
 
     mutating func attached(_ serial: String, at now: TimeInterval) -> Bool {
+        let serial = deviceKey(serial)
         if let detached = detachedAt.removeValue(forKey: serial), now - detached >= 2 {
             announced.remove(serial)
         }
         return announced.insert(serial).inserted
     }
 
-    mutating func detached(_ serial: String, at now: TimeInterval) { detachedAt[serial] = now }
+    mutating func detached(_ serial: String, at now: TimeInterval) { detachedAt[deviceKey(serial)] = now }
 }
 
 // USB can re-enumerate while screen capture is starting. Only that recovery
@@ -320,8 +351,12 @@ struct VideoReadinessGate {
 
     mutating func requireFreshFrame(at now: TimeInterval) { requiredFrameAfter = now }
 
-    func acceptsFrame(at timestamp: TimeInterval, now: TimeInterval) -> Bool {
-        lifecycle == "ready" && timestamp > requiredFrameAfter && timestamp <= now && now - timestamp < 3
+    func acceptsFrame(at timestamp: TimeInterval, now: TimeInterval, idleConfirmedAt: TimeInterval = 0) -> Bool {
+        // A matched sender report can confirm that this same presented picture
+        // is still current. It cannot bless a pre-lock/pre-reconnect frame.
+        let idleIsCurrent = idleConfirmedAt >= timestamp && idleConfirmedAt <= now && now - idleConfirmedAt < 3
+        return lifecycle == "ready" && timestamp > requiredFrameAfter && timestamp <= now
+            && (now - timestamp < 3 || idleIsCurrent)
     }
 }
 

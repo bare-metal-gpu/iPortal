@@ -11,31 +11,49 @@ final class PhoneUSBMonitor {
     private var serials: [UInt64: String] = [:]
     private var names: [String: String] = [:]
     private var kinds: [String: IPortalDeviceKind] = [:]
-    private var paired: [String: IPortalUSBDevice] = [:]
+    private var paired: [String: PairedDeviceDescriptor] = [:]
+    private(set) var pairedHealthy = false
+    private var pairedFailures = 0
+    private var pairedWatchdog: DispatchWorkItem?
+    private var pairedRetry: DispatchWorkItem?
+    private var pairedExpiry: DispatchWorkItem?
+    private let isActive: (String) -> Bool
     private var pairedProcess: Process?
     private var pairedInput: Pipe?
     private var pairedOutput: Pipe?
     private var pairedBuffer = Data()
     private var stopped = false
     private let changed: (String, Bool) -> Void
+    private let usbChanged: (String, Bool) -> Void
     private let metadataChanged: () -> Void
+    var usbSerials: Set<String> { Set(serials.values) }
     var connectedSerials: Set<String> { Set(connectedDevices.map(\.serial)) }
     private func key(_ value: String) -> String { value.lowercased().filter { $0.isLetter || $0.isNumber } }
-    func isPaired(_ serial: String) -> Bool { paired[key(serial)] != nil }
+    func isPaired(_ serial: String) -> Bool { paired[key(serial)]?.capabilities.control != .unavailable && paired[key(serial)] != nil }
+    func descriptor(for serial: String) -> PairedDeviceDescriptor? { paired[key(serial)] }
+    var usbDevices: [IPortalUSBDevice] { connectedDevices.filter { isUSBConnected($0.serial) } }
+    func isUSBConnected(_ serial: String) -> Bool { serials.values.contains { key($0) == key(serial) } }
     func transport(for serial: String) -> IPortalConnectionTransport? {
         connectedDevices.first { key($0.serial) == key(serial) }?.transport
     }
     var connectedDevices: [IPortalUSBDevice] {
-        var devices = paired
+        var devices = paired.filter { $0.value.capabilities.control != .unavailable }.mapValues {
+            IPortalUSBDevice(serial: $0.udid, name: $0.name, kind: IPortalDeviceKind(rawValue: $0.kind)!,
+                transport: IPortalConnectionTransport(rawValue: $0.transport)!)
+        }
         for serial in Set(serials.values) where devices[key(serial)] == nil {
             devices[key(serial)] = IPortalUSBDevice(serial: serial, name: names[serial] ?? "iPhone", kind: kinds[serial] ?? .iPhone)
         }
         return devices.values.sorted { $0.serial < $1.serial }
     }
 
-    init(metadataChanged: @escaping () -> Void = {}, changed: @escaping (String, Bool) -> Void) {
+    init(observeDevices: Bool = true, usbChanged: @escaping (String, Bool) -> Void = { _, _ in },
+         metadataChanged: @escaping () -> Void = {}, isActive: @escaping (String) -> Bool = { _ in false }, changed: @escaping (String, Bool) -> Void) {
+        self.isActive = isActive
         self.changed = changed
+        self.usbChanged = usbChanged
         self.metadataChanged = metadataChanged
+        guard observeDevices else { return }
         // Start on the next turn, after the owner has retained this monitor.
         DispatchQueue.main.async { [weak self] in self?.watchPairedDevices() }
         guard let port = IONotificationPortCreate(kIOMainPortDefault) else { return }
@@ -74,13 +92,26 @@ final class PhoneUSBMonitor {
                 names[serial] = product
                 kinds[serial] = kind
             } else if serials[id] == nil { continue }
-            if attached { serials[id] = serial } else { serials.removeValue(forKey: id) }
-            if !initial, !isPaired(serial) { changed(serial, attached) }
+            receiveUSB(serviceID: id, serial: serial, attached: attached, initial: initial)
         }
+    }
+
+    // Physical cable presence and overall reachability are different events.
+    // The watcher needs the former even while Wi-Fi keeps the mirror alive.
+    func receiveUSB(serviceID: UInt64, serial: String, attached: Bool, initial: Bool = false) {
+        guard !stopped else { return }
+        let before = isUSBConnected(serial)
+        if attached { serials[serviceID] = serial } else { serials.removeValue(forKey: serviceID) }
+        let after = isUSBConnected(serial)
+        guard !initial, before != after else { return }
+        usbChanged(serial, after)
+        if !isPaired(serial) { changed(serial, after) }
     }
 
     func stop() {
         stopped = true
+        pairedWatchdog?.cancel(); pairedRetry?.cancel(); pairedExpiry?.cancel()
+        pairedHealthy = false
         pairedOutput?.fileHandleForReading.readabilityHandler = nil
         try? pairedInput?.fileHandleForWriting.close()
         if let pairedProcess, pairedProcess.isRunning { pairedProcess.terminate() }
@@ -91,56 +122,89 @@ final class PhoneUSBMonitor {
         serials.removeAll()
     }
 
-    private func watchPairedDevices() {
+    private func armWatchdog(_ seconds: TimeInterval) {
+        pairedWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.observerFailed() }
+        pairedWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+    private func expireCache() {
+        pairedExpiry = nil
+        guard !stopped, !pairedHealthy else { return }
+        replacePaired(paired.filter { isActive($0.value.udid) })
+        if !paired.isEmpty { scheduleExpiry(after: 5) }
+    }
+    private func scheduleExpiry(after seconds: TimeInterval) {
+        guard pairedExpiry == nil else { return }
+        let work = DispatchWorkItem { [weak self] in self?.expireCache() }
+        pairedExpiry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+    private func observerFailed() {
         guard !stopped else { return }
+        pairedWatchdog?.cancel()
+        pairedHealthy = false
+        pairedFailures += 1
+        let previous = pairedProcess
+        pairedProcess = nil
+        pairedOutput?.fileHandleForReading.readabilityHandler = nil
+        try? pairedInput?.fileHandleForWriting.close()
+        if previous?.isRunning == true { previous?.terminate() }
+        scheduleExpiry(after: 30)
+        pairedRetry?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.watchPairedDevices() }
+        pairedRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + min(30, pow(2, Double(min(pairedFailures, 5)))), execute: work)
+    }
+    private func watchPairedDevices() {
+        guard !stopped, pairedProcess == nil else { return }
         let executable = IPortalWatcher.appURL.appendingPathComponent("Contents/MacOS/iPortalTransport")
         guard FileManager.default.isExecutableFile(atPath: executable.path) else { return }
         let task = Process(), input = Pipe(), output = Pipe()
         task.executableURL = executable; task.arguments = ["--watch"]
         task.standardInput = input; task.standardOutput = output; task.standardError = FileHandle.nullDevice
         pairedProcess = task; pairedInput = input; pairedOutput = output; pairedBuffer = Data()
+        armWatchdog(10)
         output.fileHandleForReading.readabilityHandler = { [weak self, weak task] handle in
             let data = handle.availableData
             if data.isEmpty { handle.readabilityHandler = nil; return }
             DispatchQueue.main.async {
-                guard let self, self.pairedProcess === task else { return }
+                guard let self, !self.stopped, let task, self.pairedProcess === task else { return }
                 self.pairedBuffer.append(data)
-                guard self.pairedBuffer.count <= 65536 else { task?.terminate(); return }
                 while let newline = self.pairedBuffer.firstIndex(of: 10) {
                     let line = Data(self.pairedBuffer[..<newline])
                     self.pairedBuffer = Data(self.pairedBuffer[(newline + 1)...])
-                    self.receivePaired(line)
+                    guard self.receivePaired(line) else { self.observerFailed(); return }
                 }
+                if self.pairedBuffer.count > 65536 { self.observerFailed() }
             }
         }
         task.terminationHandler = { [weak self] task in
             DispatchQueue.main.async {
-                guard let self, self.pairedProcess === task else { return }
-                self.pairedProcess = nil
-                self.receivePaired(Data("{\"devices\":[]}".utf8))
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.watchPairedDevices() }
+                guard let self, !self.stopped, self.pairedProcess === task else { return }
+                self.observerFailed()
             }
         }
-        do { try task.run() } catch { pairedProcess = nil }
+        do { try task.run() } catch { observerFailed() }
     }
 
-    private func receivePaired(_ data: Data) {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = root["devices"] as? [[String: String]], rows.count <= 64 else { return }
+    @discardableResult func receivePaired(_ data: Data) -> Bool {
+        guard !stopped else { return false }
+        guard let inventory = try? PairedInventory.decode(data) else { pairedHealthy = false; return false }
+        pairedHealthy = true
+        pairedFailures = 0
+        pairedExpiry?.cancel(); pairedExpiry = nil
+        if pairedProcess != nil { armWatchdog(30) }
+        replacePaired(Dictionary(uniqueKeysWithValues: inventory.devices.map { ($0.key, $0) }))
+        return true
+    }
+    private func replacePaired(_ next: [String: PairedDeviceDescriptor]) {
         let before = Dictionary(uniqueKeysWithValues: connectedDevices.map { (key($0.serial), $0) })
-        var next: [String: IPortalUSBDevice] = [:]
-        for row in rows {
-            guard let serial = row["udid"], !serial.isEmpty, serial.count <= 256,
-                  let name = row["name"], name.count <= 256,
-                  let kind = row["kind"].flatMap(IPortalDeviceKind.init(rawValue:)),
-                  let transport = row["transport"].flatMap(IPortalConnectionTransport.init(rawValue:)) else { return }
-            next[key(serial)] = IPortalUSBDevice(serial: serial, name: name, kind: kind, transport: transport)
-        }
+        let capabilitiesChanged = paired != next
         paired = next
         let after = Dictionary(uniqueKeysWithValues: connectedDevices.map { (key($0.serial), $0) })
         for (id, device) in before where after[id] == nil { changed(device.serial, false) }
         for (id, device) in after where before[id] == nil { changed(device.serial, true) }
-        if before != after { metadataChanged() }
+        if before != after || capabilitiesChanged { metadataChanged() }
     }
 }
-

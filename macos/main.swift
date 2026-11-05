@@ -239,6 +239,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var lastStatusAt = ProcessInfo.processInfo.systemUptime
     var captureStartedAt: TimeInterval = 0
     var captureBudget = CaptureRetryBudget()
+    var mediaPolicy = MediaCapabilityPolicy()
     var nextNativeAttemptAt: TimeInterval = 0
     var audioVolume: Float = 1
     var videoMode = "native"
@@ -428,7 +429,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             return
         }
         let frameAt = capture.lastFrameAt
-        let fresh = videoGate.acceptsFrame(at: frameAt, now: ProcessInfo.processInfo.systemUptime)
+        let fresh = videoGate.acceptsFrame(at: frameAt, now: ProcessInfo.processInfo.systemUptime, idleConfirmedAt: capture.idleConfirmedAt)
         if fresh {
             captureBudget.healthy(at: now)
             usbRecovery.finish()
@@ -453,6 +454,15 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func recoverCapture() {
+        if capture?.usesPairedMedia == true {
+            mediaPolicy.failed(at: ProcessInfo.processInfo.systemUptime)
+            freezeVideo(); stopCapture()
+            captureBudget = CaptureRetryBudget()
+            if let captureUdid, deviceLifecycle == "ready" {
+                startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+            } else { fallbackToStream() }
+            return
+        }
         CapturePermissions.shared.refresh()
         if !usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
         freezeVideo()
@@ -1006,15 +1016,21 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     // MARK: Video
 
-    var usesPairedMedia: Bool {
-        guard let udid = requestedDeviceUDID else { return false }
-        return NativeMediaReceiver.available && owner?.usbMonitor?.isPaired(udid) == true
+    var preferredCaptureBackend: CaptureBackend {
+        guard let udid = requestedDeviceUDID else { return .screenshots }
+        let monitor = owner?.usbMonitor
+        let descriptor = NativeMediaReceiver.available ? monitor?.descriptor(for: udid) : nil
+        return mediaPolicy.select(descriptor, usb: monitor?.isUSBConnected(udid) == true,
+            cameraAllowed: !CapturePermissions.shared.snapshot.blocksNativeCapture,
+            at: ProcessInfo.processInfo.systemUptime)
     }
+    var usesPairedMedia: Bool { capture?.usesPairedMedia ?? (preferredCaptureBackend == .paired) }
 
     func startCapture(udid: String, singleUsbDevice: Bool) {
         guard mirroringActive else { return }
         CapturePermissions.shared.refresh()
-        if !usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture { fallbackToStream(); return }
+        let backend = preferredCaptureBackend
+        if backend == .screenshots { fallbackToStream(); return }
         let now = ProcessInfo.processInfo.systemUptime
         guard captureBudget.beginAttempt(at: now) else {
             nextNativeAttemptAt = now + 30
@@ -1028,11 +1044,15 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         captureStartedAt = now
         videoGate.requireFreshFrame(at: now)
         let c = PhoneCapture(audioVolume: audioVolume)
-        c.connectedDevices = { [weak self] in self?.owner?.devices ?? [] }
+        c.connectedDevices = { [weak self] in self?.owner?.usbMonitor?.usbDevices ?? [] }
         trace("capture-requested")
         c.onSize = { [weak self, weak c] size in
             guard let self, self.capture === c else { return }
             self.setAspect(width: size.width, height: size.height)
+        }
+        c.onMediaCapabilities = { [weak self, weak c] capabilities in
+            guard let self, self.capture === c else { return }
+            self.mediaPolicy.negotiated(capabilities)
         }
         c.onFailure = { [weak self, weak c] in
             guard let self, self.capture === c else { return }
@@ -1049,7 +1069,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         capture = c
         nativeCall("useNativeVideo")
         updateLoadingBorder()
-        c.start(udid: udid, singleUsbDevice: singleUsbDevice, paired: usesPairedMedia) { [weak self, weak c] ok in
+        c.start(udid: udid, singleUsbDevice: singleUsbDevice, paired: backend == .paired) { [weak self, weak c] ok in
             guard let self, self.capture === c else { return }
             if !ok {
                 if !usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture {
@@ -1069,7 +1089,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         captureFailed = true
         captureLoading = false
         waitingForVideo = true
-        nextNativeAttemptAt = nativeIdentityDeferred || (!usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture) ? .infinity : ProcessInfo.processInfo.systemUptime + 30
+        nextNativeAttemptAt = nativeIdentityDeferred ? .infinity : ProcessInfo.processInfo.systemUptime + 30
         NSLog("iPortal video fallback; preserving last frame")
         nativeCall("startStream")
         updateLoadingBorder()
@@ -1461,7 +1481,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         IPortalStyle.registerFonts(in: .main)
         buildMenu()
         usbMonitor = PhoneUSBMonitor(metadataChanged: { [weak self] in
-            self?.allSessions.forEach { $0.updateTransportIndicator() }
+            self?.allSessions.forEach { $0.updateTransportIndicator(); $0.captureInventoryChanged() }
+        }, isActive: { [weak self] serial in
+            guard let session = self?.sessions.session(for: serial), let capture = session.capture else { return false }
+            return ProcessInfo.processInfo.systemUptime - max(capture.lastFrameAt, capture.idleConfirmedAt) < 3
         }) { [weak self] serial, attached in
             guard let self else { return }
             if attached, let pending = self.pending, let device = self.devices.first(where: { deviceKey($0.serial) == deviceKey(serial) }) {

@@ -22,13 +22,17 @@ final class NativeMediaReceiver: @unchecked Sendable {
     private var receivedFrames = 0
     private var buffered = Data()
     private let failed: @Sendable () -> Void
+    private let capabilities: @Sendable (PairedCapabilities) -> Void
+    private let unchanged: @Sendable (UInt32) -> Void
     private let audio = NativeMediaAudio()
     private let rotation = NativeMediaRotation()
     static var executable: URL { Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("iPortalTransport") }
     static var available: Bool { FileManager.default.isExecutableFile(atPath: executable.path) }
 
-    init(lifetime: CaptureLifetime, frames: FrameStore, failed: @escaping @Sendable () -> Void) {
-        self.lifetime = lifetime; self.frames = frames; self.failed = failed
+    init(lifetime: CaptureLifetime, frames: FrameStore, capabilities: @escaping @Sendable (PairedCapabilities) -> Void,
+         unchanged: @escaping @Sendable (UInt32) -> Void, failed: @escaping @Sendable () -> Void) {
+        self.lifetime = lifetime; self.frames = frames; self.failed = failed; self.capabilities = capabilities
+        self.unchanged = unchanged
     }
     func start(udid: String) throws {
         process.executableURL = Self.executable
@@ -85,7 +89,9 @@ final class NativeMediaReceiver: @unchecked Sendable {
         case 0: break // Endpoint metadata belongs to the transport monitor.
         case 2: try configure(data)
         case 1: receivedFrames += 1; try decode(data, sync: flags & 1 != 0, time: time)
-        case 3: audio.consume(data)
+        case 3: audio.consume(data, timestamp: time)
+        case 7: capabilities(try JSONDecoder().decode(PairedCapabilities.self, from: data))
+        case 8: unchanged(time)
         case 5: resetDecoder()
         case 6: if var stats = try JSONSerialization.jsonObject(with: data) as? [String:Any] { stats["receivedFrames"] = receivedFrames; iportalTrace("paired-media-stats", stats) }
         default: throw CocoaError(.coderReadCorrupt)
@@ -192,12 +198,41 @@ private final class NativeMediaRotation: @unchecked Sendable {
 }
 // END TESTABLE MEDIA ROTATION
 
+// BEGIN TESTABLE AUDIO CLOCK
+struct AudioPacketClock {
+    private var last: UInt32?
+    mutating func observe(_ timestamp: UInt32) -> (silence: Int, reset: Bool)? {
+        defer { if last == nil { last = timestamp } }
+        guard let previous = last else { return (0, false) }
+        let delta = Int32(bitPattern: timestamp &- previous)
+        if delta < -5760 { last = timestamp; return (0, true) }
+        guard delta > 0 else { return nil } // duplicate or late packet, including wrap
+        last = timestamp
+        let gap = Int(delta) - 480
+        if gap < 0 || gap > 5760 { return (0, true) }
+        return (gap, false)
+    }
+}
+struct AudioDriftControl {
+    private var average = 18.0
+    mutating func rate(pendingPackets: Int) -> Float {
+        average = average * 0.99 + Double(pendingPackets) * 0.01
+        // Correct small device/output clock skew without periodic whole-buffer
+        // drops. Hard limits and discontinuity recovery still bound latency.
+        return Float(min(1.002, max(0.998, 1 + (average - 18) * 0.00025)))
+    }
+}
+// END TESTABLE AUDIO CLOCK
+
 // Remote system audio needs no access to the Mac microphone. The existing mute
 // control still governs playback. A small queue prevents stale audio catch-up.
 private final class NativeMediaAudio {
     private var converter: AVAudioConverter?
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    private let rateUnit = AVAudioUnitVarispeed()
+    private var clock = AudioPacketClock()
+    private var drift = AudioDriftControl()
     private let output = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
     private var queued = 0
     private var errors = 0
@@ -219,10 +254,18 @@ private final class NativeMediaAudio {
     private let maximumPackets = 24
     private var volume: Float = 1
     private let lock = NSLock()
-    init() { engine.attach(player); engine.connect(player, to: engine.mainMixerNode, format: output) }
+    init() {
+        engine.attach(player); engine.attach(rateUnit)
+        engine.connect(player, to: rateUnit, format: output)
+        engine.connect(rateUnit, to: engine.mainMixerNode, format: output)
+    }
     func setVolume(_ volume: Float) { lock.lock(); self.volume = volume; lock.unlock() }
-    func consume(_ data: Data) {
-        guard !data.isEmpty else { return }
+    func consume(_ data: Data, timestamp: UInt32) {
+        guard !data.isEmpty, let continuity = clock.observe(timestamp) else { return }
+        if continuity.reset {
+            lock.lock(); queueGeneration &+= 1; queued = 0; lock.unlock()
+            player.stop(); playing = false; converter = nil; rebufferings += 1
+        }
         let now = ProcessInfo.processInfo.systemUptime
         if lastPacket > 0 { maximumGap = max(maximumGap, now - lastPacket) }
         lastPacket = now
@@ -258,24 +301,37 @@ private final class NativeMediaAudio {
         decodedPackets += 1
         errors = 0
         if !reportedPlayback { reportedPlayback = true; iportalTrace("paired-audio-decoded", ["frames": pcm.frameLength]) }
+        var scheduled = pcm
+        if continuity.silence > 0,
+           let padded = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: pcm.frameLength + AVAudioFrameCount(continuity.silence)),
+           let destination = padded.floatChannelData, let source = pcm.floatChannelData {
+            padded.frameLength = padded.frameCapacity
+            for channel in 0..<Int(output.channelCount) {
+                destination[channel].initialize(repeating: 0, count: continuity.silence)
+                destination[channel].advanced(by: continuity.silence).update(from: source[channel], count: Int(pcm.frameLength))
+            }
+            scheduled = padded
+        }
+        let packetCount = max(1, Int(scheduled.frameLength) / 480)
         lock.lock(); let pending = queued; lock.unlock()
-        if pending >= maximumPackets || (playing && pending == 0) {
+        if pending + packetCount > maximumPackets || (playing && pending == 0) {
             // Recover a real underrun or excessive backlog as one discontinuity,
             // rather than repeatedly dropping individual chunks of live audio.
             lock.lock(); queueGeneration &+= 1; queued = 0; lock.unlock()
             player.stop(); playing = false; rebufferings += 1
             if pending >= maximumPackets { droppedPackets += pending }
         }
-        lock.lock(); queued += 1; let generation = queueGeneration
+        lock.lock(); queued += packetCount; let generation = queueGeneration
         let pendingAfterAppend = queued; maximumQueue = max(maximumQueue, queued); lock.unlock()
         lock.lock(); let currentVolume = volume; lock.unlock(); player.volume = currentVolume
-        if !engine.isRunning { do { try engine.start() } catch { lock.lock(); queued -= 1; lock.unlock(); return } }
+        rateUnit.rate = drift.rate(pendingPackets: pendingAfterAppend)
+        if !engine.isRunning { do { try engine.start() } catch { lock.lock(); queued -= packetCount; lock.unlock(); return } }
         // Bound pending render work, not hardware latency. dataPlayedBack also
         // includes the output device's delay (notably Bluetooth); using it for
         // a small cap drops valid packets while the renderer needs more audio.
-        player.scheduleBuffer(pcm, completionCallbackType: .dataConsumed) { [weak self] _ in
+        player.scheduleBuffer(scheduled, completionCallbackType: .dataConsumed) { [weak self] _ in
             guard let self else { return }; self.lock.lock()
-            if self.queueGeneration == generation { self.queued = max(0, self.queued - 1) }
+            if self.queueGeneration == generation { self.queued = max(0, self.queued - packetCount) }
             self.lock.unlock()
         }
         if !playing && pendingAfterAppend >= primePackets { player.play(); playing = true }

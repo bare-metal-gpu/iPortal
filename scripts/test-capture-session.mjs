@@ -81,6 +81,7 @@ try {
       "5",
       "-warnings-as-errors",
       handleHelper,
+      join(root, "shared/DeviceCapabilities.swift"),
       join(root, "macos/Lifecycle.swift"),
       join(root, "test/corner-resize.swift"),
       "-o",

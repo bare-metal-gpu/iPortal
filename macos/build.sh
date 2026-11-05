@@ -18,6 +18,7 @@ if [ -z "$SIGN_TEAM" ] && [ -f "$ROOT/vendor/mac-signing-team" ]; then
   SIGN_TEAM="$(cat "$ROOT/vendor/mac-signing-team")"
 fi
 echo "→ Building iPortal with Xcode"
+rm -f "$ROOT/vendor/native/iPortalTransport" "$ROOT/vendor/native/host-stamp"
 XCODE_MAJOR="$(xcodebuild -version | awk '/^Xcode / { split($2, version, "."); print version[1] }')"
 if [ "$(uname -m)" = arm64 ] && [ "${XCODE_MAJOR:-0}" -ge 27 ] && [ -d /Library/Developer/PrivateFrameworks/CoreDevice.framework ] && [ -x "${CARGO:-$HOME/.cargo/bin/cargo}" ]; then
   echo "→ Building paired-device transport"
@@ -31,6 +32,9 @@ if ! xcodebuild -project "$ROOT/macos/iPortal.xcodeproj" -scheme iPortal \
 fi
 rm -rf "$APP"
 ditto "$BUILD/Build/Products/Release/iPortal.app" "$APP"
+# Xcode can reuse the outer seal when a shell phase removes an optional child.
+# Reseal the final bundle after packaging; nested products keep their own seals.
+codesign --force --sign "$SIGN_IDENTITY" --preserve-metadata=identifier,entitlements,flags,runtime "$APP"
 codesign --verify --deep --strict "$APP"
 if [ "$SIGN_IDENTITY" != "-" ]; then
   printf '%s\n' "$SIGN_IDENTITY" > "$ROOT/vendor/mac-signing-identity"

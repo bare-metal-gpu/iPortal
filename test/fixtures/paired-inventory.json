@@ -1,0 +1,453 @@
+[
+  {
+    "name": "modern phone",
+    "valid": true,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "empty",
+    "valid": true,
+    "inventory": {
+      "version": 1,
+      "devices": []
+    }
+  },
+  {
+    "name": "old paired device identified but excluded",
+    "valid": true,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "26.5.2",
+          "capabilities": {
+            "control": "unavailable",
+            "video": "unavailable",
+            "audio": "unavailable"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "future protocol",
+    "valid": false,
+    "inventory": {
+      "version": 2,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid address:192.168.0.1",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "192.168.0.1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid address:fe80::1",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fe80::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid address:fd00::bad::1",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00::bad::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid udid:../device",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "../device",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid udid:---",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "---",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid name:",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid transport:cloud",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "cloud",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid osVersion:27beta",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27beta",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing address",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing identifier",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing capabilities",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3"
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing osVersion",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate canonical id",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        },
+        {
+          "udid": "000000000000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "old OS cannot claim video",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "26.5",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "no newline in identity",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "a\n",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27.3",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "no newline in version",
+    "valid": false,
+    "inventory": {
+      "version": 1,
+      "devices": [
+        {
+          "udid": "00000000-0000000000000001",
+          "identifier": "fixture-1",
+          "name": "Test iPhone",
+          "kind": "iPhone",
+          "transport": "wifi",
+          "address": "fd00:1234::1",
+          "osVersion": "27\n",
+          "capabilities": {
+            "control": "eligible",
+            "video": "eligible",
+            "audio": "eligible"
+          }
+        }
+      ]
+    }
+  }
+]

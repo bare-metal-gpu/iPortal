@@ -11,6 +11,9 @@ const input = source
 const rotation = source
   .split("// BEGIN TESTABLE MEDIA ROTATION")[1]
   .split("// END TESTABLE MEDIA ROTATION")[0];
+const audioClock = source
+  .split("// BEGIN TESTABLE AUDIO CLOCK")[1]
+  .split("// END TESTABLE AUDIO CLOCK")[0];
 const directory = await mkdtemp(path.join(tmpdir(), "iportal-media-test-"));
 try {
   const file = path.join(directory, "input.swift");
@@ -21,6 +24,21 @@ import CoreImage
 import CoreVideo
 ${input}
 ${rotation}
+${audioClock}
+var audioClock = AudioPacketClock()
+precondition(audioClock.observe(UInt32.max - 479)?.silence == 0)
+precondition(audioClock.observe(0)?.silence == 0)
+precondition(audioClock.observe(960)?.silence == 480)
+precondition(audioClock.observe(960) == nil)
+precondition(audioClock.observe(480) == nil)
+precondition(audioClock.observe(96000)?.reset == true)
+precondition(audioClock.observe(0)?.reset == true)
+var drift = AudioDriftControl()
+for _ in 0..<10000 { precondition((0.998...1.002).contains(drift.rate(pendingPackets: 24))) }
+precondition(drift.rate(pendingPackets: 24) > 1)
+for _ in 0..<10000 { precondition((0.998...1.002).contains(drift.rate(pendingPackets: 1))) }
+precondition(drift.rate(pendingPackets: 1) < 1)
+print("Native audio: timestamps, wrap, loss, discontinuity and bounded clock correction passed.")
 let pipe = Pipe()
 let started = ProcessInfo.processInfo.systemUptime
 DispatchQueue.global().async {

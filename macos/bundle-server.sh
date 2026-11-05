@@ -7,7 +7,8 @@ OUTPUT="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/iportal-server"
 codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$OUTPUT"
 NATIVE="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/iPortalTransport"
 rm -f "$NATIVE"
-if [ -x "$ROOT/vendor/native/iPortalTransport" ]; then
+if [ -x "$ROOT/vendor/native/iPortalTransport" ] && [ -f "$ROOT/vendor/native/host-stamp" ] &&
+   [ "$("$ROOT/native/host-stamp.sh")" = "$(cat "$ROOT/vendor/native/host-stamp")" ]; then
   cp "$ROOT/vendor/native/iPortalTransport" "$NATIVE"
   codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$NATIVE"
 fi
