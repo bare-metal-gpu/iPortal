@@ -97,6 +97,38 @@ enum IPortalWatcherRequest: Equatable {
 
 func deviceKey(_ serial: String) -> String { serial.lowercased().filter { $0.isLetter || $0.isNumber } }
 
+// The watcher may discover a device before a newly launched app does. Retain
+// its exact target while discovery or the previous owner's teardown catches up.
+// Repeated clicks coalesce without extending the lifetime of a stale request.
+struct PendingMirrorStarts {
+    private struct Request {
+        let serial: String
+        let deadline: TimeInterval
+    }
+    private var requests: [Request] = []
+    var isEmpty: Bool { requests.isEmpty }
+    var nextDeadline: TimeInterval? { requests.map(\.deadline).min() }
+
+    mutating func request(_ serial: String, at now: TimeInterval) {
+        requests.removeAll { $0.deadline <= now }
+        guard !requests.contains(where: { deviceKey($0.serial) == deviceKey(serial) }) else { return }
+        requests.append(Request(serial: serial, deadline: now + 10))
+    }
+
+    mutating func cancel(_ serial: String) {
+        requests.removeAll { deviceKey($0.serial) == deviceKey(serial) }
+    }
+
+    mutating func takeReady(available: [String], retiring: [String], at now: TimeInterval) -> [String] {
+        requests.removeAll { $0.deadline <= now }
+        let available = Set(available.map(deviceKey)), retiring = Set(retiring.map(deviceKey))
+        let ready = requests.filter { available.contains(deviceKey($0.serial)) && !retiring.contains(deviceKey($0.serial)) }
+        let keys = Set(ready.map { deviceKey($0.serial) })
+        requests.removeAll { keys.contains(deviceKey($0.serial)) }
+        return ready.map(\.serial)
+    }
+}
+
 enum IPortalDeviceKind: String, Codable {
     case iPhone, iPad
     init?(product: String) {

@@ -57,6 +57,36 @@ struct LifecycleTests {
         assert(registry.values.count == 2 && registry.session(for: "0000814000000000000000A1") === replacement)
         registry.remove(replacement, for: "0000814000000000000000A1")
         assert(registry.values.count == 1 && registry.session(for: "00008140-00000000000000A2") === tabletSession)
+        let requestedPhone = "00008140-00000000000000A1"
+        let requestedTablet = "00008140-00000000000000A2"
+        var starts = PendingMirrorStarts()
+        starts.request(requestedPhone, at: 0)
+        assert(!starts.isEmpty && starts.nextDeadline == 10, "A cold launch must keep the first Play intent alive")
+        assert(starts.takeReady(available: [], retiring: [], at: 1).isEmpty)
+        assert(starts.takeReady(available: [requestedTablet], retiring: [], at: 2).isEmpty,
+               "An unrelated arrival cannot consume the selected phone's request")
+        starts.request(deviceKey(requestedPhone), at: 3)
+        assert(starts.nextDeadline == 10, "Duplicate clicks must neither duplicate work nor extend stale intent")
+        assert(starts.takeReady(available: [deviceKey(requestedPhone)], retiring: [], at: 4) == [requestedPhone],
+               "Discovery completes the original request without a second click")
+        assert(starts.isEmpty && starts.takeReady(available: [requestedPhone], retiring: [], at: 5).isEmpty)
+        starts.request(requestedPhone, at: 20)
+        starts.request(requestedTablet, at: 21)
+        assert(starts.takeReady(available: [requestedPhone, requestedTablet], retiring: [deviceKey(requestedPhone)], at: 22) == [requestedTablet],
+               "A retiring owner blocks only its own device")
+        assert(starts.takeReady(available: [requestedPhone], retiring: [], at: 23) == [requestedPhone],
+               "The original Play resumes when the prior owner releases its lease")
+        starts.request(requestedPhone, at: 30)
+        assert(starts.takeReady(available: [requestedPhone], retiring: [], at: 40).isEmpty,
+               "An expired Play must not open a window after a delayed discovery")
+        assert(starts.isEmpty && starts.nextDeadline == nil)
+        starts.request(requestedPhone, at: 50)
+        starts.cancel(deviceKey(requestedPhone))
+        assert(starts.isEmpty)
+        starts.request(requestedPhone, at: 60)
+        starts = PendingMirrorStarts()
+        assert(starts.takeReady(available: [requestedPhone], retiring: [], at: 61).isEmpty,
+               "Shutdown retires unstarted requests")
         assert(IPortalDeviceKind(product: "iPad Pro") == .iPad)
         assert(IPortalDeviceKind(product: "iPhone 16 Pro") == .iPhone)
         assert(IPortalDeviceKind(product: "Apple Watch") == nil)
