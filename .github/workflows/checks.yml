@@ -2,6 +2,11 @@ name: Checks
 
 on:
   workflow_dispatch:
+    inputs:
+      simulator_only:
+        description: Run only the simulator checks after an already verified commit
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -26,11 +31,16 @@ jobs:
           bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
       - run: bun audit
-      - run: bun run verify
+      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
+        run: bun run verify
       # Build the owned iOS 17+ runner and exercise real XCTest against our fixture.
       - run: bun run test:simulator
       # Protocol parsing tests need no paired device or private Apple framework.
-      - run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
-      - run: cargo +1.95.0 fmt --manifest-path native/Cargo.toml --check
-      - run: cargo +1.95.0 test --manifest-path native/Cargo.toml --locked
-      - run: cargo +1.95.0 clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
+      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
+      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
+        run: cargo +1.95.0 fmt --manifest-path native/Cargo.toml --check
+      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
+        run: cargo +1.95.0 test --manifest-path native/Cargo.toml --locked
+      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
+        run: cargo +1.95.0 clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings

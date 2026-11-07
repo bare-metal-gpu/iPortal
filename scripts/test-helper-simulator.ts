@@ -1,6 +1,6 @@
 // Reproducible native parity checks, isolated from physical devices and user apps.
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { openSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -29,8 +29,10 @@ const run = async (args: string[], label: string) => {
   if (code !== 0) {
     // Hosted runners discard this private temporary directory after the job.
     // Surface bounded diagnostics while keeping the ephemeral helper token out.
-    const tail = await Bun.file(path.join(logs, `${label}.log`))
-      .slice(-64 * 1024)
+    const log = path.join(logs, `${label}.log`);
+    const size = (await stat(log)).size;
+    const tail = await Bun.file(log)
+      .slice(Math.max(0, size - 64 * 1024))
       .text();
     console.error(tail.replaceAll(token, "[redacted]").split("\n").slice(-100).join("\n"));
   }
