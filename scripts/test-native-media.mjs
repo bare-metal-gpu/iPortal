@@ -5,6 +5,10 @@ import path from "node:path";
 
 if (process.platform !== "darwin") process.exit(0);
 const source = await readFile(new URL("../macos/NativeMedia.swift", import.meta.url), "utf8");
+const audioCompatibilityTests = await readFile(
+  new URL("../test/NativeAudioCompatibilityTests.swift", import.meta.url),
+  "utf8",
+);
 const input = source
   .split("// BEGIN TESTABLE MEDIA INPUT")[1]
   .split("// END TESTABLE MEDIA INPUT")[0];
@@ -30,6 +34,7 @@ ${input}
 ${rotation}
 ${audioClock}
 ${audioStart}
+${audioCompatibilityTests}
 // Reproduce the invalid output state without sleeping the test host. The
 // recoverable start API must return an error, not terminate the process.
 let stoppedEngine = AVAudioEngine(), stoppedPlayer = AVAudioPlayerNode()

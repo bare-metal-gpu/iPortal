@@ -225,15 +225,31 @@ struct AudioDriftControl {
 // END TESTABLE AUDIO CLOCK
 
 // BEGIN TESTABLE AUDIO START
-func startNativeAudioPlayer(_ player: AVAudioPlayerNode) throws {
-    if #available(macOS 27.0, *) {
-        // play() passes no NSError destination and raises an Objective-C
-        // exception when the output stops producing I/O during sleep.
-        try player.playAudio()
-    } else {
-        guard player.engine?.isRunning == true else { throw CocoaError(.featureUnsupported) }
-        player.play()
+// Runtime availability alone does not make a newer Swift overlay visible to
+// older SDKs. Invoke the public Objective-C NSError API by its stable selector
+// so an older-SDK build still gets recoverable errors on a newer macOS host.
+func nativeAudioStartUsingErrorAPI(_ receiver: NSObject) throws -> Bool {
+    let selector = NSSelectorFromString("playAndReturnError:")
+    guard receiver.responds(to: selector) else { return false }
+    guard let implementation = receiver.method(for: selector) else {
+        throw CocoaError(.featureUnsupported)
     }
+    typealias Start = @convention(c) (AnyObject, Selector, AutoreleasingUnsafeMutablePointer<NSError?>?) -> ObjCBool
+    let start = unsafeBitCast(implementation, to: Start.self)
+    var error: NSError?
+    guard start(receiver, selector, &error).boolValue else {
+        throw error ?? NSError(domain: "iPortal.Audio", code: 1,
+                               userInfo: [NSLocalizedDescriptionKey: "Audio playback could not start"])
+    }
+    return true
+}
+
+func startNativeAudioPlayer(_ player: AVAudioPlayerNode) throws {
+    if try nativeAudioStartUsingErrorAPI(player) { return }
+    // Choose the legacy path only when the runtime lacks the error API.
+    // A dispatched failure is propagated above and is never replayed via play().
+    guard player.engine?.isRunning == true else { throw CocoaError(.featureUnsupported) }
+    player.play()
 }
 // END TESTABLE AUDIO START
 
