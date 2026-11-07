@@ -90,7 +90,7 @@ See the [API reference](docs/api.md) for commands and examples.
 
 You need:
 
-- A Mac running **macOS 14+**, full **Xcode** compatible with your device, and **Bun 1.4.4+**.
+- A Mac capable of running full **Xcode 27+ (Swift 6.4+)**, an Xcode version compatible with your device, and **Bun 1.4.4+**.
 - An **iPhone or iPad running iOS/iPadOS 17+**, a USB cable for setup, and an **Apple Account**. A free account works.
 - For **Wi-Fi**: an **Apple silicon Mac**, **Xcode 27+**, **iOS/iPadOS 27+**, and **Rust/Cargo** installed before building.
 
