@@ -25,7 +25,14 @@ let runner: ReturnType<typeof Bun.spawn> | undefined;
 let server: ReturnType<typeof Bun.spawn> | undefined;
 const run = async (args: string[], label: string) => {
   const child = spawn(args, label);
-  assert.equal(await child.exited, 0, `${label} failed; see ${logs}`);
+  const code = await child.exited;
+  if (code !== 0) {
+    // Hosted runners discard this private temporary directory after the job.
+    // Surface bounded diagnostics while keeping the ephemeral helper token out.
+    const tail = await Bun.file(path.join(logs, `${label}.log`)).slice(-64 * 1024).text();
+    console.error(tail.replaceAll(token, "[redacted]").split("\n").slice(-100).join("\n"));
+  }
+  assert.equal(code, 0, `${label} failed; see ${logs}`);
 };
 function spawn(
   args: string[],
