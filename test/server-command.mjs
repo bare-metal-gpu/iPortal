@@ -10,6 +10,9 @@ export function runtimeEnvironment(scratch) {
   return {
     ...process.env,
     IPORTAL_STATE_DIR: scratch,
+    // Synthetic phones must never inherit a locally signed helper manifest or
+    // launch a physical-device build when the checkout has already run setup.
+    IPORTAL_DEVICE_BUILD: path.join(scratch, "synthetic-helper"),
     ...(packagedBinary ? { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" } : {}),
   };
 }

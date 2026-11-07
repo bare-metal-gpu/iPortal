@@ -1,0 +1,604 @@
+{
+  "generation": "00000000-0000-4000-8000-000000000001",
+  "commands": [
+    {
+      "id": "fixture-home",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "home",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-lock",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "lock",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-unlock",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "unlock",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-keepAlive",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "keepAlive",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-state",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "state",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-app",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "app",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-orientation",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "orientation",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-geometry",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "geometry",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-clipboardPrepare",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "clipboardPrepare",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-clipboardStatus",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "clipboardStatus",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-portal",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "portal",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-touch",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "touch",
+      "arguments": {
+        "points": [
+          [0.1, 0.2, 0],
+          [0.3, 0.4, 80]
+        ],
+        "end": 100
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-text",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "text",
+      "arguments": {
+        "text": "café 👋 世界"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-key",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "key",
+      "arguments": {
+        "key": "ArrowLeft",
+        "modifiers": ["shift"]
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-button",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "button",
+      "arguments": {
+        "name": "volumeUp"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-launch",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "launch",
+      "arguments": {
+        "bundleId": "com.example.fixture"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-siri",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "siri",
+      "arguments": {
+        "text": "Hello"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-elements",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elements",
+      "arguments": {
+        "using": "class chain",
+        "value": "**/XCUIElementTypeButton[1]"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-attribute",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "attribute",
+      "arguments": {
+        "id": "element-1",
+        "name": "enabled"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-tapElement",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "tapElement",
+      "arguments": {
+        "id": "element-1"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-typeElement",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "typeElement",
+      "arguments": {
+        "id": "element-1",
+        "text": "abc"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-source",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "source",
+      "arguments": {
+        "format": "json"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-screenshot",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "screenshot",
+      "arguments": {
+        "id": "element-1"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-clipboardRead",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "clipboardRead",
+      "arguments": {
+        "lease": "lease-1"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-clipboardWrite",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "clipboardWrite",
+      "arguments": {
+        "lease": "lease-1",
+        "format": "text",
+        "content": "aGVsbG8="
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-clipboardRestore",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "clipboardRestore",
+      "arguments": {
+        "lease": "lease-1"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-clipboardCancel",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "clipboardCancel",
+      "arguments": {
+        "lease": "lease-1"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-presence",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "presence",
+      "arguments": {
+        "ready": true,
+        "keepAwakeMs": 1800000
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-quality",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "quality",
+      "arguments": {
+        "preset": "balanced"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-shutdown",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "shutdown",
+      "arguments": {},
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-openURL",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "openURL",
+      "arguments": {
+        "url": "https://example.com/"
+      },
+      "budgetMs": 8000
+    }
+  ],
+  "errors": [
+    {
+      "code": "invalid argument",
+      "message": "Invalid point",
+      "outcome": "notExecuted"
+    },
+    {
+      "code": "timeout",
+      "message": "Native operation outcome unknown",
+      "outcome": "unknown"
+    }
+  ],
+  "results": [
+    {
+      "operation": "home",
+      "arguments": {},
+      "result": null
+    },
+    {
+      "operation": "lock",
+      "arguments": {},
+      "result": null
+    },
+    {
+      "operation": "unlock",
+      "arguments": {},
+      "result": null
+    },
+    {
+      "operation": "keepAlive",
+      "arguments": {},
+      "result": {
+        "completed": true
+      }
+    },
+    {
+      "operation": "state",
+      "arguments": {},
+      "result": {
+        "locked": false,
+        "app": {
+          "pid": 1,
+          "bundleId": "test.fixture",
+          "name": "Fixture"
+        },
+        "orientation": "PORTRAIT",
+        "screen": {
+          "width": 390,
+          "height": 844
+        }
+      }
+    },
+    {
+      "operation": "app",
+      "arguments": {},
+      "result": {
+        "pid": 1,
+        "bundleId": "test.fixture",
+        "name": "Fixture"
+      }
+    },
+    {
+      "operation": "orientation",
+      "arguments": {},
+      "result": "PORTRAIT"
+    },
+    {
+      "operation": "geometry",
+      "arguments": {},
+      "result": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "operation": "clipboardPrepare",
+      "arguments": {},
+      "result": {
+        "lease": "lease-1",
+        "helperBundleId": "test.helper",
+        "restoreBundleId": "test.fixture"
+      }
+    },
+    {
+      "operation": "clipboardStatus",
+      "arguments": {},
+      "result": {
+        "changeCount": 1
+      }
+    },
+    {
+      "operation": "portal",
+      "arguments": {},
+      "result": {
+        "phase": "connected",
+        "message": "",
+        "detail": "",
+        "keepAwakeRemainingMs": 30000,
+        "screenInstalled": true,
+        "width": 390,
+        "height": 844,
+        "foreground": true,
+        "usbEvents": [],
+        "phaseEvents": []
+      }
+    },
+    {
+      "operation": "touch",
+      "arguments": {
+        "points": [
+          [0.1, 0.2, 0],
+          [0.3, 0.4, 80]
+        ],
+        "end": 100
+      },
+      "result": {
+        "completed": true,
+        "timing": {
+          "guardMs": 0,
+          "confirmationMs": 0,
+          "playbackMs": 10
+        }
+      }
+    },
+    {
+      "operation": "text",
+      "arguments": {
+        "text": "café 👋 世界"
+      },
+      "result": null
+    },
+    {
+      "operation": "key",
+      "arguments": {
+        "key": "ArrowLeft",
+        "modifiers": ["shift"]
+      },
+      "result": null
+    },
+    {
+      "operation": "button",
+      "arguments": {
+        "name": "volumeUp"
+      },
+      "result": null
+    },
+    {
+      "operation": "launch",
+      "arguments": {
+        "bundleId": "com.example.fixture"
+      },
+      "result": null
+    },
+    {
+      "operation": "siri",
+      "arguments": {
+        "text": "Hello"
+      },
+      "result": null
+    },
+    {
+      "operation": "elements",
+      "arguments": {
+        "using": "class chain",
+        "value": "**/XCUIElementTypeButton[1]"
+      },
+      "result": [
+        {
+          "id": "element-1",
+          "attributes": {
+            "type": "XCUIElementTypeButton",
+            "name": "fixture",
+            "label": "Fixture",
+            "value": null,
+            "enabled": true,
+            "visible": true,
+            "selected": false,
+            "hittable": true,
+            "accessible": true,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 100,
+              "height": 50
+            },
+            "identifier": "fixture",
+            "x": 0,
+            "y": 0,
+            "width": 100,
+            "height": 50,
+            "index": 0
+          }
+        }
+      ]
+    },
+    {
+      "operation": "attribute",
+      "arguments": {
+        "id": "element-1",
+        "name": "enabled"
+      },
+      "result": true
+    },
+    {
+      "operation": "tapElement",
+      "arguments": {
+        "id": "element-1"
+      },
+      "result": null
+    },
+    {
+      "operation": "typeElement",
+      "arguments": {
+        "id": "element-1",
+        "text": "abc"
+      },
+      "result": null
+    },
+    {
+      "operation": "source",
+      "arguments": {
+        "format": "json"
+      },
+      "result": {
+        "type": "Application",
+        "label": null,
+        "value": null,
+        "name": null,
+        "rawIdentifier": null,
+        "frame": "{{0, 0}, {100, 50}}",
+        "nativeFrame": "{{0, 0}, {100, 50}}",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 100,
+          "height": 50
+        },
+        "isEnabled": "1",
+        "isVisible": "1",
+        "isAccessible": "0",
+        "isNativeAccessibilityElement": "0",
+        "isFocused": "0",
+        "traits": "",
+        "customActions": [],
+        "children": []
+      }
+    },
+    {
+      "operation": "screenshot",
+      "arguments": {
+        "id": "element-1"
+      },
+      "result": "iVBORw0KGgo="
+    },
+    {
+      "operation": "clipboardRead",
+      "arguments": {
+        "lease": "lease-1"
+      },
+      "result": {
+        "format": "text",
+        "content": "aGk="
+      }
+    },
+    {
+      "operation": "clipboardWrite",
+      "arguments": {
+        "lease": "lease-1",
+        "format": "text",
+        "content": "aGVsbG8="
+      },
+      "result": {
+        "format": "text",
+        "bytes": 2
+      }
+    },
+    {
+      "operation": "clipboardRestore",
+      "arguments": {
+        "lease": "lease-1"
+      },
+      "result": {
+        "cancelled": true
+      }
+    },
+    {
+      "operation": "clipboardCancel",
+      "arguments": {
+        "lease": "lease-1"
+      },
+      "result": {
+        "cancelled": true
+      }
+    },
+    {
+      "operation": "presence",
+      "arguments": {
+        "ready": true,
+        "keepAwakeMs": 1800000
+      },
+      "result": {
+        "phase": "connected",
+        "message": "",
+        "detail": "",
+        "keepAwakeRemainingMs": 30000,
+        "screenInstalled": true,
+        "width": 390,
+        "height": 844,
+        "foreground": true,
+        "usbEvents": [],
+        "phaseEvents": []
+      }
+    },
+    {
+      "operation": "quality",
+      "arguments": {
+        "preset": "balanced"
+      },
+      "result": null
+    },
+    {
+      "operation": "shutdown",
+      "arguments": {},
+      "result": null
+    },
+    {
+      "operation": "openURL",
+      "arguments": {
+        "url": "https://example.com/"
+      },
+      "result": null
+    }
+  ]
+}

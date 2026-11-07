@@ -4,8 +4,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
-import { createStatusEvents } from "../status-events.mjs";
-import { createUSBMonitor } from "../usb-events.mjs";
+import { createStatusEvents } from "../status-events.ts";
+import { createUSBMonitor } from "../usb-events.ts";
 const settle = () => new Promise((r) => setImmediate(r));
 const decode = (data) => JSON.parse(new TextDecoder().decode(data).slice(6));
 
@@ -38,7 +38,7 @@ test("status events coalesce probes, cancel obsolete readiness, and publish deta
 
 test("slow event readers retain a bounded latest snapshot and can cancel", async () => {
   let state = 0;
-  const hub = createStatusEvents({ read: async () => ({ state: ++state }) });
+  const hub = createStatusEvents({ read: async () => ({ lifecycle: "ready", state: ++state }) });
   try {
     await hub.refresh();
     const reader = hub.stream().getReader();

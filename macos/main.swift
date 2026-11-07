@@ -1,7 +1,7 @@
 // Native device windows for iPortal: no chrome, with a slim hover toolbar.
 // Each window owns a bundled server pinned to one iPhone or iPad. Video comes from direct USB capture
 // (Capture.swift), with a transparent WKWebView on top that turns clicks and keys into touches. If the capture
-// isn't available, the web view shows WebDriverAgent's MJPEG stream instead.
+// isn't available, the web view shows the helper's MJPEG stream instead.
 import Cocoa
 import WebKit
 import Carbon
@@ -916,11 +916,11 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard mirroringActive, message.webView === web, message.frameInfo.isMainFrame,
               MirrorWebOrigin.allows(message.frameInfo.request.url, port: port),
-              let d = message.body as? [String: Any] else { return }
+              let payload = MirrorPageMessage.decode(message.body) else { return }
         let priorBridge = videoGate.bridgeID
-        if let lifecycle = d["lifecycle"] as? String, let udid = d["deviceUdid"] as? String,
-           let epoch = d["videoEpoch"] as? Int, let bridgeID = d["bridgeId"] as? String,
-           let instance = d["serverInstance"] as? String, let revision = d["statusRevision"] as? Int {
+        if case .status(let status) = payload {
+            let lifecycle = status.lifecycle, udid = status.deviceUdid, epoch = status.videoEpoch
+            let bridgeID = status.bridgeId, instance = status.serverInstance, revision = status.statusRevision
             guard !retiredBridgeIDs.contains(bridgeID), serverInstance == nil || serverInstance == instance else { return }
             // An independently running server may be pinned to another phone.
             // Never show or enable input on it after a different row was chosen.
@@ -929,17 +929,25 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                 loadingBorderState.detail = "This device is unavailable"
                 return
             }
-            guard applyLifecycle(lifecycle, udid: udid, singleUsbDevice: d["singleUsbDevice"] as? Bool ?? false,
-                                 usbDevicePresent: d["usbDevicePresent"] as? Bool ?? false,
+            guard applyLifecycle(lifecycle, udid: udid, singleUsbDevice: status.singleUsbDevice,
+                                 usbDevicePresent: status.usbDevicePresent,
                                  epoch: epoch, bridgeID: bridgeID, instance: instance, statusRevision: revision,
-                                 connectionID: d["usbConnectionID"] as? String ?? "") else { return }
-            videoMode = d["videoMode"] as? String ?? "native"
-            if let orientation = d["deviceOrientation"] as? String { capture?.setOrientation(orientation) }
+                                 connectionID: status.usbConnectionID) else { return }
+            videoMode = status.videoMode
+            if let orientation = status.deviceOrientation { capture?.setOrientation(orientation) }
+            if let pixels = status.displayPixels {
+                capture?.setDisplayPixels(CGSize(width: pixels.width, height: pixels.height))
+            }
         }
-        guard d["bridgeId"] as? String == videoGate.bridgeID,
-              d["videoEpoch"] as? Int == videoGate.epoch else { return }
+        guard payload.bridgeID == videoGate.bridgeID,
+              payload.epoch == videoGate.epoch else { return }
         if priorBridge != videoGate.bridgeID { nativeCall("setNativeSettingsVisible", ready: settingsBlocksInput) }
-        if let waiting = d["waitingForVideo"] as? Bool { waitingForVideo = waiting }
+        if case .frame(let frame) = payload {
+            if videoMode == "stream" { setAspect(width: frame.w, height: frame.h) }
+            return
+        }
+        guard case .status(let status) = payload else { return }
+        waitingForVideo = status.waitingForVideo
         if !waitingForVideo, captureLoading == false, loadingBorderState.phase != "live", deviceLifecycle == "ready" {
             trace("input-ready")
         }
@@ -949,14 +957,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             usbRecovery.finish()
             loadingBorderState.snapshot = nil
         }
-        if let detail = d["loadingDetail"] as? String { loadingBorderState.detail = detail }
-        if let loading = d["loading"] as? Bool {
-            pageLoading = loading
-            updateLoadingBorder()
-        }
-        if videoMode == "stream", let w = d["w"] as? Double, let h = d["h"] as? Double {
-            setAspect(width: w, height: h)
-        }
+        loadingBorderState.detail = status.loadingDetail
+        pageLoading = status.loading
+        updateLoadingBorder()
     }
 
     // Settings is local UI: never let its clicks, scrolls or keyboard shortcuts

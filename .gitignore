@@ -9,3 +9,6 @@ __pycache__/
 
 # Optional native transport build products
 native/target/
+
+# Native helper contract tests
+ios/Helper/.build/

@@ -14,6 +14,7 @@ const special = {
   PageUp: "PageUp",
   PageDown: "PageDown",
 };
+/** @param {unknown} key */
 export const validKeyboardKey = (key) =>
   typeof key === "string" &&
   (Object.hasOwn(special, key) ||

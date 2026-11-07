@@ -1,11 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { readHelperBuild } from "./helper-build.mjs";
 import { deviceBuild } from "./runtime-paths.mjs";
 
+/** @param {string | undefined} udid */
 export function helperCommand(udid, buildDirectory = deviceBuild, resultParent = os.tmpdir()) {
   if (!udid || !/^[a-zA-Z0-9-]{8,64}$/.test(udid))
     throw new Error("A valid device identity is required");
+  readHelperBuild(buildDirectory, true);
   const products = path.join(buildDirectory, "Build/Products");
   const runs = fs
     .readdirSync(products)

@@ -1,0 +1,223 @@
+[
+  {
+    "name": "status",
+    "valid": true,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "displayPixels": {
+        "width": 1206,
+        "height": 2622
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  },
+  {
+    "name": "frame",
+    "valid": true,
+    "value": {
+      "w": 390,
+      "h": 844,
+      "videoEpoch": 1,
+      "bridgeId": "page-1"
+    }
+  },
+  {
+    "name": "loading",
+    "valid": false,
+    "value": {
+      "loading": "false",
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "displayPixels": {
+        "width": 1206,
+        "height": 2622
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  },
+  {
+    "name": "videoEpoch",
+    "valid": false,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "displayPixels": {
+        "width": 1206,
+        "height": 2622
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": -1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  },
+  {
+    "name": "lifecycle",
+    "valid": false,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "future",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "displayPixels": {
+        "width": 1206,
+        "height": 2622
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  },
+  {
+    "name": "displayPixels",
+    "valid": false,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "displayPixels": {
+        "width": 0,
+        "height": 844
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  },
+  {
+    "name": "deviceOrientation",
+    "valid": false,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "SIDEWAYS",
+      "displayPixels": {
+        "width": 1206,
+        "height": 2622
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  },
+  {
+    "name": "videoMode",
+    "valid": false,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "displayPixels": {
+        "width": 1206,
+        "height": 2622
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "unknown"
+    }
+  },
+  {
+    "name": "missing readiness",
+    "valid": false,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "displayPixels": {
+        "width": 1206,
+        "height": 2622
+      },
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  },
+  {
+    "name": "missing nullable field",
+    "valid": false,
+    "value": {
+      "loading": false,
+      "waitingForVideo": false,
+      "loadingDetail": "",
+      "lifecycle": "ready",
+      "deviceUdid": "synthetic-device",
+      "usbConnectionID": "1",
+      "singleUsbDevice": true,
+      "usbDevicePresent": true,
+      "deviceOrientation": "PORTRAIT",
+      "serverInstance": "server-1",
+      "videoEpoch": 1,
+      "statusRevision": 1,
+      "bridgeId": "page-1",
+      "videoMode": "native"
+    }
+  }
+]

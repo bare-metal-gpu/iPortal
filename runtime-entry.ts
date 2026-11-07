@@ -10,7 +10,7 @@ if (process.argv[2] === "--runtime-info") {
   const { createHelperAuthentication } = await import("./helper-auth.mjs");
   const { runOwnedCommand } = await import("./scripts/owned-process.mjs");
   // This developer-only entry point must share a credential with its server.
-  // The normal app provisions both ends automatically in maybeStartWda.
+  // The normal app provisions both ends automatically when starting the helper.
   if (!process.env.IPORTAL_HELPER_TOKEN)
     throw new Error("Set IPORTAL_HELPER_TOKEN in both the helper and server environments.");
   Object.assign(process.env, createHelperAuthentication().runnerEnvironment);

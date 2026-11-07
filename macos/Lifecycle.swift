@@ -381,3 +381,42 @@ struct CaptureRetryBudget {
 
     mutating func failed() { healthySince = nil }
 }
+
+// The page sends either a complete lifecycle snapshot or a complete frame size.
+// Reject malformed messages before changing identity, readiness or geometry.
+enum MirrorPageMessage {
+    struct Pixels: Decodable {
+        let width: Double, height: Double
+        var valid: Bool { width.isFinite && height.isFinite && width > 0 && height > 0 }
+    }
+    struct Status: Decodable {
+        let loading: Bool, waitingForVideo: Bool, loadingDetail: String, lifecycle: String
+        let deviceUdid: String, usbConnectionID: String, singleUsbDevice: Bool, usbDevicePresent: Bool
+        let deviceOrientation: String?, displayPixels: Pixels?
+        let serverInstance: String, videoEpoch: Int, statusRevision: Int, bridgeId: String, videoMode: String
+        var valid: Bool {
+            ["ready", "locked", "connecting", "disconnected"].contains(lifecycle)
+                && ["native", "stream"].contains(videoMode) && !serverInstance.isEmpty && !bridgeId.isEmpty
+                && videoEpoch >= 0 && statusRevision >= 0 && (displayPixels?.valid ?? true)
+                && (deviceOrientation == nil || ["PORTRAIT", "LANDSCAPE", "UIA_DEVICE_ORIENTATION_LANDSCAPERIGHT", "UIA_DEVICE_ORIENTATION_PORTRAIT_UPSIDEDOWN"].contains(deviceOrientation!))
+        }
+    }
+    struct Frame: Decodable {
+        let w: Double, h: Double, videoEpoch: Int, bridgeId: String
+        var valid: Bool { w.isFinite && h.isFinite && w > 0 && h > 0 && videoEpoch >= 0 && !bridgeId.isEmpty }
+    }
+    case status(Status), frame(Frame)
+    var bridgeID: String { switch self { case .status(let s): return s.bridgeId; case .frame(let f): return f.bridgeId } }
+    var epoch: Int { switch self { case .status(let s): return s.videoEpoch; case .frame(let f): return f.videoEpoch } }
+    static func decode(_ body: Any) -> MirrorPageMessage? {
+        guard let object = body as? [String: Any], JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        if object["lifecycle"] != nil {
+            guard object.keys.contains("deviceOrientation"), object.keys.contains("displayPixels") else { return nil }
+            guard let value = try? JSONDecoder().decode(Status.self, from: data), value.valid else { return nil }
+            return .status(value)
+        }
+        guard let value = try? JSONDecoder().decode(Frame.self, from: data), value.valid else { return nil }
+        return .frame(value)
+    }
+}

@@ -5,8 +5,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 const base = process.argv[2] ?? "http://127.0.0.1:7100";
 const output = process.argv[3];
+/** @type {string[]} */
 const checks = [];
-/** @returns {Promise<Record<string, any> & {status: number}>} */
+/** @param {string} name @param {object} [body] @returns {Promise<Record<string, any> & {status: number}>} */
 async function request(name, body = {}) {
   const r = await fetch(`${base}/api/${name}`, {
     method: "POST",
@@ -17,11 +18,13 @@ async function request(name, body = {}) {
   const json = /** @type {Record<string, any>} */ (await r.json());
   return { status: r.status, ...json };
 }
-async function post(name, body) {
+/** @param {string} name @param {object} [body] */
+async function post(name, body = {}) {
   const r = await request(name, body);
   assert.equal(r.ok, true, `${name}: ${r.error}`);
   return r.value;
 }
+/** @param {string} name */
 function pass(name) {
   checks.push(name);
   console.log(`✓ ${name}`);
@@ -57,6 +60,7 @@ await post("wait", {
 pass("selector-based state and attribute wait");
 const source = await post("source");
 let nodes = 0;
+/** @param {import("../helper-protocol.ts").SourceNode} n */
 function count(n) {
   nodes++;
   for (const child of n.children ?? []) count(child);

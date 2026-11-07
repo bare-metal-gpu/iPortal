@@ -20,4 +20,5 @@ PRODUCTS="$ROOT/vendor/iportal-device-build/Build/Products"
 if [ -d "$PRODUCTS" ]; then
   mkdir -p "$DEVICE/Build"
   ditto "$PRODUCTS" "$DEVICE/Build/Products"
+  cp "$ROOT/vendor/iportal-device-build/helper-manifest.json" "$DEVICE/helper-manifest.json"
 fi

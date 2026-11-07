@@ -3,12 +3,14 @@
 // a crash, so its test launcher cannot outlive it and interfere with a reopen.
 import { spawn } from "node:child_process";
 
+/** @param {string[]} command */
 export function runOwnedCommand(command, watchOwner = true) {
   const [executable, ...args] = command;
   if (!executable) throw new Error("Missing owned command");
   const child = spawn(executable, args, { stdio: ["ignore", "inherit", "inherit"] });
-  let stopping = false,
-    escalation;
+  let stopping = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let escalation;
   function stop() {
     if (stopping) return;
     stopping = true;

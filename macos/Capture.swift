@@ -1,6 +1,6 @@
 // Captures the USB-connected iPhone's screen and audio the way QuickTime does: once "screen capture devices"
 // are allowed, macOS exposes the iPhone as an AVCaptureDevice with a hardware-decoded 60 fps stream.
-// That's much smoother and lower-latency than WebDriverAgent's JPEG screenshots.
+// That's much smoother and lower-latency than the helper's JPEG screenshots.
 @preconcurrency import AVFoundation
 import CoreMediaIO
 import Cocoa
@@ -59,6 +59,85 @@ enum CaptureSessionExecutor {
 }
 // END TESTABLE CAPTURE EXECUTOR
 
+// BEGIN TESTABLE PRESENTATION POLICY
+// FrameStore keeps the newest sample until this gate permits taking it. Waiting
+// for renderer capacity must never consume the last update of an idle screen.
+struct CapturePresentationGate {
+    enum Action: Equatable { case present, wait(UInt64), flush(UInt64), fail, none }
+    private var waiting: UInt64?
+    private var readinessGeneration: UInt64 = 0
+    private var stopped = false
+    private var flushing: UInt64?
+    private var generation: UInt64 = 0
+    private var recoveries = 0
+
+    mutating func next(ready: Bool, requiresFlush: Bool, failed: Bool, hasFrame: Bool) -> Action {
+        guard !stopped, flushing == nil else { return .none }
+        if requiresFlush || failed {
+            waiting = nil
+            // Repeated decoder failure needs a fresh capture, not an unbounded
+            // flush loop. The owner already has bounded capture recovery.
+            guard recoveries < 2 else { stopped = true; return .fail }
+            recoveries += 1
+            generation &+= 1
+            flushing = generation
+            return .flush(generation)
+        }
+        guard hasFrame else { waiting = nil; return .none }
+        if ready { waiting = nil; return .present }
+        guard waiting == nil else { return .none }
+        readinessGeneration &+= 1
+        waiting = readinessGeneration
+        return .wait(readinessGeneration)
+    }
+
+    mutating func rendererCallback(_ token: UInt64) -> Bool {
+        guard !stopped, flushing == nil, waiting == token else { return false }
+        waiting = nil
+        return true
+    }
+
+    mutating func flushed(_ token: UInt64) -> Bool {
+        guard !stopped, flushing == token else { return false }
+        flushing = nil
+        return true
+    }
+
+    mutating func flushTimedOut(_ token: UInt64) -> Bool {
+        guard !stopped, flushing == token else { return false }
+        stop()
+        return true
+    }
+
+    mutating func stop() {
+        stopped = true; waiting = nil; flushing = nil; generation &+= 1
+    }
+}
+
+enum CapturePixelFormat {
+    // Advertised output support does not establish the source's color space.
+    // Native YUV is opt-in for confirmed eight-bit SDR; unknown/deep/HDR input
+    // retains the established BGRA path consistently with paired-media decode.
+    static func preferred(available: [OSType], source: OSType,
+                          bitsPerComponent: Int? = nil, transferFunction: String? = nil) -> OSType? {
+        let yuv = [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                   kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
+        let bgra = kCVPixelFormatType_32BGRA
+        if source == bgra, available.contains(bgra) { return bgra }
+        let depth = bitsPerComponent ?? ((yuv + [bgra]).contains(source) ? 8 : nil)
+        let sdr = transferFunction.map {
+            [kCVImageBufferTransferFunction_ITU_R_709_2 as String,
+             kCVImageBufferTransferFunction_sRGB as String].contains($0)
+        } ?? false
+        if depth == 8, sdr {
+            if yuv.contains(source), available.contains(source) { return source }
+            if let value = yuv.first(where: available.contains) { return value }
+        }
+        return available.contains(kCVPixelFormatType_32BGRA) ? kCVPixelFormatType_32BGRA : nil
+    }
+}
+// END TESTABLE PRESENTATION POLICY
+
 // Retain only the newest frame. Presentation and its geometry consume the same
 // sample; a busy main queue drops superseded frames instead of adding latency.
 // BEGIN TESTABLE FRAME STORE
@@ -97,6 +176,11 @@ final class FrameStore: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, 
         pending = false
         defer { latest = nil }
         return lifetime.isCancelled ? nil : latest
+    }
+
+    var hasPendingFrame: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !lifetime.isCancelled && latest != nil
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -174,10 +258,15 @@ final class PhoneCapture {
     private(set) var idleConfirmedAt: TimeInterval = 0
     private var presentedRTPTime: UInt32?
     private var presentedSize = CGSize.zero
-    private var presentedFrames = 0
+    private var enqueuedFrames = 0
+    private var presentation = CapturePresentationGate()
+    private var rendererRecoveryDeadline: DispatchWorkItem?
+    private var metricsPending = false
+    private var nextMetricsAt: TimeInterval = 0
     private var waitingForFreshFrame = false
     func snapshot() -> NSImage? { frames.snapshot() }
     func setOrientation(_ value: String) { nativeMedia?.setOrientation(value) }
+    func setDisplayPixels(_ value: CGSize) { nativeMedia?.setDisplayPixels(value) }
     func awaitFreshFrame() { waitingForFreshFrame = true }
     private var deviceUDID = ""
     private var allowSingleDeviceFallback = false
@@ -192,16 +281,62 @@ final class PhoneCapture {
         audio.volume = 0
         frames.observeFrames { [weak self] in
             DispatchQueue.main.async {
-                guard let self, !self.stopped, let frame = self.frames.takeFrame() else { return }
-                self.present(frame)
+                self?.drainPresentation()
             }
+        }
+        let renderer = layer.sampleBufferRenderer
+        observe(AVSampleBufferVideoRenderer.requiresFlushToResumeDecodingDidChangeNotification, object: renderer) { [weak self] in
+            self?.drainPresentation()
+        }
+        observe(AVSampleBufferVideoRenderer.didFailToDecodeNotification, object: renderer) { [weak self] in
+            self?.drainPresentation()
         }
     }
 
-    private func present(_ frame: CapturedFrame) {
+    private func drainPresentation() {
+        guard !stopped else { return }
         let renderer = layer.sampleBufferRenderer
-        guard renderer.status != .failed else { failed(); return }
-        guard renderer.isReadyForMoreMediaData, let sample = frame.immediateSample() else { return }
+        let action = presentation.next(ready: renderer.isReadyForMoreMediaData,
+            requiresFlush: renderer.requiresFlushToResumeDecoding, failed: renderer.status == .failed,
+            hasFrame: frames.hasPendingFrame)
+        switch action {
+        case .none: return
+        case .fail: renderer.stopRequestingMediaData(); failed(); return
+        case .flush(let token):
+            renderer.stopRequestingMediaData()
+            iportalTrace("capture-renderer-flush", ["generation": token])
+            let deadline = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.stopped, self.presentation.flushTimedOut(token) else { return }
+                    self.failed()
+                }
+            }
+            rendererRecoveryDeadline = deadline
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: deadline)
+            // Both capture paths deliver decoded pixel buffers, so recovery
+            // needs no remote keyframe. Keep the previous image visible while
+            // resetting local renderer state and retain pending fresh pixels.
+            renderer.flush(removingDisplayedImage: false) { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self, !self.stopped, self.presentation.flushed(token) else { return }
+                    self.rendererRecoveryDeadline?.cancel(); self.rendererRecoveryDeadline = nil
+                    self.drainPresentation()
+                }
+            }
+            return
+        case .wait(let token):
+            renderer.requestMediaDataWhenReady(on: .main) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.stopped, self.presentation.rendererCallback(token) else { return }
+                    self.layer.sampleBufferRenderer.stopRequestingMediaData()
+                    self.drainPresentation()
+                }
+            }
+            return
+        case .present:
+            renderer.stopRequestingMediaData()
+        }
+        guard let frame = frames.takeFrame(), let sample = frame.immediateSample() else { return }
         // Frame dimensions and pixels advance in one transaction. A separate
         // AVCaptureVideoPreviewLayer can apply the new format to its old image.
         CATransaction.begin()
@@ -212,15 +347,39 @@ final class PhoneCapture {
             onSize?(frame.size)
         }
         renderer.enqueue(sample)
-        presentedFrames += 1
-        if presentedFrames % 60 == 0 { iportalTrace("paired-presentation", ["frames":presentedFrames]) }
+        enqueuedFrames += 1
         CATransaction.commit()
+        recordRendererMetrics(frame: frame)
         lastFrameAt = frame.timestamp
         idleConfirmedAt = 0
         presentedRTPTime = usesPairedMedia ? UInt32(truncatingIfNeeded: CMSampleBufferGetPresentationTimeStamp(frame.sample).value) : nil
         if waitingForFreshFrame {
             waitingForFreshFrame = false
             onFrame?()
+        }
+    }
+
+    private func recordRendererMetrics(frame: CapturedFrame) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= nextMetricsAt, !metricsPending else { return }
+        nextMetricsAt = now + 2
+        iportalTrace("capture-enqueue", ["enqueuedFrames": enqueuedFrames,
+            "queueAgeMs": max(0, now - frame.timestamp) * 1000,
+            "pixelFormat": CVPixelBufferGetPixelFormatType(CMSampleBufferGetImageBuffer(frame.sample)!)])
+        guard #available(macOS 14.4, *) else { return }
+        metricsPending = true
+        layer.sampleBufferRenderer.loadVideoPerformanceMetrics { [weak self] metrics in
+            DispatchQueue.main.async {
+                guard let self, !self.stopped else { return }
+                self.metricsPending = false
+                guard let metrics else { return }
+                // These are renderer-reported cumulative counters, not an
+                // end-to-end interaction measurement or an enqueue receipt.
+                iportalTrace("capture-renderer-metrics", ["totalFrames": metrics.totalNumberOfFrames,
+                    "droppedFrames": metrics.numberOfDroppedFrames,
+                    "corruptedFrames": metrics.numberOfCorruptedFrames,
+                    "accumulatedFrameDelayMs": metrics.totalAccumulatedFrameDelay * 1000])
+            }
         }
     }
 
@@ -234,7 +393,10 @@ final class PhoneCapture {
         allowSingleDeviceFallback = singleUsbDevice
         if paired, NativeMediaReceiver.available {
             startupTimeoutAt = ProcessInfo.processInfo.systemUptime + timeout
-            let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames, capabilities: { [weak self] capabilities in
+            let attributes: [String: Any]
+            if #available(macOS 26.0, *) { attributes = layer.sampleBufferRenderer.__recommendedPixelBufferAttributes }
+            else { attributes = [:] }
+            let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames, pixelBufferAttributes: attributes, capabilities: { [weak self] capabilities in
                 DispatchQueue.main.async { guard let self, !self.stopped else { return }; self.onMediaCapabilities?(capabilities) }
             }, unchanged: { [weak self] time in
                 DispatchQueue.main.async {
@@ -303,9 +465,12 @@ final class PhoneCapture {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        presentation.stop()
+        rendererRecoveryDeadline?.cancel(); rendererRecoveryDeadline = nil
         lifetime.cancel()
         nativeMedia?.stop()
         nativeMedia = nil
+        layer.sampleBufferRenderer.stopRequestingMediaData()
         layer.sampleBufferRenderer.flush()
         discoveryRetry?.cancel()
         completion = nil
@@ -389,10 +554,26 @@ final class PhoneCapture {
             session.beginConfiguration()
             session.addInput(input)
             video.alwaysDiscardsLateVideoFrames = true
-            video.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
             guard session.canAddOutput(video) else { session.commitConfiguration(); return false }
             video.setSampleBufferDelegate(frames, queue: frameQueue)
             session.addOutput(video)
+            // The available formats depend on the connected input's active
+            // format, so negotiate after adding the output to this session.
+            let description = device.activeFormat.formatDescription
+            let source = CMFormatDescriptionGetMediaSubType(description)
+            let depth = (CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_BitsPerComponent) as? NSNumber)?.intValue
+            let transfer = CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+            if let pixelFormat = CapturePixelFormat.preferred(available: video.availableVideoPixelFormatTypes,
+                source: source, bitsPerComponent: depth, transferFunction: transfer) {
+                video.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat]
+                iportalTrace("capture-pixel-format", ["source": source, "output": pixelFormat,
+                    "sourceBits": depth ?? 0, "sourceTransfer": transfer ?? "unknown"])
+            } else {
+                // nil requests the supported uncompressed default. An empty
+                // dictionary requests native samples, which may be compressed
+                // and cannot enter FrameStore's decoded-image contract.
+                video.videoSettings = nil
+            }
             if withAudio, session.canAddOutput(audio) { session.addOutput(audio) }
             session.commitConfiguration()
             session.startRunning() // blocks until the stream is up

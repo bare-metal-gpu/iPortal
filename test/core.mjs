@@ -6,12 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import crypto from "node:crypto";
+import { Database } from "bun:sqlite";
 import { Effect } from "effect";
-import { createScheduler, commandContext } from "../scheduler.mjs";
-import { createCommands } from "../commands.mjs";
-import { decodeRequest } from "../schemas.mjs";
+import { createScheduler, commandContext } from "../scheduler.ts";
+import { createCommands } from "../commands.ts";
+import { decodeRequest } from "../schemas.ts";
 import { checkRequest } from "../server.mjs";
-import { pinchActions } from "../pinch.mjs";
+import { pinchPaths } from "../pinch.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function trackedClasses() {
@@ -633,7 +634,7 @@ test("MJPEG parsing handles split headers/frames and rejects unbounded or malfor
         [7, 8],
         [9, 10],
       ],
-      "WDA's extra CRLF must survive split reads and multiple parts in one read",
+      "the helper's extra CRLF must survive split reads and multiple parts in one read",
     );
   }
   assert.throws(
@@ -774,7 +775,7 @@ test("Effect schemas reject malformed actions before device dispatch", async () 
   for (const [
     name,
     body,
-  ] of /** @type {[keyof typeof import("../schemas.mjs").RequestSchemas, unknown][]} */ ([
+  ] of /** @type {[keyof typeof import("../schemas.ts").RequestSchemas, unknown][]} */ ([
     ["type", {}],
     ["type", { text: 123 }],
     ["quality", { level: "constructor" }],
@@ -815,7 +816,7 @@ test("Effect schemas reject malformed actions before device dispatch", async () 
     await assert.rejects(
       Effect.runPromise(
         decodeRequest(
-          /** @type {keyof typeof import("../schemas.mjs").RequestSchemas} */ (name),
+          /** @type {keyof typeof import("../schemas.ts").RequestSchemas} */ (name),
           body,
         ),
       ),
@@ -859,45 +860,32 @@ test("Effect schemas reject malformed actions before device dispatch", async () 
   );
 });
 
-test("pinch paths are simultaneous, preserve scale and stay on screen in portrait and landscape", () => {
-  for (const [width, height] of [
-    [390, 844],
-    [844, 390],
-  ]) {
-    for (const scale of [0.25, 0.5, 1.5, 2, 4])
-      for (const x of [0, 0.5, 1])
-        for (const y of [0, 0.5, 1]) {
-          const fingers = pinchActions({ x, y, scale, durationMs: 333 }, { width, height });
-          assert.equal(new Set(fingers.map((f) => f.id)).size, 2);
-          const [left, right] = fingers.map((f) => f.actions);
-          assert.deepEqual(
-            left.map((a) => [a.type, a.duration]),
-            right.map((a) => [a.type, a.duration]),
-          );
-          assert.equal(
-            left.reduce((total, a) => total + (a.duration ?? 0), 0),
-            373,
-          );
-          for (const finger of fingers)
-            for (const point of finger.actions.filter((a) => a.type === "pointerMove")) {
-              assert.ok("x" in point && "y" in point);
-              assert.ok(point.x >= 0 && point.x < width && point.y >= 0 && point.y < height);
-            }
-          const startLeft = left[0],
-            startRight = right[0],
-            endLeft = left.at(-2),
-            endRight = right.at(-2);
-          assert(startLeft && startRight && endLeft && endRight);
-          assert("x" in startLeft && "x" in startRight && "x" in endLeft && "x" in endRight);
-          const startDistance = startRight.x - startLeft.x;
-          const endDistance = endRight.x - endLeft.x;
-          assert.ok(Math.abs(endDistance / startDistance - scale) < 0.06);
-          assert.ok(
-            Math.abs(startRight.x + startLeft.x - (endRight.x + endLeft.x)) <= 1,
-            "zoom must not also pan",
-          );
-        }
-  }
+test("pinch paths are simultaneous, preserve scale and stay in normalized bounds", () => {
+  for (const scale of [0.25, 0.5, 1.5, 2, 4])
+    for (const x of [0, 0.5, 1])
+      for (const y of [0, 0.5, 1]) {
+        const {
+          fingers: [left, right],
+          end,
+        } = pinchPaths({ x, y, scale, durationMs: 333 });
+        assert.equal(end, 373);
+        assert.deepEqual(
+          left.map((p) => p[2]),
+          right.map((p) => p[2]),
+        );
+        for (const points of [left, right])
+          for (const [px, py] of points) assert.ok(px >= 0 && px <= 1 && py >= 0 && py <= 1);
+        const startDistance = right[0][0] - left[0][0];
+        const endRight = right.at(-1),
+          endLeft = left.at(-1);
+        assert(endRight && endLeft);
+        const endDistance = endRight[0] - endLeft[0];
+        assert.ok(Math.abs(endDistance / startDistance - scale) < 0.00001);
+        assert.ok(
+          Math.abs(right[0][0] + left[0][0] - endRight[0] - endLeft[0]) < 0.00001,
+          "zoom must not pan",
+        );
+      }
 });
 
 test("native pinch adds deltas once, cancels stale tails and cannot also scroll", async () => {
@@ -1295,6 +1283,8 @@ test("maintenance gets its own deadline after the originating input is cancelled
     () =>
       scheduler.maintenance(() => {
         const context = commandContext.getStore();
+        assert.ok(context?.signal);
+        assert.ok(typeof context.deadline === "number");
         context.signal.throwIfAborted();
         assert.ok(context.deadline > performance.now());
         assert.equal(context.onDispatch, undefined);
@@ -1311,6 +1301,7 @@ test("receipts deduplicate concurrent/retried commands, survive restart and reje
     const ledger = createCommands({ file });
     let calls = 0;
     const input = { name: "type", body: { text: "private input" } };
+    /** @param {(state:string)=>void} mark @returns {Promise<import("../commands.ts").CommandResponse>} */
     const run = async (mark) => {
       calls++;
       mark("running");
@@ -1325,15 +1316,17 @@ test("receipts deduplicate concurrent/retried commands, survive restart and reje
     await assert.rejects(restored.execute("one", { different: true }, run), {
       code: "request conflict",
     });
-    assert.equal(fs.readFileSync(file, "utf8").includes("private input"), false);
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    data[0].state = "running";
-    delete data[0].response;
-    fs.writeFileSync(file, JSON.stringify(data));
+    assert.equal(fs.readFileSync(ledger.databasePath, "utf8").includes("private input"), false);
+    assert.equal(fs.statSync(ledger.databasePath).mode & 0o777, 0o600);
+    ledger.close();
+    restored.close();
+    const database = new Database(ledger.databasePath);
+    database.exec("UPDATE receipts SET state='running', response=NULL");
+    database.close();
     const afterCrash = createCommands({ file });
     assert.equal((await afterCrash.execute("one", input, run)).body.code, "outcome unknown");
     assert.equal(calls, 1);
+    afterCrash.close();
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

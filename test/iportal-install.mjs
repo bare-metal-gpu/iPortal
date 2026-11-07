@@ -6,44 +6,6 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 const root = path.resolve(import.meta.dirname, "..");
 
-test("status installer is repeatable and rejects incompatible upstream sources", () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-install-"));
-  try {
-    const commands = path.join(temp, "WebDriverAgentLib/Commands/FBTouchActionCommands.m");
-    const embed = path.join(temp, "Scripts/embed-runner-icon.sh");
-    fs.mkdirSync(path.dirname(commands), { recursive: true });
-    fs.mkdirSync(path.dirname(embed));
-    fs.writeFileSync(commands, "@implementation FBTouchActionCommands\n@end\n");
-    fs.writeFileSync(embed, 'echo "embedded icon into $RUNNER_APP"\n');
-    const install = () =>
-      execFileSync(
-        process.execPath,
-        [path.join(root, "scripts/install-iportal-status.mjs"), temp],
-        {
-          stdio: "pipe",
-        },
-      );
-    install();
-    const first = [fs.readFileSync(commands, "utf8"), fs.readFileSync(embed, "utf8")];
-    install();
-    assert.deepEqual([fs.readFileSync(commands, "utf8"), fs.readFileSync(embed, "utf8")], first);
-    assert.ok(fs.existsSync(path.join(temp, "iPortalUI/iPortalUI.m")));
-    // Upgrade an already-installed status screen without adding duplicate hooks.
-    fs.writeFileSync(commands, first[0].replaceAll("FBIPortalStatus", "FBPortalStatus"));
-    fs.writeFileSync(
-      embed,
-      first[1].replaceAll("# iPortal", "# iPhone Portal").replaceAll("/iPortalUI/", "/PortalUI/"),
-    );
-    install();
-    assert.deepEqual([fs.readFileSync(commands, "utf8"), fs.readFileSync(embed, "utf8")], first);
-    fs.writeFileSync(embed, "incompatible upstream");
-    assert.throws(install);
-    assert.equal(fs.readFileSync(embed, "utf8"), "incompatible upstream");
-  } finally {
-    fs.rmSync(temp, { recursive: true, force: true });
-  }
-});
-
 test.skipIf(process.platform !== "darwin")(
   "failed native build restores the complete original host bundle",
   () => {
@@ -69,7 +31,7 @@ test.skipIf(process.platform !== "darwin")(
       );
       assert.throws(() =>
         execFileSync("bash", [path.join(source, "embed.sh"), runner], {
-          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+          env: { ...process.env, IPORTAL_UI_PRODUCTS: source, PATH: `${bin}:${process.env.PATH}` },
           stdio: "pipe",
         }),
       );

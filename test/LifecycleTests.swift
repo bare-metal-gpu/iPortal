@@ -3,6 +3,11 @@ import Foundation
 @main
 struct LifecycleTests {
     static func main() {
+        let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/native-bridge.json")
+        let fixtures = try! JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as! [[String: Any]]
+        for fixture in fixtures {
+            assert((MirrorPageMessage.decode(fixture["value"]!) != nil) == (fixture["valid"] as! Bool), "Bridge fixture: \(fixture["name"]!)")
+        }
         for address in ["http://localhost:7100/", "http://127.0.0.1:7100/?app=1&video=native"] {
             assert(MirrorWebOrigin.allows(URL(string: address), port: 7100))
         }

@@ -8,29 +8,16 @@ import { startFakeIphone, SOCKET } from "./fake-iphone.mjs";
 
 const fake = startFakeIphone({ guardedTouch: true });
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-guarded-"));
-const server = spawn(
-  serverCommand[0],
-  [
-    ...serverCommand.slice(1),
-    "--port",
-    "7199",
-    "--wda-port",
-    "18200",
-    "--mjpeg-port",
-    "19200",
-    "--no-open",
-  ],
-  {
-    cwd: scratch,
-    env: {
-      ...runtimeEnvironment(scratch),
-      IPORTAL_HELPER_TOKEN: fake.helperToken,
-      USBMUXD_SOCKET_ADDRESS: SOCKET,
-      IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
-    },
-    stdio: "inherit",
+const server = spawn(serverCommand[0], [...serverCommand.slice(1), "--port", "7199", "--no-open"], {
+  cwd: scratch,
+  env: {
+    ...runtimeEnvironment(scratch),
+    IPORTAL_HELPER_TOKEN: fake.helperToken,
+    USBMUXD_SOCKET_ADDRESS: SOCKET,
+    IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
   },
-);
+  stdio: "inherit",
+});
 const base = "http://127.0.0.1:7199";
 /** @returns {Promise<Record<string, any> & {status: number}>} */
 const post = async (name, body = {}) => {
@@ -57,12 +44,25 @@ try {
     expectedOrientation: "PORTRAIT",
   };
   assert.equal((await post("gesture", body)).ok, true);
-  const first = fake.log.filter((l) => !l.monitor && l.path?.startsWith("/wda/"));
+  const first = fake.log.filter((l) => !l.monitor && l.operation && l.operation !== "status");
   assert.deepEqual(
-    first.map((l) => l.path),
-    ["/wda/mirror/capabilities", "/wda/mirror/touch"],
+    first.map((l) => l.operation),
+    ["touch"],
   );
-  assert.equal(first[1].body.expectedBundleId, fake.ui.app);
+  assert.equal(first[0].body.expectedBundleId, fake.ui.app);
+  for (const { name, args } of [
+    { name: "type", args: { text: "synthetic" } },
+    { name: "key", args: { key: "ArrowLeft" } },
+  ]) {
+    const rejected = await post(name, { ...args, expectedApp: "wrong" });
+    assert.equal(rejected.status, 409);
+    assert.equal(rejected.outcome, "not executed");
+    assert.equal(
+      fake.log.findLast((entry) => entry.operation === (name === "type" ? "text" : "key")).body
+        .expectedBundleId,
+      "wrong",
+    );
+  }
   assert.equal((await post("gesture", { ...body, expectedApp: "wrong" })).status, 409);
   fake.ui.locked = true;
   assert.equal((await post("gesture", body)).status, 409);
@@ -75,22 +75,20 @@ try {
   assert.equal((await post("pinch", pinchBody)).timing.native.confirmationMs, 50);
   const pinchCalls = fake.log.slice(beforePinch).filter((l) => !l.monitor);
   assert.deepEqual(
-    pinchCalls.map((l) => l.path),
-    ["/wda/mirror/touch"],
+    pinchCalls.map((l) => l.operation),
+    ["touch"],
     "two fingers share one guarded on-device dispatch",
   );
   assert.equal(pinchCalls[0].body.fingers.length, 2);
   assert.equal(pinchCalls[0].body.expectedBundleId, fake.ui.app);
   assert.equal((await post("pinch", { ...pinchBody, expectedApp: "wrong" })).status, 409);
 
-  // Replacing a capable helper with an old helper must never bypass host guards.
+  // An unavailable operation fails explicitly; it must never dispatch a fallback.
   fake.ui.removeTouch = true;
-  assert.equal((await post("pinch", { ...pinchBody, expectedApp: "wrong" })).status, 409);
-  assert.equal(fake.log.filter((l) => l.path?.endsWith("/actions")).length, 0);
-  assert.equal((await post("gesture", { ...body, expectedApp: "wrong" })).status, 409);
-  assert.equal(fake.log.filter((l) => l.path?.endsWith("/actions")).length, 0);
-  assert.equal((await post("gesture", body)).ok, true);
-  assert.equal(fake.log.filter((l) => l.path?.endsWith("/actions")).length, 1);
+  const touchCount = fake.log.filter((l) => l.operation === "touch").length;
+  assert.equal((await post("gesture", body)).code, "unsupported operation");
+  assert.equal(fake.log.filter((l) => l.operation === "touch").length, touchCount + 1);
+  fake.ui.removeTouch = false;
 
   // Input can interrupt a multi-sample observation, which must then report instability.
   fake.ui.delayMs = 60;
@@ -101,11 +99,11 @@ try {
   const observation = await observing;
   await input;
   assert.equal(observation.value.stable, false);
-  const trace = fake.log.slice(from).map((l) => l.path?.replace(/^\/session\/[^/]+/, ""));
-  const home = trace.indexOf("/wda/homescreen");
-  const snapshots = trace.flatMap((p, i) => (p?.startsWith("/source?") ? [i] : []));
+  const trace = fake.log.slice(from).map((l) => l.operation);
+  const home = trace.indexOf("home");
+  const snapshots = trace.flatMap((p, i) => (p === "source" ? [i] : []));
   assert.ok(snapshots[0] < home && home < snapshots[1], JSON.stringify(trace));
-  console.log("✓ guarded touch, fallback checks and interruptible observation passed");
+  console.log("✓ guarded touch, no-replay checks and interruptible observation passed");
 } finally {
   server.kill("SIGTERM");
   await new Promise((resolve) => server.once("exit", resolve));

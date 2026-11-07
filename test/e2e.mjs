@@ -13,7 +13,7 @@ const fake = startFakeIphone();
 const PORT = 7199;
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mirror-e2e-"));
 // A complete USB session must work with the old raw TCP ports unavailable.
-// Neither browsers nor another OS user should reach WDA through those ports.
+// Neither browsers nor another OS user should reach helper through those ports.
 const rawPortBlockers = [18200, 19200].map(() => net.createServer((socket) => socket.destroy()));
 await Promise.all(
   rawPortBlockers.map(
@@ -26,16 +26,7 @@ await Promise.all(
 );
 const server = spawn(
   serverCommand[0],
-  [
-    ...serverCommand.slice(1),
-    "--port",
-    String(PORT),
-    "--wda-port",
-    "18200",
-    "--mjpeg-port",
-    "19200",
-    "--no-open",
-  ],
+  [...serverCommand.slice(1), "--port", String(PORT), "--no-open"],
   {
     cwd: scratch,
     env: {
@@ -110,18 +101,18 @@ try {
     ok: true,
   });
   assert.ok(performance.now() - healthStarted < 500, "health must not wait for device I/O");
-  assert.equal(fake.log.length, deviceCallsBeforeHealth, "health performs no WDA calls");
+  assert.equal(fake.log.length, deviceCallsBeforeHealth, "health performs no helper calls");
   assert.equal(
     (await fetch(`${base}/api/health`, { headers: { origin: "https://foreign.example" } })).status,
     403,
   );
   fake.ui.delayMs = 0;
   assert.equal((await slowStatus).lifecycle, "ready");
-  fake.ui.error = "unknown error";
+  fake.ui.locked = null;
   const failedLock = await readJSON(await fetch(`${base}/api/status`));
   assert.equal(failedLock.locked, null);
   assert.equal(failedLock.lifecycle, "connecting", "a failed lock read is not unlocked");
-  fake.ui.error = null;
+  fake.ui.locked = false;
 
   const res = await fetch(`${base}/stream`);
   assert.match(res.headers.get("content-type") ?? "", /multipart\/x-mixed-replace/);
@@ -140,9 +131,9 @@ try {
   await rawReader.cancel();
 
   assert.equal((await post("gesture", { points: [[0.5, 0.5, 0]], end: 80 })).ok, true);
-  const tap = fake.log.findLast((l) => l.path === "/session/S1/actions").body.actions[0].actions;
-  assert.deepEqual(tap[0], { type: "pointerMove", duration: 0, x: 195, y: 422 });
-  assert.equal(tap.find((a) => a.type === "pause").duration, 80);
+  const tap = fake.log.findLast((l) => l.operation === "touch").body;
+  assert.deepEqual(tap.points, [[0.5, 0.5, 0]]);
+  assert.equal(tap.end, 80);
 
   await post("gesture", {
     points: [
@@ -151,9 +142,8 @@ try {
     ],
     end: 120,
   });
-  const swipe = fake.log.findLast((l) => l.path === "/session/S1/actions").body.actions[0].actions;
-  assert.equal(swipe[2].duration, 120);
-  assert.equal(swipe[2].y, Math.round(0.2 * 843));
+  const swipe = fake.log.findLast((l) => l.operation === "touch").body;
+  assert.deepEqual(swipe.points[1], [0.5, 0.2, 120]);
 
   const pinchBody = {
     x: 0.5,
@@ -163,14 +153,14 @@ try {
     expectedApp: fake.ui.app,
     requestId: "pinch-once",
   };
-  const actionCount = () => fake.log.filter((l) => l.path?.endsWith("/actions")).length;
+  const actionCount = () => fake.log.filter((l) => l.operation === "touch" && l.executed).length;
   const beforePinch = actionCount();
   const pinchReply = await post("pinch", pinchBody);
   assert.equal(pinchReply.outcome, "executed");
-  const pinch = fake.log.findLast((l) => l.path?.endsWith("/actions")).body.actions;
+  const pinch = fake.log.findLast((l) => l.operation === "touch").body.fingers;
   assert.equal(pinch.length, 2);
-  assert.ok(pinch[0].actions.at(-2).x < pinch[0].actions[0].x);
-  assert.ok(pinch[1].actions.at(-2).x > pinch[1].actions[0].x);
+  assert.ok(pinch[0].at(-1)[0] < pinch[0][0][0]);
+  assert.ok(pinch[1].at(-1)[0] > pinch[1][0][0]);
   assert.equal((await post("pinch", pinchBody)).requestId, pinchReply.requestId);
   assert.equal(actionCount(), beforePinch + 1, "receipt recovery must not replay a pinch");
   assert.equal((await post("pinch", { x: 0.5, y: 0.5, scale: 1 })).ok, true);
@@ -194,34 +184,34 @@ try {
   );
 
   await post("type", { text: "hi\n" });
-  assert.deepEqual(fake.log.findLast((l) => l.path === "/wda/mirror/text").body, { text: "hi\n" });
+  assert.deepEqual(fake.log.findLast((l) => l.operation === "text").body, { text: "hi\n" });
   assert.equal((await post("key", { key: "ArrowLeft", modifiers: ["shift"] })).ok, true);
-  assert.deepEqual(fake.log.findLast((l) => l.path === "/wda/mirror/key").body, {
+  assert.deepEqual(fake.log.findLast((l) => l.operation === "key").body, {
     key: "ArrowLeft",
     modifiers: ["shift"],
   });
-  const beforeKey = fake.log.filter((l) => l.path === "/wda/mirror/key").length;
+  const beforeKey = fake.log.filter((l) => l.operation === "key").length;
   fake.ui.locked = true;
   assert.equal((await post("key", { key: "Backspace" })).code, "device locked");
   fake.ui.locked = false;
   assert.equal((await post("key", { key: "a", expectedApp: "wrong.app" })).code, "app changed");
-  assert.equal(fake.log.filter((l) => l.path === "/wda/mirror/key").length, beforeKey);
+  assert.equal(
+    fake.log.filter((l) => l.operation === "key").length,
+    beforeKey + 2,
+    "guards are checked on the phone at dispatch",
+  );
 
   await post("home");
-  assert.ok(fake.log.some((l) => l.path === "/wda/homescreen"));
+  assert.ok(fake.log.some((l) => l.operation === "home"));
 
   await post("launch", { bundleId: "com.apple.Preferences" });
   assert.equal(
-    fake.log.findLast((l) => l.path.endsWith("/apps/launch")).body.bundleId,
+    fake.log.findLast((l) => l.operation === "launch").body.bundleId,
     "com.apple.Preferences",
   );
 
   assert.equal((await post("keep-awake", { enabled: true, durationMs: 30000 })).value.pulses, 1);
-  assert.deepEqual(fake.log.findLast((l) => l.path?.endsWith("/performIoHidEvent")).body, {
-    page: 12,
-    usage: 688,
-    duration: 0.01,
-  });
+  assert.deepEqual(fake.log.findLast((l) => l.operation === "keepAlive").body, {});
   assert.equal((await readJSON(await fetch(`${base}/api/keep-awake`))).value.enabled, true);
   assert.equal(
     (await post("keep-awake", { enabled: true, durationMs: -1 })).code,
@@ -229,7 +219,7 @@ try {
   );
   await post("lock");
   const lockedStatus = await readJSON(await fetch(`${base}/api/status`));
-  assert.equal(lockedStatus.ok, true, "reachable WDA does not imply unlocked");
+  assert.equal(lockedStatus.ok, true, "reachable helper does not imply unlocked");
   assert.equal(lockedStatus.locked, true);
   assert.equal(lockedStatus.lifecycle, "locked");
   assert.equal((await post("keep-awake")).value.reason, "lock requested");
@@ -250,7 +240,7 @@ try {
   const absent = { using: "accessibility id", value: "Missing" };
   assert.deepEqual((await post("state")).value, {
     locked: false,
-    app: { bundleId: "com.apple.Preferences", pid: 123 },
+    app: { bundleId: "com.apple.Preferences", pid: 123, name: "Fixture" },
     orientation: "PORTRAIT",
     screen: { width: 390, height: 844 },
   });
@@ -268,7 +258,7 @@ try {
   assert.equal((await post("element", { id: "stale-id" })).code, "stale element reference");
   assert.equal((await post("source")).value.children[0].name, "Continue");
   assert.equal((await post("source", { format: "xml" })).value, "<Application/>");
-  assert.ok(fake.log.some((l) => l.body?.settings?.snapshotMaxDepth === 50));
+  assert.ok(fake.log.some((l) => l.operation === "elements"));
   for (const body of [{}, { id: state.id }, { selector }]) {
     const shot = (await post("screenshot", body)).value;
     assert.equal(shot.mimeType, "image/jpeg");
@@ -337,10 +327,10 @@ try {
   assert.equal(
     (await post("wait", { selector: absent, condition: "absent" })).code,
     "unknown error",
-    "WDA failure is not proof of absence",
+    "helper failure is not proof of absence",
   );
   fake.ui.error = null;
-  fake.ui.expireSession = true;
+  fake.ui.restartBoot = true;
   assert.equal((await post("elements", { selector })).value[0].id, "button-1");
   fake.ui.elements.push({ ...fake.ui.elements[0], id: "duplicate" });
   assert.equal((await post("element", { selector })).code, "ambiguous element");
@@ -383,6 +373,13 @@ try {
   assert.equal((await request("constructor", {})).status, 404);
 
   // Real HTTP regression checks: no browser-origin bypass, malformed mutations or replay.
+  const openRequest = { url: "https://example.com/", requestId: "open-url-once" };
+  const beforeOpen = fake.log.filter((entry) => entry.operation === "openURL").length;
+  assert.equal((await post("open-url", openRequest)).ok, true);
+  assert.equal((await post("open-url", openRequest)).ok, true);
+  assert.equal(fake.log.filter((entry) => entry.operation === "openURL").length, beforeOpen + 1);
+  assert.equal((await request("open-url", { url: "javascript:alert(1)" })).status, 400);
+  assert.equal(fake.log.filter((entry) => entry.operation === "openURL").length, beforeOpen + 1);
   const foreign = await fetch(`${base}/api/home`, {
     method: "POST",
     headers: { origin: "https://untrusted.example", "content-type": "text/plain" },
@@ -416,13 +413,13 @@ try {
   ])
     assert.equal((await request(name, body)).status, 400);
   const replayId = "e2e-replay";
-  const beforeReplay = fake.log.filter((x) => x.path === "/wda/homescreen").length;
+  const beforeReplay = fake.log.filter((x) => x.operation === "home").length;
   const [firstReply, secondReply] = await Promise.all([
     post("home", { requestId: replayId }),
     post("home", { requestId: replayId }),
   ]);
   assert.deepEqual(firstReply, secondReply);
-  assert.equal(fake.log.filter((x) => x.path === "/wda/homescreen").length, beforeReplay + 1);
+  assert.equal(fake.log.filter((x) => x.operation === "home").length, beforeReplay + 1);
   assert.equal(
     (await readJSON(await fetch(`${base}/api/commands/${replayId}`))).value.state,
     "executed",
@@ -464,7 +461,7 @@ try {
   const blocking = post("state");
   await new Promise((r) => setTimeout(r, 30));
   const cancelInput = new AbortController();
-  const beforeCancel = fake.log.filter((x) => x.path === "/wda/homescreen").length;
+  const beforeCancel = fake.log.filter((x) => x.operation === "home").length;
   const cancelledInput = fetch(`${base}/api/home`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -477,7 +474,7 @@ try {
   await blocking;
   await new Promise((r) => setTimeout(r, 100));
   fake.ui.delayMs = 0;
-  assert.equal(fake.log.filter((x) => x.path === "/wda/homescreen").length, beforeCancel);
+  assert.equal(fake.log.filter((x) => x.operation === "home").length, beforeCancel);
   const receipt = (await readJSON(await fetch(`${base}/api/commands/cancelled-input`))).value;
   assert.equal(receipt.response.body.outcome, "not executed");
 
@@ -530,7 +527,7 @@ try {
     assert.equal((await response.text()).includes(fake.helperToken), false);
     assert.equal(JSON.stringify([...response.headers]).includes(fake.helperToken), false);
   }
-  const beforeRejected = fake.log.filter((x) => x.path === "/wda/homescreen").length;
+  const beforeRejected = fake.log.filter((x) => x.operation === "home").length;
   fake.ui.helperToken = "b".repeat(64);
   const wrongCredential = await post("home", { requestId: "wrong-helper-credential" });
   assert.equal(wrongCredential.ok, false);
@@ -542,14 +539,25 @@ try {
   fake.ui.authMarker = false;
   const legacy = await post("home", { requestId: "legacy-helper" });
   assert.equal(legacy.ok, false);
-  assert.equal(fake.log.filter((x) => x.path === "/wda/homescreen").length, beforeRejected);
+  assert.equal(
+    legacy.outcome,
+    "unknown",
+    "a response losing authentication after cached readiness cannot prove nonexecution",
+  );
+  assert.equal(fake.log.filter((x) => x.operation === "home").length, beforeRejected + 1);
+  await post("home", { requestId: "legacy-helper" });
+  assert.equal(
+    fake.log.filter((x) => x.operation === "home").length,
+    beforeRejected + 1,
+    "uncertain authenticated dispatch is never replayed",
+  );
   const legacyVideo = await fetch(`${base}/stream`);
   assert.equal(legacyVideo.status, 503);
   await legacyVideo.body?.cancel();
   fake.ui.authMarker = true;
   assert.equal((await readJSON(await fetch(`${base}/api/status`))).lifecycle, "ready");
   assert.equal((await post("home", { requestId: "authenticated-recovery" })).ok, true);
-  assert.equal(fake.log.filter((x) => x.path === "/wda/homescreen").length, beforeRejected + 1);
+  assert.equal(fake.log.filter((x) => x.operation === "home").length, beforeRejected + 2);
 
   console.log("✓ all e2e checks passed");
 } catch (e) {

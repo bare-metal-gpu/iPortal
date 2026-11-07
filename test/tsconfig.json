@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false
+  },
+  "include": ["../*.d.ts", "**/*.ts", "**/*.mjs"],
+  "exclude": []
+}

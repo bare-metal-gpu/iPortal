@@ -1,18 +1,20 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { Effect } from "effect";
-import { decodeRequest } from "../schemas.mjs";
+import { decodeRequest } from "../schemas.ts";
 import { createIPortalStatus } from "../iportal-status.mjs";
 
-function harness(wda) {
+function harness(command) {
   let time = 0,
     next,
     awake = { enabled: false };
   const calls = [];
   const portal = createIPortalStatus({
-    wda: async (...args) => {
-      calls.push(args);
-      return wda?.(...args);
+    helper: {
+      command: async (...args) => {
+        calls.push(args);
+        return command?.(...args);
+      },
     },
     keepAwake: () => awake,
     now: () => time,
@@ -43,16 +45,16 @@ test("viewer readiness expires and cannot be sustained by an idle server", async
   const h = harness();
   h.portal.receive({ clientId: "a", ready: false });
   await h.flush();
-  assert.equal(h.calls[0][2].ready, false);
+  assert.equal(h.calls[0][1].ready, false);
   h.awake({ enabled: true, remainingMs: 12345 });
   h.portal.receive({ clientId: "a", ready: true });
   await h.advance(2000);
-  assert.deepEqual(h.calls.at(-1)[2], { ready: true, keepAwakeMs: 12345 });
+  assert.deepEqual(h.calls.at(-1)[1], { ready: true, keepAwakeMs: 12345 });
   await h.advance(4000);
   assert.equal(h.calls.length, 2, "no heartbeat after the viewer expires");
   h.portal.receive({ clientId: "b", ready: false });
   await h.advance(2000);
-  assert.equal(h.calls.at(-1)[2].ready, false);
+  assert.equal(h.calls.at(-1)[1].ready, false);
   h.portal.stop();
   await h.advance(2000);
   assert.equal(h.calls.length, 3);
@@ -63,11 +65,11 @@ test("one ready viewer is sufficient; stale viewers are removed", async () => {
   await h.flush();
   h.portal.receive({ clientId: "loading", ready: false });
   await h.advance(2000);
-  assert.equal(h.calls.at(-1)[2].ready, true);
+  assert.equal(h.calls.at(-1)[1].ready, true);
   await h.advance(3000);
   h.portal.receive({ clientId: "loading", ready: false });
   await h.advance(2000);
-  assert.equal(h.calls.at(-1)[2].ready, false);
+  assert.equal(h.calls.at(-1)[1].ready, false);
   h.portal.stop();
 });
 test("slow upstream does not overlap requests or delay receiving presence", async () => {
@@ -131,12 +133,12 @@ test("readiness transitions publish immediately and changes during a send are co
   finish();
   await h.flush();
   assert.equal(h.calls.length, 2, "changed readiness is sent before the heartbeat");
-  assert.equal(h.calls[1][2].ready, true);
+  assert.equal(h.calls[1][1].ready, true);
   finish();
   await h.flush();
   h.portal.receive({ clientId: "a", ready: false });
   assert.equal(h.calls.length, 3, "disconnect cancels the scheduled heartbeat");
-  assert.equal(h.calls[2][2].ready, false);
+  assert.equal(h.calls[2][1].ready, false);
   h.portal.stop();
   finish();
   await h.flush();

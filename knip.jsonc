@@ -3,10 +3,22 @@
   "entry": [
     // Spawned with a computed path by iportal.mjs.
     "scripts/owned-process.mjs!",
-    // Invoked by apply-wda-branding.sh during the native helper build.
-    "scripts/install-iportal-status.mjs",
     // Inlined by web-assets.mjs; entry points are called by WKWebView.
     "public/iportal.js!",
+    // Compiled by scripts/build-server.ts for the packaged application.
+    "runtime-entry.ts!",
+    // Invoked by the native build/embedding scripts.
+    "ios/configure-host.ts",
+    "ios/link-host.ts",
+    "scripts/helper-build-id.ts",
+    // Explicit opt-in physical-device and performance checks.
+    "scripts/test-phone.mjs",
+    "scripts/test-helper-auth-phone.mjs",
+    // Spawned by test-helper-simulator.ts, also usable against the phone fixture.
+    "scripts/test-helper-fixture.ts",
+    "scripts/benchmark-helper.ts",
+    "scripts/test-apple-bridge.ts",
+    "scripts/test-peer-transport.ts",
   ],
-  "project": ["*.mjs!", "scripts/*.mjs", "test/*.mjs", "public/*.js!"],
+  "project": ["*.{mjs,ts}!", "scripts/*.{mjs,ts}", "test/*.{mjs,ts}", "ios/*.ts", "public/*.js!"],
 }

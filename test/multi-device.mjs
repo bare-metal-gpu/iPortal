@@ -14,20 +14,18 @@ const phoneID = "00008140-0000000000000001",
   padID = "00008140-0000000000000002";
 const phone = startFakeIphone({
   frameTag: "phone-frame",
-  wdaPort: 18310,
-  mjpegPort: 19310,
+  helperPort: 18310,
   socketPath,
 });
 const pad = startFakeIphone({
   frameTag: "ipad-frame",
-  wdaPort: 18311,
-  mjpegPort: 19311,
+  helperPort: 18311,
   socketPath: path.join(scratch, "unused.sock"),
 });
 const phoneDevice = { id: 7, udid: phoneID, connection: "USB" };
 const padDevice = { id: 8, udid: padID, connection: "USB" };
 phone.ui.devices = [phoneDevice, padDevice];
-phone.ui.targets[8] = { 8100: 18311, 9100: 19311 };
+phone.ui.targets[8] = { 8100: 18311 };
 pad.ui.size = { width: 1024, height: 1366 };
 pad.ui.app = "com.apple.mobilesafari";
 const children = [];
@@ -50,10 +48,6 @@ async function start(udid, kind) {
       kind,
       "--port",
       String(/** @type {import("node:net").AddressInfo} */ (blocker.address()).port),
-      "--wda-port",
-      "0",
-      "--mjpeg-port",
-      "0",
     ],
     {
       cwd: scratch,
@@ -159,10 +153,9 @@ try {
   const command = { points: [[0.5, 0.5, 0]], end: 50, requestId: "same-receipt-on-two-devices" };
   assert.equal((await post(a, "gesture", command)).outcome, "executed");
   assert.equal((await post(b, "gesture", command)).outcome, "executed");
-  const lastMove = (device) =>
-    device.log.findLast((x) => x.path?.endsWith("/actions")).body.actions[0].actions[0];
-  assert.equal(lastMove(phone).x, 195);
-  assert.equal(lastMove(pad).x, 512, "iPad input uses its own dimensions");
+  const lastMove = (device) => device.log.findLast((x) => x.operation === "touch").body.points[0];
+  assert.equal(lastMove(phone)[0], 0.5);
+  assert.equal(lastMove(pad)[0], 0.5, "each helper receives normalized device-local coordinates");
   const streams = await Promise.all(
     [a, b].map((server) => fetch(`${server.base}/stream`, { signal: AbortSignal.timeout(5000) })),
   );

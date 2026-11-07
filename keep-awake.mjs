@@ -1,4 +1,4 @@
-import { apiError } from "./errors.mjs";
+import { apiError, errorInfo } from "./errors.mjs";
 
 // A bounded lease, not an unlock loop. All device operations share the input queue.
 /** @typedef {{method: string, deadline: number, pulses: number, lastPulseAt: string | null,
@@ -7,13 +7,12 @@ import { apiError } from "./errors.mjs";
 /** @typedef {{enabled: boolean, method?: string, pulses?: number, remainingMs?: number,
  * lastPulseAt?: string | null, backend?: string, lastPulseMs?: number, reason?: string, error?: string}} AwakeStatus */
 /**
- * @param {{wda: Function, withSession: Function, enqueue: Function, intervalMs?: number,
+ * @param {{helper: {command: (operation:'keepAlive'|'button', args: {name?:'volumeUp'|'volumeDown'},options:{timeout:number})=>Promise<unknown>,status:(signal?:AbortSignal,timeout?:number)=>Promise<{locked:boolean|null}>}, enqueue: ReturnType<typeof import('./scheduler.ts').createScheduler>['enqueue'], intervalMs?: number,
  * now?: () => number, later?: (fn: () => void | Promise<void>, ms: number) => NodeJS.Timeout | number,
  * cancel?: (timer: NodeJS.Timeout | number | undefined) => void}} options
  */
 export function createKeepAwake({
-  wda,
-  withSession,
+  helper,
   enqueue,
   intervalMs = 15000,
   now = () => performance.now(),
@@ -22,7 +21,6 @@ export function createKeepAwake({
 }) {
   /** @type {Lease | null} */
   let lease = null;
-  let fastKeepAlive = true;
   /** @type {AwakeStatus} */
   let last = { enabled: false, reason: "not started" };
   /** @returns {AwakeStatus} */
@@ -38,6 +36,7 @@ export function createKeepAwake({
           lastPulseMs: lease.lastPulseMs,
         }
       : { ...last };
+  /** @param {string} [reason] @param {string} [error] */
   function stop(reason = "disabled", error) {
     if (lease) {
       cancel(lease.tick);
@@ -53,6 +52,7 @@ export function createKeepAwake({
     }
     return status();
   }
+  /** @param {Lease} item */
   function current(item) {
     if (lease !== item) return false;
     if (now() >= item.deadline) {
@@ -61,57 +61,31 @@ export function createKeepAwake({
     }
     return true;
   }
+  /** @param {Lease} item */
   async function pulse(item, scheduled = false) {
     return enqueue(async () => {
       if (!current(item)) return;
       // Successful foreground input already provides activity. Drop an obsolete
       // queued maintenance pulse, without extending the lease's absolute expiry.
-      if (scheduled && now() - item.lastActivityAt < intervalMs) return;
-      const locked = (await wda("GET", "/wda/locked", null, 5000)).value;
+      if (scheduled && now() - (item.lastActivityAt ?? -Infinity) < intervalMs) return;
+      const locked = (await helper.status(undefined, 5000)).locked;
       if (typeof locked !== "boolean")
-        throw apiError("Invalid lock state from WDA", 502, "invalid response");
+        throw apiError("Invalid lock state from helper", 502, "invalid response");
       if (!current(item)) return;
       if (locked) {
         stop("locked");
         throw apiError("Unlock your iPhone before enabling keep-awake", 409, "device locked");
       }
       const pulseStarted = now();
-      let fastCompleted = false;
-      if (item.method === "hid" && fastKeepAlive) {
-        try {
-          const response = await wda("POST", "/wda/mirror/keepalive", {}, 5000);
-          if (response.value?.completed !== true)
-            throw apiError("Invalid keep-alive acknowledgment", 502, "invalid response");
-          item.backend = "hid-event-stream";
-          fastCompleted = true;
-        } catch (e) {
-          if (!["unknown command", "unsupported operation"].includes(e.code)) throw e;
-          fastKeepAlive = false;
-        }
+      if (item.method === "hid") {
+        await helper.command("keepAlive", {}, { timeout: 5000 });
+        item.backend = "hid-event-stream";
+      } else {
+        await helper.command("button", { name: "volumeUp" }, { timeout: 5000 });
+        // Complete the explicit pair even if its lease expires during the first press.
+        await helper.command("button", { name: "volumeDown" }, { timeout: 5000 });
+        item.backend = "volume";
       }
-      if (!fastCompleted)
-        await withSession(
-          async (sid) => {
-            if (!current(item)) return;
-            const base = `/session/${sid}/wda`;
-            if (item.method === "hid") {
-              // Consumer page, AC Idle Keep Alive. Acceptance alone does not prove iOS honors it.
-              await wda(
-                "POST",
-                `${base}/performIoHidEvent`,
-                { page: 0x0c, usage: 0x02b0, duration: 0.01 },
-                10000,
-              );
-              item.backend = "legacy-hid";
-            } else {
-              await wda("POST", `${base}/pressButton`, { name: "volumeUp" }, 5000);
-              // Finish the pair even if the lease expires while the first press is in flight.
-              await wda("POST", `${base}/pressButton`, { name: "volumeDown" }, 5000);
-              item.backend = "volume";
-            }
-          },
-          { deadline: Math.min(item.deadline, now() + 10000) },
-        );
       if (current(item)) {
         item.pulses++;
         item.lastPulseAt = new Date().toISOString();
@@ -120,6 +94,7 @@ export function createKeepAwake({
       }
     });
   }
+  /** @param {Lease} item */
   function schedule(item) {
     if (!current(item)) return;
     cancel(item.tick);
@@ -129,12 +104,12 @@ export function createKeepAwake({
           await pulse(item, true);
           schedule(item);
         } catch (e) {
-          if (lease === item) stop("upstream error", e.message);
+          if (lease === item) stop("upstream error", errorInfo(e).message);
         }
       },
-      Math.max(1, item.nextPulseAt - now()),
+      Math.max(1, (item.nextPulseAt ?? now()) - now()),
     );
-    item.tick?.unref?.();
+    if (typeof item.tick === "object") item.tick.unref();
   }
   function activity() {
     if (!lease || !current(lease)) return;
@@ -142,6 +117,7 @@ export function createKeepAwake({
     lease.nextPulseAt = now() + intervalMs;
     schedule(lease);
   }
+  /** @param {import('./schemas.ts').RequestBody<'keep-awake'>} [body] */
   async function configure(body = {}) {
     const keys = Object.keys(body);
     if (!keys.length) return status();
@@ -169,7 +145,7 @@ export function createKeepAwake({
       await pulse(item);
       schedule(item);
     } catch (e) {
-      if (lease === item) stop("upstream error", e.message);
+      if (lease === item) stop("upstream error", errorInfo(e).message);
       throw e;
     }
     return status();

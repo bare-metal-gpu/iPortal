@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
+/** @param {string} udid @param {string} connection */
 async function readStartupLock(udid, connection) {
   const seconds = connection === "Paired" ? 12 : 5;
   const directory = await mkdtemp(join(tmpdir(), "iportal-lock-"));
@@ -43,8 +44,11 @@ export function createStartupLock({ read = readStartupLock, changed = () => {} }
   let generation = 0,
     pending = false,
     queried = false;
+  /** @typedef {{udid:string, id:number|string, connection?:string} | null} Device */
+  /** @param {Device} device */
   const identity = (device) => (device ? `${device.udid}:${device.id}` : null);
   return {
+    /** @param {Device} device */
     observe(device) {
       const next = identity(device);
       if (next !== key) {
@@ -58,7 +62,7 @@ export function createStartupLock({ read = readStartupLock, changed = () => {} }
       queried = pending = true;
       const request = generation;
       Promise.resolve()
-        .then(() => read(device.udid, device.connection))
+        .then(() => read(device.udid, device.connection ?? "Unknown"))
         .then((result) => {
           if (generation !== request) return;
           value = typeof result === "boolean" ? result : null;
@@ -69,6 +73,7 @@ export function createStartupLock({ read = readStartupLock, changed = () => {} }
           if (generation === request) pending = false;
         });
     },
+    /** @param {Device} device */
     value(device) {
       return identity(device) === key ? value : null;
     },
