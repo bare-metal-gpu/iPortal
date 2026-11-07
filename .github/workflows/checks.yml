@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   verify:
+    if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
     runs-on: macos-15
     timeout-minutes: 25
     steps:
@@ -31,16 +32,29 @@ jobs:
           bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
       - run: bun audit
-      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
-        run: bun run verify
+      - run: bun run verify
+      # Protocol parsing tests need no paired device or private Apple framework.
+      - run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
+      - run: cargo +1.95.0 fmt --manifest-path native/Cargo.toml --check
+      - run: cargo +1.95.0 test --manifest-path native/Cargo.toml --locked
+      - run: cargo +1.95.0 clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
+
+  simulator:
+    # The pinned iOS dependencies need Swift 6.4. Keep verify on macos-15
+    # separately so new SDK-only references in the Mac code remain detectable.
+    runs-on: xcode-27
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.4"
+      - name: Report the selected Apple toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+      - run: bun install --frozen-lockfile
       # Build the owned iOS 17+ runner and exercise real XCTest against our fixture.
       - run: bun run test:simulator
-      # Protocol parsing tests need no paired device or private Apple framework.
-      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
-        run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
-      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
-        run: cargo +1.95.0 fmt --manifest-path native/Cargo.toml --check
-      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
-        run: cargo +1.95.0 test --manifest-path native/Cargo.toml --locked
-      - if: github.event_name != 'workflow_dispatch' || !inputs.simulator_only
-        run: cargo +1.95.0 clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
