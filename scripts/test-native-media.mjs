@@ -113,13 +113,8 @@ ${audioCompatibilityTests}
 // recoverable start API must return an error, not terminate the process.
 let stoppedEngine = AVAudioEngine(), stoppedPlayer = AVAudioPlayerNode()
 stoppedEngine.attach(stoppedPlayer)
-if #available(macOS 27.0, *) {
-  try stoppedEngine.connectNode(stoppedPlayer, to: stoppedEngine.mainMixerNode,
-                               format: AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!)
-} else {
-  stoppedEngine.connect(stoppedPlayer, to: stoppedEngine.mainMixerNode,
-                        format: AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!)
-}
+try connectNativeAudioNodes(stoppedEngine, stoppedPlayer, to: stoppedEngine.mainMixerNode,
+                            format: AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!)
 var rejectedStoppedOutput = false
 do { try startNativeAudioPlayer(stoppedPlayer) } catch { rejectedStoppedOutput = true }
 precondition(rejectedStoppedOutput, "Stopped output must fail without aborting")

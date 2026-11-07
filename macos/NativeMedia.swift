@@ -461,6 +461,30 @@ func startNativeAudioPlayer(_ player: AVAudioPlayerNode) throws {
     guard player.engine?.isRunning == true else { throw CocoaError(.featureUnsupported) }
     player.play()
 }
+
+func nativeAudioConnectUsingErrorAPI(_ receiver: NSObject, source: AVAudioNode,
+                                    destination: AVAudioNode, format: AVAudioFormat?) throws -> Bool {
+    let selector = NSSelectorFromString("connect:to:format:error:")
+    guard receiver.responds(to: selector) else { return false }
+    guard let implementation = receiver.method(for: selector) else {
+        throw CocoaError(.featureUnsupported)
+    }
+    typealias Connect = @convention(c) (AnyObject, Selector, AVAudioNode, AVAudioNode,
+                                      AVAudioFormat?, AutoreleasingUnsafeMutablePointer<NSError?>?) -> ObjCBool
+    let connect = unsafeBitCast(implementation, to: Connect.self)
+    var error: NSError?
+    guard connect(receiver, selector, source, destination, format, &error).boolValue else {
+        throw error ?? NSError(domain: "iPortal.Audio", code: 2,
+                               userInfo: [NSLocalizedDescriptionKey: "Audio nodes could not connect"])
+    }
+    return true
+}
+
+func connectNativeAudioNodes(_ engine: AVAudioEngine, _ source: AVAudioNode,
+                             to destination: AVAudioNode, format: AVAudioFormat?) throws {
+    if try nativeAudioConnectUsingErrorAPI(engine, source: source, destination: destination, format: format) { return }
+    engine.connect(source, to: destination, format: format)
+}
 // END TESTABLE AUDIO START
 
 // Remote system audio needs no access to the Mac microphone. The existing mute
@@ -513,15 +537,8 @@ private final class NativeMediaAudio: @unchecked Sendable {
     private var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
     private func connectGraph() throws {
         graphConnected = false
-        if #available(macOS 27.0, *) {
-            // Like playAudio(), the new connection methods report an NSError
-            // instead of raising an Objective-C exception during device changes.
-            try engine.connectNode(player, to: rateUnit, format: output)
-            try engine.connectNode(rateUnit, to: engine.mainMixerNode, format: output)
-        } else {
-            engine.connect(player, to: rateUnit, format: output)
-            engine.connect(rateUnit, to: engine.mainMixerNode, format: output)
-        }
+        try connectNativeAudioNodes(engine, player, to: rateUnit, format: output)
+        try connectNativeAudioNodes(engine, rateUnit, to: engine.mainMixerNode, format: output)
         graphConnected = true
     }
     func setVolume(_ volume: Float) { lock.lock(); self.volume = volume; lock.unlock() }
