@@ -29,7 +29,9 @@ const run = async (args: string[], label: string) => {
   if (code !== 0) {
     // Hosted runners discard this private temporary directory after the job.
     // Surface bounded diagnostics while keeping the ephemeral helper token out.
-    const tail = await Bun.file(path.join(logs, `${label}.log`)).slice(-64 * 1024).text();
+    const tail = await Bun.file(path.join(logs, `${label}.log`))
+      .slice(-64 * 1024)
+      .text();
     console.error(tail.replaceAll(token, "[redacted]").split("\n").slice(-100).join("\n"));
   }
   assert.equal(code, 0, `${label} failed; see ${logs}`);
