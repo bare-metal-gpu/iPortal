@@ -1487,6 +1487,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var usbMonitor: PhoneUSBMonitor?
     var didLaunch = false
     var pendingRequests: [IPortalWatcherRequest] = []
+    var pendingStarts = PendingMirrorStarts()
+    var pendingStartDeadline: DispatchWorkItem?
     var wakeObserver: NSObjectProtocol?
     var sleepObserver: NSObjectProtocol?
     var allSessions: [MirrorSession] { sessions.values + (pending.map { [$0] } ?? []) }
@@ -1511,6 +1513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         buildMenu()
         usbMonitor = PhoneUSBMonitor(metadataChanged: { [weak self] in
             self?.allSessions.forEach { $0.updateTransportIndicator(); $0.captureInventoryChanged() }
+            self?.resumePendingStarts()
         }, isActive: { [weak self] serial in
             guard let session = self?.sessions.session(for: serial), let capture = session.capture else { return false }
             return ProcessInfo.processInfo.systemUptime - max(capture.lastFrameAt, capture.idleConfirmedAt) < 3
@@ -1524,6 +1527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.sessions.session(for: serial)?.usbChanged(serial, attached: attached)
             self.allSessions.forEach { $0.captureInventoryChanged() }
+            self.resumePendingStarts()
         }
         didLaunch = true
         let requests = pendingRequests
@@ -1533,14 +1537,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if !requests.isEmpty { requests.forEach(handleWatcherRequest) }
         else if ProcessInfo.processInfo.arguments.contains("--watcher-request") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
+                self?.terminateIfIdle()
             }
         } else {
             if login || ProcessInfo.processInfo.arguments.contains("--background") {
                 // Replacing the watcher waits for its previous process to exit.
                 // Keep this headless owner alive until registration completes.
                 IPortalWatcherService.prepare { [weak self] in
-                    if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
+                    self?.terminateIfIdle()
                 }
             } else { IPortalWatcherService.prepare(); startMirroring() }
         }
@@ -1557,12 +1561,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let preferred = UserDefaults.standard.string(forKey: "MirrorDeviceUDID") ?? ""
         let device: IPortalUSBDevice?
         if let serial {
-            if let existing = sessions.session(for: serial) { existing.startMirroring(); return }
-            // Wait for the previous server to relinquish its device lease.
-            guard !retiring.contains(where: { $0.requestedDeviceUDID.map(deviceKey) == deviceKey(serial) }) else { return }
+            if let existing = sessions.session(for: serial) {
+                pendingStarts.cancel(serial)
+                schedulePendingStartDeadline()
+                existing.startMirroring()
+                return
+            }
             // A stale Play event must not start mirroring a different device.
             device = devices.first { deviceKey($0.serial) == deviceKey(serial) }
-            guard device != nil else { return }
+            guard device != nil,
+                  !retiring.contains(where: { $0.requestedDeviceUDID.map(deviceKey) == deviceKey(serial) }) else {
+                pendingStarts.request(serial, at: ProcessInfo.processInfo.systemUptime)
+                schedulePendingStartDeadline()
+                return
+            }
+            pendingStarts.cancel(serial)
+            schedulePendingStartDeadline()
         } else { device = devices.first { deviceKey($0.serial) == deviceKey(preferred) } ?? devices.first }
         let session = pending ?? MirrorSession(owner: self)
         if let device {
@@ -1575,15 +1589,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             _ = window.cascadeTopLeft(from: NSPoint(x: window.frame.minX + 28 * CGFloat(allSessions.count - 1), y: window.frame.maxY - 28 * CGFloat(allSessions.count - 1)))
         }
     }
+    private func resumePendingStarts() {
+        guard !pendingStarts.isEmpty else { return }
+        let ready = pendingStarts.takeReady(available: devices.map(\.serial),
+            retiring: retiring.compactMap(\.requestedDeviceUDID), at: ProcessInfo.processInfo.systemUptime)
+        ready.forEach { startMirroring(serial: $0) }
+        schedulePendingStartDeadline()
+        terminateIfIdle()
+    }
+    private func schedulePendingStartDeadline() {
+        pendingStartDeadline?.cancel()
+        pendingStartDeadline = nil
+        guard let deadline = pendingStarts.nextDeadline else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.resumePendingStarts()
+            self?.terminateIfIdle()
+        }
+        pendingStartDeadline = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, deadline - ProcessInfo.processInfo.systemUptime), execute: work)
+    }
+    private func terminateIfIdle() {
+        guard allSessions.isEmpty, retiring.isEmpty, pendingStarts.isEmpty else { return }
+        NSApp.terminate(nil)
+    }
     func closed(_ session: MirrorSession) {
-        if let target = session.requestedDeviceUDID { sessions.remove(session, for: target) }
+        if let target = session.requestedDeviceUDID {
+            sessions.remove(session, for: target)
+            pendingStarts.cancel(target)
+            schedulePendingStartDeadline()
+        }
         if pending === session { pending = nil }
         if session.server?.isRunning == true { retiring.append(session) }
         publishSessions()
     }
     func serverStopped(_ session: MirrorSession) {
         retiring.removeAll { $0 === session }
+        resumePendingStarts()
         publishSessions()
+        terminateIfIdle()
     }
 
     func publishSessions() {
@@ -1596,7 +1639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         IPortalWatcher.publishSessions(states)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { startMirroring(); return true }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { pendingStarts.isEmpty }
     func application(_ application: NSApplication, open urls: [URL]) {
         for request in urls.compactMap(IPortalWatcherRequest.init(url:)) {
             if didLaunch { handleWatcherRequest(request) } else { pendingRequests.append(request) }
@@ -1609,14 +1652,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             // An old button event must never close a replacement window.
             if let session = sessions.session(for: serial), session.sessionID == token { session.closeWindow() }
             publishSessions()
-            if allSessions.isEmpty { NSApp.terminate(nil) }
+            terminateIfIdle()
         case .login(let enabled):
             IPortalWatcherService.setLoginEnabled(enabled) { [weak self] in
-                if self?.allSessions.isEmpty == true { NSApp.terminate(nil) }
+                self?.terminateIfIdle()
             }
         }
     }
     func applicationWillTerminate(_ notification: Notification) {
+        pendingStartDeadline?.cancel()
+        pendingStartDeadline = nil
+        pendingStarts = PendingMirrorStarts()
         let closing = allSessions + retiring
         for session in closing { session.terminating = true; session.stopMirroring() }
         publishSessions()
