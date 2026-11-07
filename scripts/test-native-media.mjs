@@ -9,6 +9,10 @@ const pipelineTests = await readFile(
   new URL("../test/NativeMediaPipelineTests.swift", import.meta.url),
   "utf8",
 );
+const audioCompatibilityTests = await readFile(
+  new URL("../test/NativeAudioCompatibilityTests.swift", import.meta.url),
+  "utf8",
+);
 const directory = await mkdtemp(path.join(tmpdir(), "iportal-media-test-"));
 try {
   const file = path.join(directory, "input.swift");
@@ -104,6 +108,7 @@ NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object:
 Thread.sleep(forTimeInterval: 0.03)
 precondition(testEvents.count("paired-audio-output-changed") == changesAfterStop, "Stopped audio cannot restart on a late hardware event")
 print("Native audio: configuration changes recover off the notification callback and late events respect shutdown.")
+${audioCompatibilityTests}
 // Reproduce the invalid output state without sleeping the test host. The
 // recoverable start API must return an error, not terminate the process.
 let stoppedEngine = AVAudioEngine(), stoppedPlayer = AVAudioPlayerNode()
