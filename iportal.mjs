@@ -792,9 +792,9 @@ async function dispatch(rawName, rawBody, signal) {
     );
     return { status: 200, body: { ok: true, value, meta: { instanceId } } };
   }
-  const deadline =
-    performance.now() +
-    (("timeoutMs" in body ? body.timeoutMs : undefined) ?? (name === "wait" ? 10000 : 15000));
+  const timeoutMs =
+    ("timeoutMs" in body ? body.timeoutMs : undefined) ?? (name === "wait" ? 10000 : 15000);
+  const deadline = performance.now() + timeoutMs;
   if (
     name === "state" ||
     name === "elements" ||
@@ -804,24 +804,27 @@ async function dispatch(rawName, rawBody, signal) {
     name === "observe" ||
     name === "wait"
   ) {
-    const value = await commandContext.run({ signal, deadline }, () => {
-      switch (name) {
-        case "state":
-          return inspection.state(body, signal);
-        case "elements":
-          return inspection.elements(body, signal);
-        case "element":
-          return inspection.element(body, signal);
-        case "source":
-          return inspection.source(body, signal);
-        case "screenshot":
-          return inspection.screenshot(body, signal);
-        case "observe":
-          return inspection.observe(body, signal);
-        case "wait":
-          return inspection.wait(body, signal);
-      }
-    });
+    const value = await commandContext.run(
+      { signal, deadline, operationTimeoutMs: timeoutMs },
+      () => {
+        switch (name) {
+          case "state":
+            return inspection.state(body, signal);
+          case "elements":
+            return inspection.elements(body, signal);
+          case "element":
+            return inspection.element(body, signal);
+          case "source":
+            return inspection.source(body, signal);
+          case "screenshot":
+            return inspection.screenshot(body, signal);
+          case "observe":
+            return inspection.observe(body, signal);
+          case "wait":
+            return inspection.wait(body, signal);
+        }
+      },
+    );
     return {
       status: 200,
       body: { ok: true, value, meta: { instanceId, observedAt: new Date().toISOString() } },
@@ -855,7 +858,9 @@ async function dispatch(rawName, rawBody, signal) {
             nativeCompleted++;
           },
           priority: 5,
-          operationTimeoutMs: Math.max(8000, (("end" in body ? body.end : undefined) ?? 0) + 2000),
+          operationTimeoutMs:
+            ("timeoutMs" in body ? body.timeoutMs : undefined) ??
+            Math.max(8000, (("end" in body ? body.end : undefined) ?? 0) + 2000),
         },
         async () => {
           await enqueue(async () => {

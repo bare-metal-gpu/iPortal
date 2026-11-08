@@ -273,7 +273,7 @@ export function createHelperClient({
       const deadline = Math.min(
         options.deadline ?? Infinity,
         context?.deadline ?? Infinity,
-        performance.now() + (options.timeout ?? 8000),
+        performance.now() + (options.timeout ?? context?.operationTimeoutMs ?? 8000),
       );
       const state = await ready(signal);
       const budgetMs = Math.min(60000, Math.ceil(deadline - performance.now()));

@@ -2,19 +2,29 @@
 // physical device. Never run against the user's foreground application.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { ActionSchemas } from "../schemas.ts";
 
 const url = process.env.IPORTAL_API_URL ?? "http://127.0.0.1:7100";
 const bundleId = process.argv[2];
 assert(bundleId?.endsWith(".iportal.mobile.fixture"), "Pass the installed fixture bundle ID");
+// Hosted Simulator snapshots can take several seconds, even after a mutation
+// has finished. Functional assertions need time for two stable observations;
+// the explicit short-deadline check below still exercises a 200 ms timeout.
+const observationTimeoutMs = process.env.IPORTAL_SIMULATOR === "1" ? 30000 : 5000;
 async function api(name: string, body: object = {}, expected: number | readonly number[] = 200) {
-  const args = ["tap", "type", "key", "gesture"].includes(name)
-    ? { expectedApp: bundleId, ...body }
-    : body;
+  const args = {
+    ...(name === "wait" ? { timeoutMs: observationTimeoutMs } : {}),
+    ...(process.env.IPORTAL_SIMULATOR === "1" && Object.hasOwn(ActionSchemas, name)
+      ? { timeoutMs: 30000 }
+      : {}),
+    ...(["tap", "type", "key", "gesture"].includes(name) ? { expectedApp: bundleId } : {}),
+    ...body,
+  };
   const response = await fetch(`${url}/api/${name}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(args),
-    signal: AbortSignal.timeout(16000),
+    signal: AbortSignal.timeout(45000),
   });
   // These integration assertions deliberately inspect the raw public response.
   const result = (await response.json()) as Record<string, any>;
@@ -38,13 +48,31 @@ async function waitForApp() {
 }
 const selector = (value: string, using = "id") => ({ using, value });
 const target = (value: string) => ({ selector: selector(value) });
-const element = async (value: string) => (await api("element", target(value))).value;
+// These fixture reads consume labels, values and geometry. Hittability has its
+// own explicit assertion above the input tests; do not re-query it for text.
+const element = async (value: string) =>
+  (await api("element", { ...target(value), attributes: ["label", "value", "rect"] })).value;
+const inputValue = async (expected: string) => {
+  // Native completion acknowledges dispatch, not the editor's rendered state.
+  // Observe the exact result with a deadline; never replay a key to repair it.
+  const result = await api("wait", {
+    ...target("fixture.input"),
+    condition: "attribute",
+    attribute: "value",
+    equals: expected,
+    stableForMs: 100,
+    timeoutMs: observationTimeoutMs,
+  });
+  return result.value.value;
+};
 let checks = 0;
 const passed = (name: string) => {
   checks++;
   console.log(`PASS ${name}`);
 };
-const readyDeadline = performance.now() + 45000;
+// XCTest's first launch on a fresh hosted Simulator can itself exceed 45 s.
+// Startup is a separate bounded phase, not part of an input latency assertion.
+const readyDeadline = performance.now() + (process.env.IPORTAL_SIMULATOR === "1" ? 120000 : 45000);
 let readiness = "No status response";
 for (;;) {
   try {
@@ -251,7 +279,7 @@ await api("wait", {
   condition: "attribute",
   attribute: "label",
   equals: `Taps: ${Number(oldCounter.label.split(": ")[1]) + 1}`,
-  timeoutMs: 4000,
+  timeoutMs: observationTimeoutMs,
 });
 assert.equal(
   (await element("fixture.counter")).label,
@@ -302,12 +330,22 @@ passed("alerts, descendant class chains and continuous scroll paths");
 await api("tap", target("fixture.input"));
 let keyboardLifecycle = (await element("fixture.title")).value;
 const keyboardTrace = async (step: string, hardwareKey = false) => {
-  const lifecycle = (await element("fixture.title")).value;
-  const keyboards = (
-    await api("elements", {
-      selector: selector("XCUIElementTypeKeyboard", "class name"),
-    })
-  ).value.length;
+  // One coherent snapshot covers all three assertions. Separate queries both
+  // waste native snapshots and can observe different stages of a transition.
+  const nodes: Record<string, any>[] = [];
+  const visit = (node: Record<string, any>) => {
+    nodes.push(node);
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit((await api("source", { format: "json" })).value);
+  const lifecycle = nodes.find((node) => node.name === "fixture.title")?.value;
+  assert.equal(typeof lifecycle, "string", `${step}: fixture status missing`);
+  const keyboards = nodes.filter((node) => node.type === "Keyboard").length;
+  console.log(`Keyboard ${step}:`, {
+    lifecycle,
+    keyboards,
+    value: nodes.find((node) => node.name === "fixture.input")?.value,
+  });
   assert.equal(
     lifecycle.split(":")[1],
     keyboardLifecycle.split(":")[1],
@@ -328,17 +366,17 @@ for (const text of ["a", "b", "c"]) {
   await api("type", { text });
   await keyboardTrace(`type ${text}`);
 }
-assert.equal((await element("fixture.input")).value, "abc");
+assert.equal(await inputValue("abc"), "abc");
 await api("key", { key: "ArrowLeft" });
 await keyboardTrace("arrow left", true);
 await api("key", { key: "Backspace" });
 await keyboardTrace("backspace", true);
-assert.equal((await element("fixture.input")).value, "ac");
+assert.equal(await inputValue("ac"), "ac");
 await api("key", { key: "a", modifiers: ["command"] });
 await keyboardTrace("select unicode replacement", true);
 await api("type", { text: "café 👋 世界" });
 await keyboardTrace("type unicode");
-assert.equal((await element("fixture.input")).value, "café 👋 世界");
+assert.equal(await inputValue("café 👋 世界"), "café 👋 世界");
 console.log("Keyboard notifications:", (await element("fixture.keyboardTrace")).label);
 assert.equal(
   (await element("fixture.title")).value.split(":")[1],
@@ -363,15 +401,15 @@ const latinPassword =
 const editorLabel = async (id: string, expected: string) => {
   // A native input acknowledgement precedes SwiftUI/WebKit's rendered update.
   // Observe the exact value; never replay an input while waiting for layout.
-  await api("wait", {
+  const result = await api("wait", {
     ...target(id),
     condition: "attribute",
     attribute: "label",
     equals: expected,
     stableForMs: 100,
-    timeoutMs: 5000,
+    timeoutMs: observationTimeoutMs,
   });
-  return (await element(id)).label;
+  return result.value.value;
 };
 for (const [input, output, secure, chunks] of [
   ["fixture.secure", "fixture.secureValue", true, ["a", "b", "c", latinPassword]],
@@ -386,7 +424,7 @@ for (const [input, output, secure, chunks] of [
     ),
   };
   console.log(`Checking ${input}`);
-  await api("wait", { ...editor, timeoutMs: 5000 });
+  await api("wait", editor);
   await api("tap", editor);
   await api("wait", {
     selector: selector("XCUIElementTypeKeyboard", "class name"),
@@ -466,7 +504,13 @@ await api("home");
 await api("launch", { bundleId });
 state = await waitForApp();
 assert.equal(state.app.bundleId, bundleId);
-const observation = (await api("observe", { screenshot: false, settleMs: 100 })).value;
+const observation = (
+  await api("observe", {
+    screenshot: false,
+    settleMs: 100,
+    ...(process.env.IPORTAL_SIMULATOR === "1" ? { timeoutMs: observationTimeoutMs } : {}),
+  })
+).value;
 assert.equal(observation.stable, true);
 passed("app transitions and stable observation");
 // Rejected commands must not mutate the focused field or consume its selection.

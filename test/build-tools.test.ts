@@ -8,6 +8,92 @@ import path from "node:path";
 import fs from "node:fs";
 import assert from "node:assert/strict";
 import { ensurePrivateDirectory, claimDevice } from "../device-runtime.mjs";
+import { diagnosticTail, selectSimulator } from "../scripts/simulator-support.ts";
+
+test("simulator selection uses runtime compatibility rather than a hard-coded phone", () => {
+  const phone = (name: string) => ({
+    name,
+    productFamily: "iPhone",
+    identifier: `com.apple.CoreSimulator.SimDeviceType.${name}`,
+  });
+  const runtime = (version: string, devices = [phone("iPhone-15-Pro")]) => ({
+    identifier: `com.apple.CoreSimulator.SimRuntime.iOS-${version.replaceAll(".", "-")}`,
+    version,
+    isAvailable: true,
+    supportedDeviceTypes: devices,
+  });
+  const older = runtime("26.5");
+  const latest = runtime("27.2", [phone("iPhone-Duo"), phone("iPhone-18-Pro")]);
+  const inventory = { runtimes: [older, latest, { ...runtime("28.0"), isAvailable: false }] };
+  expect(selectSimulator(inventory, "27.2").device.identifier).toBe(
+    phone("iPhone-18-Pro").identifier,
+  );
+  expect(selectSimulator(inventory, "27.2").runtime.version).toBe("27.2");
+  expect(selectSimulator(inventory, "27.1").runtime.version).toBe("26.5");
+  expect(selectSimulator(inventory, "27.2", "26.5").runtime.version).toBe("26.5");
+  expect(() => selectSimulator(inventory, "27.2", "26.4")).toThrow("26.4");
+  expect(() => selectSimulator(inventory, "27.2", "invalid")).toThrow("runtime version");
+  expect(() => selectSimulator({ runtimes: [latest] }, "27.1")).toThrow("SDK 27.1");
+  expect(() => selectSimulator(inventory, "invalid")).toThrow("SDK version");
+  expect(selectSimulator({ runtimes: [runtime("27.1.1")] }, "27.1").runtime.version).toBe("27.1.1");
+  expect(inventory.runtimes[0]).toBe(older);
+  expect(
+    selectSimulator(
+      {
+        runtimes: [
+          runtime("27.2", [phone("iPhone-18-Pro"), phone("iPhone-17"), phone("iPhone-17e")]),
+        ],
+      },
+      "27.2",
+    ).device.identifier,
+  ).toBe(phone("iPhone-17e").identifier);
+  expect(
+    selectSimulator({ runtimes: [runtime("27.9"), runtime("27.10")] }, "27.10").runtime.version,
+  ).toBe("27.10");
+  expect(
+    selectSimulator({ runtimes: [{ ...latest, supportedDeviceTypes: undefined }, older] }, "27.2")
+      .runtime.version,
+  ).toBe("26.5");
+  for (const runtimes of [
+    [],
+    [runtime("16.4")],
+    [{ ...latest, supportedDeviceTypes: [] }],
+    [runtime("27.2", [phone("iPhone-Duo")])],
+    [{ ...latest, identifier: "com.apple.CoreSimulator.SimRuntime.tvOS-27-2" }],
+    [
+      runtime("27.2", [
+        {
+          name: "iPad",
+          productFamily: "iPad",
+          identifier: "com.apple.CoreSimulator.SimDeviceType.iPad",
+        },
+      ]),
+    ],
+  ]) {
+    expect(() => selectSimulator({ runtimes }, "27.2")).toThrow("supported iPhone");
+  }
+  expect(() => selectSimulator({ runtimes: "invalid" }, "27.2")).toThrow();
+  expect(
+    selectSimulator({ runtimes: [runtime("18.0", [phone("iPhone-SE-3rd-generation")])] }, "18.0")
+      .device.identifier,
+  ).toBe(phone("iPhone-SE-3rd-generation").identifier);
+});
+
+test("simulator failure logs are bounded and redact complete and partial credentials", () => {
+  const token = "0123456789abcdef".repeat(4);
+  const lines = Array.from({ length: 130 }, (_, i) => `line ${i}`).join("\n");
+  const output = diagnosticTail(
+    `${lines}\nBearer ${token}\nFixture assertion failed`,
+    token,
+    false,
+  );
+  expect(output.split("\n")).toHaveLength(100);
+  expect(output).toContain("Bearer [redacted]");
+  expect(output).toEndWith("Fixture assertion failed");
+  expect(output).not.toContain(token);
+  expect(diagnosticTail(`${token.slice(10)}\nActual error`, token, true)).toBe("Actual error");
+  expect(diagnosticTail(token.slice(10), token, true)).toBe("");
+});
 
 test("runtime directories repair permissions and reject pre-created symlinks", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "iportal-permissions-"));

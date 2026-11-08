@@ -172,6 +172,7 @@ export function startFakeIphone({
         operation,
         body: json,
         id: command.id,
+        budgetMs: command.budgetMs,
         generation: command.generation,
         monitor: operation === "presence",
       });

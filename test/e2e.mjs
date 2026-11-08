@@ -134,6 +134,9 @@ try {
   const tap = fake.log.findLast((l) => l.operation === "touch").body;
   assert.deepEqual(tap.points, [[0.5, 0.5, 0]]);
   assert.equal(tap.end, 80);
+  assert.equal((await post("gesture", { points: [[0.5, 0.5, 0]], end: 10000 })).ok, true);
+  const longGestureBudget = fake.log.findLast((entry) => entry.operation === "touch").budgetMs;
+  assert(longGestureBudget > 10000 && longGestureBudget <= 12000);
 
   await post("gesture", {
     points: [
@@ -247,8 +250,30 @@ try {
   assert.deepEqual((await post("elements", { selector })).value, [{ id: "button-1" }]);
   assert.deepEqual((await post("elements", { selector: absent })).value, []);
   const state = (await post("element", { selector })).value;
+  const lookupBudget = fake.log.findLast((entry) => entry.operation === "elements").budgetMs;
+  assert(
+    lookupBudget > 13000 && lookupBudget <= 15000,
+    `Inspection budget clamped: ${lookupBudget}`,
+  );
   assert.equal(state.label, "Continue");
   assert.equal(state.hittable, true);
+  // An explicit public budget must reach the native command, rather than being
+  // silently clamped to the scheduler's default eight seconds. Inspect the wire
+  // budget instead of making this regression test sleep for nine seconds.
+  for (const { name, args, operation } of [
+    { name: "tap", args: { selector }, operation: "tapElement" },
+    { name: "key", args: { key: "ArrowLeft" }, operation: "key" },
+  ]) {
+    assert.equal((await post(name, { ...args, timeoutMs: 12000 })).ok, true);
+    const extended = fake.log.findLast((entry) => entry.operation === operation).budgetMs;
+    assert(extended > 10000 && extended <= 12000, `${name} lost its explicit budget: ${extended}`);
+    assert.equal((await post(name, { ...args, timeoutMs: 1000 })).ok, true);
+    const short = fake.log.findLast((entry) => entry.operation === operation).budgetMs;
+    assert(short > 0 && short <= 1000, `${name} exceeded its short deadline: ${short}`);
+    assert.equal((await post(name, args)).ok, true);
+    const standard = fake.log.findLast((entry) => entry.operation === operation).budgetMs;
+    assert(standard > 0 && standard <= 8000, `${name} changed its default: ${standard}`);
+  }
   assert.deepEqual(state.rect, { x: 20, y: 40, width: 100, height: 44 });
   assert.equal(
     (await post("element", { id: state.id, attributes: ["enabled"] })).value.enabled,
@@ -266,6 +291,13 @@ try {
   }
 
   assert.equal((await post("wait", { selector })).value.matched, true);
+  assert.equal((await post("wait", { selector, timeoutMs: 20000 })).value.matched, true);
+  const waitBudget = fake.log.findLast((entry) => entry.operation === "elements").budgetMs;
+  assert(waitBudget > 18000 && waitBudget <= 20000, `Wait budget clamped: ${waitBudget}`);
+  assert.equal((await post("observe", { screenshot: false, timeoutMs: 20000 })).ok, true);
+  const observationBudget = fake.log.findLast((entry) => entry.operation === "source").budgetMs;
+  assert(observationBudget > 18000 && observationBudget <= 20000);
+  assert.equal((await post("observe", { timeoutMs: 60001 })).code, "invalid argument");
   assert.equal((await post("wait", { selector: absent, condition: "absent" })).value.matched, true);
   fake.ui.staleLookupOnce = true;
   assert.equal(

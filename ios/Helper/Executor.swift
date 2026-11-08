@@ -97,6 +97,7 @@ actor HelperExecutor {
   private var queue: [Pending] = []
   private var queuedDeadlines: [String: Task<Void, Never>] = [:]
   private var active: Pending?
+  private var activeStarted: ContinuousClock.Instant?
   private var replied = false
   private var stopped = false
   private var blocked = false
@@ -109,14 +110,20 @@ actor HelperExecutor {
   private var timeoutTask: Task<Void, Never>?
   private var stallTask: Task<Void, Never>?
   private let recoveryGrace: Duration
+  private let minimumExecutionTime: Duration
+  private let minimumInspectionTime: Duration
   private let perform: @MainActor (HelperCommand) async throws -> JSONValue
   init(
     status: HelperStatus,
     recoveryGrace: Duration = .seconds(2),
+    minimumExecutionTime: Duration = .seconds(8),
+    minimumInspectionTime: Duration = .seconds(15),
     perform: @escaping @MainActor (HelperCommand) async throws -> JSONValue
   ) {
     self.status = status
     self.recoveryGrace = recoveryGrace
+    self.minimumExecutionTime = minimumExecutionTime
+    self.minimumInspectionTime = minimumInspectionTime
     self.perform = perform
   }
   func submit(_ command: HelperCommand, permit supplied: DispatchPermit? = nil) async -> HelperReply {
@@ -243,6 +250,7 @@ actor HelperExecutor {
       return
     }
     active = item
+    activeStarted = .now
     replied = false
     status.update(.begin(item.command.id))
     timeoutTask = Task {
@@ -280,11 +288,16 @@ actor HelperExecutor {
     replied = true
     remember(item.command, reply)
     item.continuation.resume(returning: reply)
-    // A short client deadline is not evidence that Apple is stalled. Keep
-    // exclusive ownership, allowing normal completion during a bounded
-    // grace period. An ordinary wait timeout must not restart the helper.
+    // A short caller deadline is not Apple's execution deadline. A 200 ms wait
+    // may expire while a healthy XCTest snapshot still takes several seconds,
+    // particularly in Simulator. Preserve the normal input/inspection window
+    // plus grace, measured from dispatch rather than time spent queued. Ownership
+    // remains exclusive throughout; no input is retried or allowed to overlap.
+    let elapsed = (activeStarted ?? .now).duration(to: .now)
+    let window = item.command.operation.mutates ? minimumExecutionTime : minimumInspectionTime
+    let remaining = max(.zero, window - elapsed) + recoveryGrace
     stallTask = Task {
-      try? await Task.sleep(for: recoveryGrace)
+      try? await Task.sleep(for: remaining)
       if !Task.isCancelled { self.stall(id) }
     }
   }
@@ -312,6 +325,7 @@ actor HelperExecutor {
       active?.continuation.resume(returning: reply)
     }
     active = nil
+    activeStarted = nil
     status.update(.finish(command.id))
     pump()
   }

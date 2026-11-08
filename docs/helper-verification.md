@@ -44,6 +44,13 @@ awaiting Apple's screenshot callback directly resolved that regression. The
 
 ## Verification status
 
+- Simulator CI pins Xcode 27.2 and iOS 26.5 and connects its disposable phone
+  to DeviceHub for hardware-key input. The full API fixture checks the actual
+  iPortal input path, including exact text results and keyboard stability.
+  `IPORTAL_SIMULATOR_RUNTIME=26.5 bun run test:simulator` selects that installed
+  runtime explicitly; other runs select a compatible phone within the active
+  SDK release. A missing requested runtime fails rather than silently changing
+  the test target.
 - Native host tests cover strict contracts, authentication, parser limits,
   callback races, cancellation, duplicate commands, queue deadlines and retained
   ownership after stalls.

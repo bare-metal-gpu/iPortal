@@ -43,7 +43,13 @@ jobs:
     # The pinned iOS dependencies need Swift 6.4. Keep verify on macos-15
     # separately so new SDK-only references in the Mac code remain detectable.
     runs-on: xcode-27
-    timeout-minutes: 25
+    env:
+      # Do not silently inherit the image's older default XCTest driver.
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      # Keep the functional baseline reproducible across hosted image updates.
+      IPORTAL_SIMULATOR_RUNTIME: "26.5"
+    # Includes a cold native build and real XCTest observations on a hosted Mac.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,5 +62,15 @@ jobs:
           xcodebuild -version
           xcrun swift --version
       - run: bun install --frozen-lockfile
+      - name: Install the functional-test runtime
+        run: xcodebuild -downloadPlatform iOS -buildVersion "$IPORTAL_SIMULATOR_RUNTIME" -architectureVariant arm64
       # Build the owned iOS 17+ runner and exercise real XCTest against our fixture.
       - run: bun run test:simulator
+      - name: Retain controlled simulator failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: simulator-failure
+          path: vendor/simulator-diagnostics/failure.png
+          if-no-files-found: ignore
+          retention-days: 3

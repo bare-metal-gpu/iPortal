@@ -130,11 +130,12 @@ final class ExecutorTests: XCTestCase {
   @MainActor func testStalledOperationRequiresRecoveryEvenAfterLateCompletion() async throws {
     let state = HelperStatus()
     let gate = Gate()
-    let executor = HelperExecutor(status: state, recoveryGrace: .milliseconds(30)) {
+    let executor = HelperExecutor(status: state, recoveryGrace: .milliseconds(30),
+      minimumExecutionTime: .milliseconds(50)) {
       try await gate.perform($0)
     }
     _ = await executor.submit(command("stalled", state.generation, budget: 20))
-    try await Task.sleep(for: .milliseconds(60))
+    try await Task.sleep(for: .milliseconds(100))
     XCTAssertEqual(state.snapshot()["phase"], .string("blocked"))
     let next = await executor.submit(command("unsafe", state.generation))
     XCTAssertEqual(next.error?.code, "helper unavailable")
@@ -142,6 +143,34 @@ final class ExecutorTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(20))
     XCTAssertEqual(state.snapshot()["phase"], .string("blocked"))
     XCTAssertEqual(gate.started, ["stalled"])
+    await executor.shutdown()
+  }
+  @MainActor func testShortDeadlineDoesNotMisclassifyHealthyNativeWorkAsStalled() async throws {
+    let state = HelperStatus()
+    let gate = Gate()
+    let executor = HelperExecutor(status: state, recoveryGrace: .milliseconds(20),
+      minimumExecutionTime: .milliseconds(30), minimumInspectionTime: .seconds(1)) {
+        try await gate.perform($0)
+      }
+    let read = HelperCommand(id: "short-wait", generation: state.generation, budgetMs: 20,
+      operation: .elements, arguments: .object([:]))
+    let reply = await executor.submit(read)
+    XCTAssertEqual(reply.error?.code, "timeout")
+    XCTAssertEqual(reply.error?.outcome, "unknown")
+    let next = Task { await executor.submit(command("after-wait", state.generation)) }
+    // Beyond the caller's deadline and grace, but within normal native execution.
+    try await Task.sleep(for: .milliseconds(80))
+    XCTAssertNotEqual(state.snapshot()["phase"], .string("blocked"))
+    XCTAssertEqual(state.snapshot()["activeOperation"], .string("short-wait"))
+    XCTAssertEqual(gate.started, ["short-wait"])
+    gate.complete()
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while gate.started.count < 2 && ContinuousClock.now < deadline { await Task.yield() }
+    XCTAssertEqual(gate.started, ["short-wait", "after-wait"])
+    gate.complete()
+    let nextReply = await next.value
+    XCTAssertNil(nextReply.error)
+    XCTAssertEqual(gate.started, ["short-wait", "after-wait"])
     await executor.shutdown()
   }
   @MainActor func testQueuedCancellationNeverDispatches() async throws {

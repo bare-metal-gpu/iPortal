@@ -1,10 +1,12 @@
 // Reproducible native parity checks, isolated from physical devices and user apps.
 import assert from "node:assert/strict";
-import { mkdtemp, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { openSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { diagnosticTail, selectSimulator } from "./simulator-support.ts";
+import { ActionSchemas } from "../schemas.ts";
 
 const root = path.resolve(import.meta.dirname, "..");
 const logs = await mkdtemp(path.join(tmpdir(), "iportal-simulator-"));
@@ -21,22 +23,34 @@ assert(
 );
 const token = randomBytes(32).toString("hex");
 let simulator: string | undefined;
+let bootRequested = false;
 let runner: ReturnType<typeof Bun.spawn> | undefined;
 let server: ReturnType<typeof Bun.spawn> | undefined;
+async function printLog(label: string) {
+  try {
+    const log = path.join(logs, `${label}.log`);
+    const size = (await stat(log)).size;
+    const limit = 64 * 1024;
+    const tail = await Bun.file(log)
+      .slice(Math.max(0, size - limit))
+      .text();
+    console.error(`${label}:\n${diagnosticTail(tail, token, size > limit)}`);
+  } catch {
+    console.error(`${label}: diagnostics unavailable`);
+  }
+}
 const run = async (args: string[], label: string) => {
+  const started = performance.now();
+  console.log(`Starting ${label}`);
   const child = spawn(args, label);
   const code = await child.exited;
   if (code !== 0) {
     // Hosted runners discard this private temporary directory after the job.
     // Surface bounded diagnostics while keeping the ephemeral helper token out.
-    const log = path.join(logs, `${label}.log`);
-    const size = (await stat(log)).size;
-    const tail = await Bun.file(log)
-      .slice(Math.max(0, size - 64 * 1024))
-      .text();
-    console.error(tail.replaceAll(token, "[redacted]").split("\n").slice(-100).join("\n"));
+    await printLog(label);
   }
   assert.equal(code, 0, `${label} failed; see ${logs}`);
+  console.log(`Completed ${label} in ${Math.round((performance.now() - started) / 1000)}s`);
 };
 function spawn(
   args: string[],
@@ -56,8 +70,24 @@ async function output(args: string[]) {
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
-  assert.equal(await child.exited, 0, error);
+  assert.equal(await child.exited, 0, `${args.slice(0, 3).join(" ")}: ${error}`);
   return text.trim();
+}
+async function reportHostHealth() {
+  if (!process.env.CI) return;
+  // Resource evidence belongs to the hosted runner, not the user's Mac. Do not
+  // include process arguments: the runner environment contains credentials.
+  const child = Bun.spawn(
+    ["/usr/bin/top", "-l", "1", "-n", "8", "-o", "mem", "-stats", "pid,command,cpu,mem"],
+    { stdout: "pipe", stderr: "ignore" },
+  );
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
+  try {
+    console.log(`Hosted resource snapshot:\n${await new Response(child.stdout).text()}`);
+    await child.exited;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 async function stop(child: ReturnType<typeof Bun.spawn> | undefined) {
   if (!child) return;
@@ -96,24 +126,21 @@ try {
   const probe = Bun.serve({ hostname: "127.0.0.1", port: 8100, fetch: () => new Response() });
   await probe.stop(true);
   const inventory = JSON.parse(await output(["xcrun", "simctl", "list", "runtimes", "--json"]));
-  const runtimes = inventory.runtimes.filter(
-    (r: { identifier: string; isAvailable: boolean }) =>
-      r.isAvailable && r.identifier.includes(".iOS-"),
+  const sdkVersion = await output(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"]);
+  const { runtime, device } = selectSimulator(
+    inventory,
+    sdkVersion,
+    process.env.IPORTAL_SIMULATOR_RUNTIME,
   );
-  runtimes.sort((a: { version: string }, b: { version: string }) =>
-    b.version.localeCompare(a.version, undefined, { numeric: true }),
-  );
-  assert(runtimes[0], "Install an iOS simulator runtime in Xcode first");
+  console.log(`Simulator: ${device.name}, iOS ${runtime.version}, SDK ${sdkVersion}`);
   simulator = await output([
     "xcrun",
     "simctl",
     "create",
     "iPortal parity checks",
-    "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro",
-    runtimes[0].identifier,
+    device.identifier,
+    runtime.identifier,
   ]);
-  await run(["xcrun", "simctl", "boot", simulator], "boot");
-  await run(["xcrun", "simctl", "bootstatus", simulator, "-b"], "boot-ready");
   const identity = await output(["bun", "scripts/helper-build-id.ts"]);
   const version = `${(parseInt(identity.slice(0, 7), 16) % 9999) + 1}.${parseInt(identity.slice(7, 9), 16) % 100}.${parseInt(identity.slice(9, 11), 16) % 100}`;
   const project = [
@@ -146,6 +173,11 @@ try {
     [...project, "build", "-scheme", "iPortalFixture", "-derivedDataPath", fixtureBuild],
     "build-fixture",
   );
+  // A build destination need not be booted. Avoid competing with Simulator's
+  // first-boot services while compiling the native dependency graph on CI.
+  bootRequested = true;
+  await run(["xcrun", "simctl", "boot", simulator], "boot");
+  await run(["xcrun", "simctl", "bootstatus", simulator, "-b"], "boot-ready");
   const products = path.join(build, "Build/Products");
   await run(
     [
@@ -174,8 +206,34 @@ try {
   );
   await run(["xcrun", "simctl", "install", simulator, fixtureApp], "install-fixture");
   await run(["xcrun", "simctl", "launch", simulator, `${bundle}.fixture`], "launch-fixture");
+  await reportHostHealth();
   const runs = await Array.fromAsync(new Bun.Glob("*.xctestrun").scan(products));
   assert.equal(runs.length, 1);
+  if (process.env.CI) {
+    // Connect the owned simulator to DeviceHub so hardware-key events have
+    // a simulated keyboard. A headless simctl boot alone does not attach one.
+    await run(
+      [
+        "defaults",
+        "write",
+        "com.apple.dt.Devices",
+        "alwaysSimulateHardwareKeyboard",
+        "-bool",
+        "true",
+      ],
+      "hosted-keyboard",
+    );
+    const developer = process.env.DEVELOPER_DIR ?? (await output(["xcode-select", "-p"]));
+    await run(
+      [
+        "open",
+        "-a",
+        path.resolve(developer, "../Applications/DeviceHub.app"),
+        `devices://device/open?id=${simulator}`,
+      ],
+      "hosted-device-hub",
+    );
+  }
   runner = spawn(
     [
       "xcodebuild",
@@ -184,6 +242,9 @@ try {
       path.join(products, runs[0]!),
       "-destination",
       `id=${simulator}`,
+      "-parallel-testing-enabled",
+      "NO",
+      "-only-testing:iPortalRunner/iPortalRunner/testServe",
     ],
     "runner",
     {
@@ -222,13 +283,13 @@ try {
       { ...process.env, IPORTAL_API_URL: `http://127.0.0.1:${port}`, IPORTAL_SIMULATOR: "1" },
     );
     const fixtureExit = await tests.exited;
+    await reportHostHealth();
     if (fixtureExit !== 0) {
-      // Retain evidence before deleting this owned simulator. Never replay a
-      // failed mutation merely to make a flaky interaction look successful.
-      await run(
-        ["xcrun", "simctl", "io", simulator, "screenshot", path.join(logs, "failure.png")],
-        "failure-screenshot",
-      );
+      // This process bypasses run(); print its actual assertion before cleanup
+      // instead of leaving the only explanation in a discarded runner folder.
+      await printLog("fixture-checks");
+      await printLog("server");
+      await printLog("runner");
       for (const name of ["state", "source"]) {
         try {
           const response = await fetch(`http://127.0.0.1:${port}/api/${name}`, {
@@ -253,8 +314,11 @@ try {
     const response = await fetch(`http://127.0.0.1:${port}/api/${name}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(25000),
+      body: JSON.stringify({
+        ...(Object.hasOwn(ActionSchemas, name) ? { timeoutMs: 30000 } : {}),
+        ...body,
+      }),
+      signal: AbortSignal.timeout(45000),
     });
     const result = (await response.json()) as Record<string, any>;
     assert.equal(response.status, 200, `${name}: ${JSON.stringify(result)}`);
@@ -262,7 +326,7 @@ try {
     return result.value;
   };
   if (webNavigationOnly) {
-    const readyDeadline = performance.now() + 45000;
+    const readyDeadline = performance.now() + 120000;
     for (;;) {
       let ready = false;
       try {
@@ -327,6 +391,8 @@ try {
         path.join(products, runs[0]!),
         "-destination",
         `id=${simulator}`,
+        "-parallel-testing-enabled",
+        "NO",
         "-only-testing:iPortalRunner/iPortalRunner/testFixtureAccessibility",
       ],
       "accessibility-audit",
@@ -345,12 +411,34 @@ try {
     console.log(issues);
   }
   console.log(`Native simulator checks passed. Logs: ${logs}`);
+} catch (error) {
+  // Retain controlled fixture evidence before deleting the owned simulator.
+  // Only the screenshot is uploaded; logs can contain runner credentials.
+  if (simulator && bootRequested) {
+    try {
+      const screenshot = path.join(logs, "failure.png");
+      await run(
+        ["xcrun", "simctl", "io", simulator, "screenshot", screenshot],
+        "failure-screenshot",
+      );
+      const diagnostics = path.join(root, "vendor/simulator-diagnostics");
+      await mkdir(diagnostics, { recursive: true });
+      await copyFile(screenshot, path.join(diagnostics, "failure.png"));
+    } catch {
+      /* Preserve the original failure. */
+    }
+  }
+  throw error;
 } finally {
   await shutdownHelper();
   await stop(server);
   await stop(runner);
   if (simulator) {
-    await run(["xcrun", "simctl", "shutdown", simulator], "shutdown-simulator");
-    await run(["xcrun", "simctl", "delete", simulator], "delete-simulator");
+    try {
+      if (bootRequested)
+        await run(["xcrun", "simctl", "shutdown", simulator], "shutdown-simulator");
+    } finally {
+      await run(["xcrun", "simctl", "delete", simulator], "delete-simulator");
+    }
   }
 }

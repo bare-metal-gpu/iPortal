@@ -163,7 +163,7 @@ export const RequestSchemas = {
   observe: Schema.Struct({
     screenshot: optional(Schema.Boolean),
     settleMs: optional(integer(0, 2000)),
-    timeoutMs: optional(integer(1, 10000)),
+    timeoutMs: optional(integer(1, 60000)),
   }),
   wait: Wait,
   "keep-awake": Schema.Struct({
