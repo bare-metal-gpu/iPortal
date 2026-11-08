@@ -10,5 +10,12 @@
   "proseWrap": "preserve",
   "sortImports": false,
   "sortPackageJson": false,
-  "ignorePatterns": ["node_modules/**", "vendor/**", "dist/**", "bun.lock", "**/Package.resolved"]
+  "ignorePatterns": [
+    "node_modules/**",
+    "vendor/**",
+    "dist/**",
+    "bun.lock",
+    "**/Package.resolved",
+    "ios/Helper/.build/**"
+  ]
 }

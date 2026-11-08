@@ -11,9 +11,11 @@ if (!directory) throw new Error("Pass the running mirror's USB socket directory.
 const base = process.argv[3] ?? "http://127.0.0.1:7100";
 const wrong = "b".repeat(64);
 
+/** @param {string} service @param {string} request @returns {Promise<Buffer>} */
 async function probe(service, request, { fragmented = false, idle = false } = {}) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(path.join(directory, `${service}.sock`));
+    /** @type {Buffer[]} */
     const chunks = [];
     let bytes = 0;
     const timer = setTimeout(() => {
@@ -22,7 +24,7 @@ async function probe(service, request, { fragmented = false, idle = false } = {}
     }, 8000);
     socket.on("error", reject);
     socket.on("data", (chunk) => {
-      chunks.push(chunk);
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
       bytes += chunk.length;
       if (bytes > 65536) {
         socket.destroy();
@@ -48,15 +50,15 @@ async function probe(service, request, { fragmented = false, idle = false } = {}
 }
 
 for (const [method, route] of [
-  ["GET", "/status"],
-  ["POST", "/session"],
-  ["POST", "/wda/homescreen"],
+  ["GET", "/v1/status"],
+
+  ["POST", "/v1/commands"],
 ]) {
   for (const auth of ["", `Authorization: Bearer ${wrong}\r\n`]) {
     // An unauthorized command must fail before waiting for/decoding its body.
     const bodyLength = method === "POST" ? "Content-Length: 100000\r\n" : "";
     const reply = await probe(
-      "wda",
+      "helper",
       `${method} ${route} HTTP/1.1\r\nHost: localhost\r\n${auth}${bodyLength}\r\n`,
     );
     assert.match(reply.toString(), /^HTTP\/1\.[01] 401 /);
@@ -66,7 +68,7 @@ for (const [method, route] of [
 console.log("✓ Real helper rejects missing/wrong command credentials before body or action");
 
 for (const auth of ["", `Authorization: Bearer ${wrong}\r\n`]) {
-  const reply = await probe("mjpeg", `GET / HTTP/1.1\r\nHost: localhost\r\n${auth}\r\n`, {
+  const reply = await probe("helper", `GET /v1/video HTTP/1.1\r\nHost: localhost\r\n${auth}\r\n`, {
     fragmented: true,
   });
   assert.match(reply.toString(), /^HTTP\/1\.[01] 401 /);
@@ -74,11 +76,14 @@ for (const auth of ["", `Authorization: Bearer ${wrong}\r\n`]) {
 }
 assert.match(
   (
-    await probe("mjpeg", `GET / HTTP/1.1\r\nHost: localhost\r\nX: ${"x".repeat(16384)}\r\n\r\n`)
+    await probe(
+      "helper",
+      `GET /v1/video HTTP/1.1\r\nHost: localhost\r\nX: ${"x".repeat(16384)}\r\n\r\n`,
+    )
   ).toString(),
   /^HTTP\/1\.[01] 431 /,
 );
-assert.equal((await probe("mjpeg", "", { idle: true })).length, 0);
+assert.equal((await probe("helper", "", { idle: true })).length, 0);
 console.log(
   "✓ Real video waits for complete authentication, rejects wrong keys/oversized headers, expires idle handshakes, leaks no frames",
 );

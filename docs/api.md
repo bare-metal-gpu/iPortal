@@ -41,7 +41,7 @@ cancels queued commands instead of replaying them after reconnection.
 
 `element` and `screenshot` also accept a `selector` instead of an `id`. A selector must resolve to exactly one element for these calls; multiple matches produce HTTP 409. Omit both for a whole-screen screenshot. Screenshot MIME types are detected from the returned bytes (PNG, JPEG or HEIC), not assumed.
 
-Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate string`, `class chain`, and `xpath`. These are WDA strategy names. For example:
+Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate string`, `class chain`, and `xpath`. For example:
 
 ```json
 {
@@ -52,9 +52,49 @@ Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate str
 }
 ```
 
-Element attributes: `type`, `name`, `label`, `value`, `enabled`, `visible`, `selected`, `hittable`, `accessible`, `rect`. Defaults are all except `selected` and `accessible`. Attribute values retain WDA's JSON types, including null. Bounds use logical screen points, not screenshot pixels. IDs are temporary and can become stale after UI changes; re-run the selector to recover. An element existing does not imply it is visible or hittable.
+Element attributes: `type`, `name`, `label`, `value`, `enabled`, `visible`, `selected`, `hittable`, `accessible`, `rect`. Defaults are all except `selected` and `accessible`. Attribute values retain the helper's JSON types, including null. Bounds use logical screen points, not screenshot pixels. IDs are temporary and can become stale after UI changes; re-run the selector to recover. An element existing does not imply it is visible or hittable.
 
 Inspection depends on the app exposing meaningful accessibility elements. Element IDs can become stale; resolve selectors again after UI changes. Combined state is not an atomic snapshot, and deep hierarchy inspection can be slow.
+
+## Mac accessibility bridge
+
+Each live device window exposes a native **Device content** accessibility group
+to Computer and screen readers. It contains the phone's reported roles, labels,
+non-password values, hierarchy and oriented screen bounds. No setup switch or
+extra permission is needed beyond the existing mirroring and Mac accessibility access.
+
+Reading this group asynchronously refreshes a cached `/api/observe` snapshot
+without taking a screenshot. Repeated reads coalesce, with at most one new
+inspection every two seconds; ordinary mirroring does not poll this tree.
+An initial read may need a second read after the snapshot arrives. The bridge
+posts an accessibility layout notification when content changes.
+
+Press actions use the existing guarded element API; scroll containers expose
+Scroll up/down custom actions. Focus a text field and use the existing Mac
+keyboard route. Setting `AXValue` is deliberately unsupported: inserting text
+is not equivalent to replacing a field's contents. Actions are asynchronous;
+acceptance means admission, so read the resulting tree to verify the outcome.
+An unconfirmed command is never replayed automatically.
+
+Actions require a recent stable observation, the same server/device generation,
+foreground app and orientation, and current actionability checks. Closing the
+window, losing readiness, opening Settings, or changing connection identity
+retires the tree. Password values are excluded. The bridge stores no snapshots
+on disk and does not log their text.
+Video-only refreshes preserve readable content; input still requires the
+window's existing video/readiness checks.
+
+Off-screen nodes remain readable when the iPhone app includes them in its
+accessibility tree. They are not advertised as visible or pressable. Content
+that an app lazily creates after scrolling, and unlabeled photo details, still
+require scrolling or screenshots; a complete Hinge profile is not guaranteed.
+
+Physical-phone check (2026-11-08, Wi-Fi, one Hinge profile): Computer read all
+10 profile sections from the top, including eight off screen, three text
+answers and six photo entries. Named scroll actions and More options → Cancel
+worked through the bridge. Photo entries exposed labels, not image descriptions.
+
+Run `bun run test:accessibility` for the native bridge regression checks.
 
 ## Waits
 
@@ -76,7 +116,7 @@ Conditions:
 - `absent`: zero matches.
 - `attribute`: exactly one match whose requested attribute deeply equals `equals`. Multiple matches are an error; no match continues waiting.
 
-`timeoutMs`: 1–60000, default 10000. `intervalMs`: 50–5000, default 250. Timeouts include time spent in the command queue and making upstream requests. Each poll is serialized with input and other inspection operations, but the wait releases the queue between polls. Another request can therefore trigger the transition being awaited. Queued work is removed on cancellation or deadline expiry. Device calls already dispatched may finish after a timeout. Individual queued operations have an eight-second budget (gestures may use their duration plus two seconds). The queue admits at most 64 pending operations and prioritizes keep-awake pulses while preserving FIFO order among ordinary inputs. `stableForMs` (0–10000, default 0) requires the same matching observation across the specified interval; it does not assert that the entire screen is stable.
+`timeoutMs`: 1–60000, default 10000. `intervalMs`: 50–5000, default 250. Timeouts include time spent in the command queue and making upstream requests. Each poll is serialized with input and other inspection operations, but the wait releases the queue between polls. Another request can therefore trigger the transition being awaited. Queued work is removed on cancellation or deadline expiry. Device calls already dispatched may finish after a timeout. Individual queued operations have an eight-second budget (gestures may use their duration plus two seconds). The queue admits at most 64 pending operations and prioritizes keep-awake pulses while preserving FIFO order among ordinary inputs. `stableForMs` (0–10000, default 0) requires the matching condition, match count, and requested attribute value to remain stable across the specified interval; temporary element handles may change; it does not assert that the entire screen is stable.
 
 Selectors are evaluated afresh on each poll, including after stale-element errors during transitions. Transport, authorization, and invalid-selector errors are never treated as successful absence. Polling can miss short-lived states. Disconnecting the HTTP client cancels polling; an upstream operation already dispatched may still finish on the phone. Successful waits describe an observation, not a permanent guarantee about subsequent UI state.
 
@@ -95,7 +135,11 @@ Invalid requests return 400; rejected origins/hosts 403; missing elements 404; s
 
 ## Element actions and verified transitions
 
-`tap` accepts exactly one `id` or `selector`. `type` accepts `text` plus an optional `id`/`selector`; without a target it inserts into the focused field using Unicode event playback without attaching a temporary hardware keyboard. Targeted operations re-resolve selectors and check enabled/hittable state before invoking XCTest's element action.
+`open-url` accepts `{ "url": "https://example.com/" }` and opens the link in the phone's default application. Only absolute HTTP/HTTPS links without embedded credentials are accepted. Encode non-ASCII paths and internationalized hostnames before sending. It uses the same queue, app/orientation guards and durable command receipts as other inputs; successful dispatch does not guarantee that the destination loaded. An uncertain result is never automatically replayed.
+
+`tap` accepts exactly one `id` or `selector`. `type` accepts `text` plus an optional `id`/`selector`; without a target it inserts into the focused field without attaching a temporary hardware keyboard. Targeted operations re-resolve selectors and check enabled/hittable state before invoking XCTest's element action.
+
+Ordinary text and WebKit password fields support Unicode insertion. Native password fields currently support printable ASCII, precomposed Latin-1 letters, and `¡¢£¥§«°»¿`; a command containing any other character returns `unsupported operation` before inserting anything. Full Unicode support in native password fields remains unresolved. Editing follows iOS behavior: on the tested iOS 27.3 phone, even the on-screen Delete key can split complex emoji in a password field. No normalization, clipboard transfer, or uncertain retry is used.
 
 ```json
 {
@@ -115,7 +159,7 @@ Invalid requests return 400; rejected origins/hosts 403; missing elements 404; s
 
 Send this to `/api/tap`. A visible label is not necessarily an accessibility identifier: use a label predicate when that is what you observed. Input routes accept optional `expectedApp`, `expectedOrientation`, `observationId`, `requestId`, `timeoutMs` and `waitFor`. A postcondition is observed after dispatch without monopolizing the queue; only success of that check produces `outcome: "verified"`. Without it, success is `executed`, not a claim about the resulting UI. Failed postconditions preserve `outcome: "executed"`; failures after dispatch with uncertain completion produce `unknown`. Never blindly retry an unknown outcome.
 
-Gesture points use normalized coordinates in the **current interface orientation**. They must be 1–256 triples `[x,y,ms]`, x/y within 0–1, initial time zero, nondecreasing timestamps, and `end` at least the last timestamp and no more than 10000 ms. Both Effect and the patched native route validate these constraints. Native touch independently checks lock state and optional app/orientation guards. Screen dimensions are read for each native gesture instead of caching portrait dimensions.
+Gesture points use normalized coordinates in the **current interface orientation**. They must be 1–256 triples `[x,y,ms]`, x/y within 0–1, initial time zero, nondecreasing timestamps, and `end` at least the last timestamp and no more than 10000 ms. Both Effect and the native helper validate these constraints. Native touch independently checks lock state and optional app/orientation guards. Screen dimensions are read for each native gesture instead of caching portrait dimensions.
 
 Successful input replies also include diagnostic `timing`: `queueMs` (admission and queue), `preflightMs`, `actionMs`, and `totalMs`, plus `native.guardMs`, `native.playbackMs` and `native.confirmationMs` when supplied by the helper. These use monotonic elapsed time. They are not input-to-display measurements and are not retained in receipts across a server restart.
 
@@ -127,15 +171,15 @@ Successful input replies also include diagnostic `timing`: `queueMs` (admission 
 
 `observe` captures app/orientation, source, an optional screenshot, then source/app/orientation again. It returns component capture timestamps and an opaque `id`. `stable: true` means the two sampled trees and app/orientation agreed; this is a bounded consistency check, **not an atomic snapshot or a guarantee of pixel stability**. If `settleMs` is supplied, that agreement must persist across samples; `timeoutMs` defaults to 8000, maximum 10000. Omit screenshot with `{"screenshot":false}` when a tree is enough.
 
-Input takes priority over pending inspection. Observations release the queue between their before/screenshot/after samples, allowing input to run; the before/after consistency check detects resulting changes. An in-flight WDA request still runs to completion or timeout.
+Input takes priority over pending inspection. Observations release the queue between their before/screenshot/after samples, allowing input to run; the before/after consistency check detects resulting changes. A native operation retains exclusive ownership until Apple completes it. A timed-out mutation has an unknown outcome and is never replayed; stalled operations require bounded helper recovery.
 
 An input's optional `observationId` must refer to a stable observation no older than 15 seconds, and the current app, orientation and tree must still match. Mutations invalidate saved observations. Guards reduce stale-input errors but cannot eliminate a UI change between checking and executing. Only the last 32 observations are retained in memory.
 
 ## Retry-safe command receipts
 
-Supply the same `requestId` when recovering a lost input reply. Concurrent and subsequent requests with the same ID and validated payload share the original result; different input with that ID is rejected. The browser generates IDs and checks receipts automatically, without resending an uncertain action.
+Supply the same `requestId` when recovering a lost input reply. Concurrent and subsequent requests with the same ID and validated payload recover the original outcome; different input with that ID is rejected. The browser generates IDs and checks receipts automatically, without resending an uncertain action.
 
-`GET /api/commands/<requestId>` returns queued/running/executed/verified/failed-or-unknown state and the result. Receipts persist in the server's runtime directory with mode 0600, separated by device or port; `IPORTAL_COMMANDS_FILE` overrides the location. Persistence contains hashes and sanitized receipts, not input text, screenshots or UI trees. A restart during an unfinished command marks its outcome unknown and prevents replay. The retention window is 24 hours, capped at 4096 receipts; a full store rejects new inputs rather than evicting live deduplication records. This is not an exactly-once guarantee across device failure or beyond retention. Local testing must use a separate receipt file.
+`GET /api/commands/<requestId>` returns queued/running/executed/verified/failed-or-unknown state and the result. Receipts persist in the server's runtime directory with mode 0600, separated by device or port; `IPORTAL_COMMANDS_FILE` overrides the location. Persistence contains hashes and sanitized receipts, not input text, screenshots or UI trees. A restart during an unfinished command marks its outcome unknown and prevents replay. The retention window is 24 hours. Receipts use a SQLite ledger with a bounded memory cache; reaching 4096 retained receipts does not block input. Existing JSON ledgers migrate automatically to the adjacent `.sqlite` file. This is not an exactly-once guarantee across device failure or beyond retention. Local testing must use a separate receipt file.
 
 ## Save a screenshot
 

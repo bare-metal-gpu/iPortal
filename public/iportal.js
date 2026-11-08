@@ -6,6 +6,7 @@ const phone = $("phone");
 const keyboardInput = $("keyboard-input");
 const bridgeId = crypto.randomUUID();
 let connected = false;
+/** @type {import("../public-contracts.ts").PublicStatus["lifecycle"]} */
 let lifecycle = "connecting";
 let inputEpoch = 0;
 let nativeReady = false;
@@ -15,7 +16,10 @@ let deviceUdid = "";
 let usbConnectionID = "";
 let singleUsbDevice = false;
 let usbDevicePresent = false;
+/** @type {import("../public-contracts.ts").PublicStatus["orientation"]} */
 let deviceOrientation = null;
+/** @type {import("../public-contracts.ts").PublicStatus["displayPixels"]} */
+let displayPixels = null;
 let serverInstance = /** @type {HTMLMetaElement} */ (
   document.querySelector('meta[name="iportal-instance"]')
 ).content;
@@ -28,6 +32,7 @@ function canInteract() {
     (nativeVideo ? nativeReady : streamReady)
   );
 }
+/** @param {boolean} ready @param {number} epoch @param {string} documentId */
 function setNativeVideoReady(ready, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId) return;
   if (nativeReady && !ready) invalidateInput();
@@ -46,15 +51,18 @@ function invalidateInput() {
   wheelTimer = undefined;
 }
 let nativeSettingsVisible = false;
+/** @param {boolean} visible @param {number} epoch @param {string} documentId */
 function setNativeSettingsVisible(visible, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId) return;
   nativeSettingsVisible = Boolean(visible);
   if (nativeSettingsVisible) invalidateInput();
 }
+/** @param {number} [epoch] @param {string} [documentId] */
 function nativeGeometryChanged(epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId) return;
   invalidateInput();
 }
+/** @param {import("../public-contracts.ts").PublicStatus["lifecycle"]} next */
 function setLifecycle(
   next,
   identity = deviceUdid,
@@ -94,8 +102,9 @@ function setLifecycle(
 let streamReady = false;
 let pendingActions = 0;
 let loadingDetail = "";
-let lastPresenceAt = -Infinity,
-  lastPresenceReady;
+let lastPresenceAt = -Infinity;
+/** @type {boolean | undefined} */
+let lastPresenceReady;
 function reportPresence() {
   const ready = canInteract();
   if (ready === lastPresenceReady && performance.now() - lastPresenceAt < 2000) return;
@@ -134,6 +143,7 @@ function reportLoading() {
     singleUsbDevice,
     usbDevicePresent,
     deviceOrientation,
+    displayPixels,
     serverInstance,
     videoEpoch,
     statusRevision,
@@ -160,6 +170,7 @@ if (params.has("app") && window.webkit?.messageHandlers?.native)
 let nativeVideo = params.get("video") === "native";
 document.body.classList.toggle("native-video", nativeVideo);
 
+/** @param {number} [epoch] @param {string} [documentId] */
 function useNativeVideo(epoch, documentId) {
   if (epoch !== undefined && (epoch !== videoEpoch || documentId !== bridgeId)) return;
   stopStream();
@@ -180,6 +191,7 @@ class MjpegFrames {
   buffer = new Uint8Array(0);
   /** @type {number | null} */
   needed = null;
+  /** @param {Uint8Array} chunk */
   push(chunk) {
     if (this.buffer.length + chunk.length > MAX_FRAME_BYTES + 65536)
       throw new Error("Oversized video frame");
@@ -190,7 +202,7 @@ class MjpegFrames {
     const frames = [];
     while (true) {
       if (this.needed === null) {
-        // WDA separates parts with two CRLFs. They may themselves arrive in
+        // Some multipart encoders separate parts with two CRLFs. They may themselves arrive in
         // separate reads; do not mistake the empty separator for a header.
         let padding = 0;
         while (this.buffer[padding] === 13 && this.buffer[padding + 1] === 10) padding += 2;
@@ -243,6 +255,7 @@ function stopStream() {
   streamWatchdog = undefined;
   streamReady = false;
 }
+/** @param {ImageBitmap} frame @param {number} generation */
 function presentStreamFrame(frame, generation) {
   if (generation !== streamGeneration || nativeVideo || lifecycle !== "ready" || !connected)
     return false;
@@ -280,8 +293,9 @@ async function connectStream() {
   streamController = controller;
   const generation = ++streamGeneration;
   const parser = new MjpegFrames();
-  let decoding = false,
-    pending = null;
+  let decoding = false;
+  /** @type {Uint8Array<ArrayBuffer> | null} */
+  let pending = null;
   streamStableSince = 0;
   const armWatchdog = () => {
     clearTimeout(streamWatchdog);
@@ -327,7 +341,7 @@ async function connectStream() {
         if (done) break;
         const frames = parser.push(value);
         if (frames.length) {
-          pending = frames.at(-1);
+          pending = frames.at(-1) ?? null;
           void decodePending();
         }
       }
@@ -353,6 +367,7 @@ async function connectStream() {
 }
 
 // Called by the Mac app when direct USB capture is unavailable.
+/** @param {number} [epoch] @param {string} [documentId] */
 function startStream(epoch, documentId) {
   if (epoch !== undefined && (epoch !== videoEpoch || documentId !== bridgeId)) return;
   stopStream();
@@ -365,6 +380,7 @@ function startStream(epoch, documentId) {
   void connectStream();
 }
 
+/** @param {string} url @param {RequestInit} [options] @returns {Promise<import("../public-contracts.ts").ActionResponse>} */
 async function requestJSON(url, options = {}, timeoutMs = 18000) {
   const controller = new AbortController();
   let timer;
@@ -384,7 +400,9 @@ async function requestJSON(url, options = {}, timeoutMs = 18000) {
   }
 }
 
+/** @type {number | undefined} */
 let toastTimer;
+/** @param {string} msg */
 function toast(msg) {
   $("toast").textContent = msg;
   $("toast").classList.add("show");
@@ -393,9 +411,11 @@ function toast(msg) {
 }
 
 // Keep implementation details in API responses, not in the app's messages.
+/** @param {import("../public-contracts.ts").ActionResponse} response */
 function actionMessage(response) {
   if (response.outcome === "unknown") return `Check your ${deviceKind} before trying again.`;
   if (response.outcome === "executed") return `Action sent. Check your ${deviceKind}.`;
+  /** @type {Record<string,string>} */
   const messages = {
     "device locked": `Unlock your ${deviceKind}.`,
     "app changed": "The app changed. Try again.",
@@ -409,13 +429,15 @@ function actionMessage(response) {
     timeout: "That took too long. Try again.",
     cancelled: "Cancelled.",
   };
-  return Object.hasOwn(messages, response.code)
-    ? messages[response.code]
+  return Object.hasOwn(messages, response.code ?? "")
+    ? messages[response.code ?? ""]
     : "Couldn't complete that action.";
 }
 
 let outbound = Promise.resolve();
+/** @param {string | undefined} name @param {Record<string,unknown>} [body] */
 function api(name, body = {}, fromGesture = false) {
+  if (!name) return Promise.resolve();
   if (!controlOnly.has(name) && !canInteract()) return Promise.resolve();
   const epoch = inputEpoch;
   if (!fromGesture) {
@@ -428,6 +450,7 @@ function api(name, body = {}, fromGesture = false) {
   reportLoading();
   const task = outbound.then(async () => {
     try {
+      if (!name) return Promise.resolve();
       if (!controlOnly.has(name) && (epoch !== inputEpoch || !canInteract())) return;
       const json = await requestJSON(`/api/${name}`, {
         method: "POST",
@@ -463,17 +486,25 @@ function api(name, body = {}, fromGesture = false) {
 // ---------- Connection ----------
 
 let pollInFlight = false;
+/** @type {number | undefined} */
 let pollTimer;
 let usbRevision = 0;
+/** @type {AbortController | undefined} */
 let pollController;
 let refreshPending = false;
 let lastServerEventAt = -Infinity,
   lastServerSequence = -1,
   usbEventAt = 0;
+/** @param {import("../public-contracts.ts").PublicStatus} s @param {string} [documentId] */
 function receiveServerStatus(s, documentId) {
   if (documentId !== undefined && documentId !== bridgeId) return;
   if (s.service !== "iportal" || s.apiVersion !== 2) return;
-  if (s.instanceId === serverInstance && s.eventSequence <= lastServerSequence) return;
+  if (
+    s.instanceId === serverInstance &&
+    s.eventSequence !== undefined &&
+    s.eventSequence <= lastServerSequence
+  )
+    return;
   if (s.observedAt < usbEventAt) return;
   lastServerEventAt = performance.now();
   lastServerSequence = s.eventSequence ?? lastServerSequence;
@@ -481,6 +512,7 @@ function receiveServerStatus(s, documentId) {
   statusRevision++;
   reportLoading();
 }
+/** @param {boolean} attached @param {number} epoch @param {string} documentId */
 function usbConnectionChanged(attached, epoch, documentId) {
   // Hardware events remain relevant across video epochs in the same document.
   if (documentId !== bridgeId) return;
@@ -539,7 +571,12 @@ async function pollConnection() {
       refreshPending = true;
       return;
     }
-    if (s.instanceId === serverInstance && s.eventSequence <= lastServerSequence) return;
+    if (
+      s.instanceId === serverInstance &&
+      s.eventSequence !== undefined &&
+      s.eventSequence <= lastServerSequence
+    )
+      return;
     lastServerSequence = s.eventSequence ?? lastServerSequence;
     applyServerStatus(s);
   } catch {
@@ -558,6 +595,7 @@ async function pollConnection() {
   statusRevision++;
   reportLoading();
 }
+/** @param {import("../public-contracts.ts").PublicStatus} s */
 function applyServerStatus(s) {
   if (s.service !== "iportal" || s.apiVersion !== 2) throw new Error("Unexpected server");
   const fingerprint = /** @type {HTMLMetaElement} */ (
@@ -578,6 +616,7 @@ function applyServerStatus(s) {
   singleUsbDevice = s.captureIdentity?.singleUsbDevice === true;
   usbDevicePresent = Boolean(s.device);
   deviceOrientation = s.orientation ?? null;
+  displayPixels = s.displayPixels ?? null;
   setLifecycle(
     s.lifecycle,
     s.device?.udid ?? s.pinnedUdid ?? "",
@@ -629,6 +668,7 @@ queueMicrotask(() => {
 
 // ---------- Touch: click, long press, drag ----------
 
+/** @param {{clientX:number,clientY:number}} e @returns {[number,number]} */
 const rel = (e) => {
   const r = screen.getBoundingClientRect();
   return [
@@ -637,6 +677,7 @@ const rel = (e) => {
   ];
 };
 
+/** @param {{clientX:number,clientY:number}} e */
 function ripple(e) {
   const r = phone.getBoundingClientRect();
   const el = document.createElement("div");
@@ -702,9 +743,11 @@ function flushWheel() {
     sendPinch(pending.x, pending.y, Math.exp(-pending.dy * 4));
     return;
   }
+  /** @param {number} v */
   const lim = (v) => Math.max(-0.5, Math.min(0.5, -v));
   const dx = lim(pending.dx),
     dy = lim(pending.dy);
+  /** @param {number} v @param {number} d */
   const fit = (v, d) => Math.max(0.05 - Math.min(0, d), Math.min(0.95 - Math.max(0, d), v));
   const x = fit(pending.x, dx),
     y = fit(pending.y, dy);
@@ -728,6 +771,7 @@ function finishWheel() {
   flushWheel();
   wheel = null;
 }
+/** @param {number} x @param {number} y @param {number} dx @param {number} dy */
 function accumulateWheel(x, y, dx, dy, phased = false, zoom = false) {
   if (!canInteract() || touch || pinch) return;
   // A modifier change starts a new mouse burst. For trackpads, keep the mode
@@ -744,6 +788,7 @@ function accumulateWheel(x, y, dx, dy, phased = false, zoom = false) {
     wheelTimer = setTimeout(finishWheel, wheelIdleMs);
   }
 }
+/** @param {import("../public-contracts.ts").NativeScroll} event @param {number} epoch @param {string} documentId */
 function nativeScroll(event, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId || !canInteract() || pinch) return;
   if (event.phase === "momentum") return;
@@ -804,6 +849,7 @@ screen.addEventListener(
 
 /** @type {{x: number, y: number, scale: number, sent: boolean, source: string} | null} */
 let pinch = null;
+/** @param {number} x @param {number} y @param {number} scale */
 function sendPinch(x, y, scale) {
   scale = Math.max(0.25, Math.min(4, scale));
   if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.02) return;
@@ -814,6 +860,7 @@ function flushPinch() {
   pinch.sent = true;
   sendPinch(pinch.x, pinch.y, pinch.scale);
 }
+/** @param {import("../public-contracts.ts").NativePinch} event @param {string} source */
 function updatePinch(event, source) {
   if (!canInteract()) return;
   if (event.phase === "began") {
@@ -833,14 +880,16 @@ function updatePinch(event, source) {
     return;
   }
   if (!pinch.sent) {
-    if (Number.isFinite(event.scale)) pinch.scale = event.scale; // Safari's cumulative scale
-    else if (Number.isFinite(event.delta)) pinch.scale += event.delta; // AppKit's incremental delta
+    if (typeof event.scale === "number" && Number.isFinite(event.scale)) pinch.scale = event.scale; // Safari's cumulative scale
+    else if (typeof event.delta === "number" && Number.isFinite(event.delta))
+      pinch.scale += event.delta; // AppKit's incremental delta
   }
   if (event.phase === "ended") {
     flushPinch();
     pinch = null;
   }
 }
+/** @param {import("../public-contracts.ts").NativePinch} event @param {number} epoch @param {string} documentId */
 function nativePinch(event, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId) return;
   updatePinch(event, "native");
@@ -855,7 +904,7 @@ for (const [name, phase] of [
     name,
     (e) => {
       e.preventDefault();
-      const [x, y] = rel(e);
+      const [x, y] = rel(/** @type {Event & {clientX:number,clientY:number}} */ (e));
       updatePinch(
         { phase, x, y, scale: /** @type {Event & {scale: number}} */ (e).scale },
         "safari",
@@ -890,6 +939,7 @@ function flush(force = false) {
   });
 }
 
+/** @param {KeyboardEvent} e */
 function editingKeyRequest(e) {
   if (e.isComposing || e.key === "Dead" || e.key === "Process" || e.getModifierState?.("AltGraph"))
     return null;
@@ -955,6 +1005,7 @@ window.addEventListener("keydown", (e) => {
   typed += e.key;
   flush();
 });
+/** @param {string} key @param {string[]} modifiers @param {number} epoch @param {string} documentId */
 function nativeKey(key, modifiers, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId || !canInteract())
     return Promise.resolve(null);

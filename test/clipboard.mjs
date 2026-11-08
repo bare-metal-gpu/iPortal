@@ -1,8 +1,9 @@
+import { stubCommand } from "./helper-stub.ts";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { Effect } from "effect";
-import { createClipboard, validateClipboard } from "../clipboard.mjs";
-import { decodeRequest } from "../schemas.mjs";
+import { createClipboard, validateClipboard } from "../clipboard.ts";
+import { decodeRequest } from "../schemas.ts";
 import { checkRequest } from "../server.mjs";
 const encode = (text) => Buffer.from(text).toString("base64");
 
@@ -36,11 +37,12 @@ test("clipboard does not replay failed operations or return invalid/empty data a
   let value = { empty: true };
   let fail = false;
   const bridge = createClipboard({
-    withSession: (fn) => fn(),
-    wda: async (_method, route) => {
-      calls++;
-      if (fail) throw new Error("Disconnected");
-      return route.endsWith("/prepare") ? { value: { lease: "test" } } : { value };
+    helper: {
+      command: stubCommand(async (operation) => {
+        calls++;
+        if (fail) throw new Error("Disconnected");
+        return operation === "clipboardPrepare" ? { lease: "test" } : value;
+      }),
     },
   });
   assert.deepEqual(await bridge.transfer({ operation: "read" }), { empty: true });

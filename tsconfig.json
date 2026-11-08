@@ -10,10 +10,10 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "strict": true,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "useUnknownInCatchVariables": false,
+    "useUnknownInCatchVariables": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
@@ -24,8 +24,7 @@
     "ios/**/*.ts",
     "scripts/**/*.mjs",
     "scripts/**/*.ts",
-    "test/**/*.mjs",
-    "test/**/*.ts"
+    "type-tests/**/*.ts"
   ],
-  "exclude": ["node_modules", "vendor", "dist"]
+  "exclude": ["node_modules", "vendor", "dist", "test"]
 }

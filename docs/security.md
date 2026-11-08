@@ -19,7 +19,7 @@ Clipboard transfer is explicit, not continuous synchronization. iPortal does not
 
 - The Mac app is **not App Sandboxed or notarized**. It runs Xcode tooling and device automation as the logged-in user. Use it only on a Mac you trust.
 - Session authentication does not protect a compromised Mac or phone, or software able to inspect the helper's process environment.
-- The manual `--wda` endpoint override is operator-trusted. Authentication does not add encryption to a manually configured plain-HTTP endpoint; do not use an untrusted endpoint.
+- The manual `--helper-url` endpoint override is operator-trusted. Authentication does not add encryption to a manually configured plain-HTTP endpoint; do not use an untrusted endpoint.
 - Private Apple APIs and developer signing can change across OS/Xcode releases. Supported build targets do not establish compatibility with every device.
 
 Keep macOS, Xcode, and the app's dependencies updated. The Mac app embeds Bun: updating a separately installed Bun does not update an already-built app; rebuild it to include runtime fixes. Dependency scans do not cover every native component or unknown vulnerability.

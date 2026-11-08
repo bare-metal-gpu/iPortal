@@ -18,11 +18,13 @@ export const stateDirectory =
     ? path.join(os.homedir(), "Library/Application Support/iPortal")
     : path.join(sourceRoot, "vendor"));
 
+/** @param {string} name */
 export function statePath(name) {
   ensurePrivateDirectory(stateDirectory);
   return path.join(stateDirectory, name);
 }
 
+/** @param {...string} args */
 export function runtimeCommand(...args) {
   return [
     process.execPath,

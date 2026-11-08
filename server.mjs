@@ -1,21 +1,25 @@
 import { Cause, Effect, Layer, Stream } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { BunHttpServer } from "@effect/platform-bun";
-import { apiError } from "./errors.mjs";
-import { decodeRequest, RequestSchemas } from "./schemas.mjs";
+import { apiError, errorInfo } from "./errors.mjs";
+import { decodeRequest, RequestSchemas } from "./schemas.ts";
+import { validatePublicResponse } from "./responses.ts";
 import { interFont } from "./web-assets.mjs";
 
-/** @returns {{status: number, body: Record<string, any>}} */
-export function errorResponse(e) {
+/** @param {unknown} failure @returns {{status:number,body:{ok:false,error:string,code:string,details?:unknown,requestId?:string,outcome?:import("./public-contracts.ts").CommandOutcome,verified?:boolean}}} */
+export function errorResponse(failure) {
+  const e = errorInfo(failure);
+  /** @type {Record<string,number>} */
+  const codes = {
+    "no such element": 404,
+    "stale element reference": 409,
+    "invalid element state": 409,
+    "invalid argument": 400,
+    "invalid selector": 400,
+  };
   const status =
     e.status ??
-    {
-      "no such element": 404,
-      "stale element reference": 409,
-      "invalid element state": 409,
-      "invalid argument": 400,
-      "invalid selector": 400,
-    }[e.code] ??
+    codes[e.code ?? ""] ??
     (e._tag === "SchemaError"
       ? 400
       : e.name === "TimeoutError"
@@ -27,7 +31,7 @@ export function errorResponse(e) {
     status,
     body: {
       ok: false,
-      error: e.message ?? String(e),
+      error: e.message,
       code:
         e.code ??
         (status === 400 ? "invalid argument" : status === 408 ? "timeout" : "upstream error"),
@@ -38,10 +42,11 @@ export function errorResponse(e) {
 
 // Trust local OS clients, and bind browser clients automatically to this server instance.
 // No account, pairing dialog or user-managed secret. Host checks also reject DNS rebinding.
+/** @param {{headers:Record<string,string|undefined>,method:string}} request @param {number} port @param {string} instanceId */
 export function checkRequest(request, port, instanceId) {
   const headers = request.headers;
   const allowed = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
-  if (!allowed.has(headers.host)) throw apiError("Unexpected Host", 403, "forbidden");
+  if (!allowed.has(headers.host ?? "")) throw apiError("Unexpected Host", 403, "forbidden");
   if (headers.origin && ![...allowed].some((host) => headers.origin === `http://${host}`))
     throw apiError("Unexpected Origin", 403, "forbidden");
   if (
@@ -139,6 +144,7 @@ export function openVideoStream(
   });
 }
 
+/** @param {{port:number,instanceId:string,html:string,mjpeg:string,mjpegSocket?:string,helperAuth?:ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>,dispatch:(name:string,body:unknown,signal:AbortSignal)=>Promise<{status:number,body:unknown}>,statusEvents?:{stream:()=>ReadableStream<Uint8Array>},onListening?:(port:number)=>void,identity?:{owner?:string,pinnedUdid?:string|null},fallbackPort?:boolean}} options */
 export function startServer({
   port,
   instanceId,
@@ -162,8 +168,16 @@ export function startServer({
     "x-frame-options": "DENY",
     "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   };
+  /** @param {{status:number,body:unknown}} response */
   const json = (response) =>
     HttpServerResponse.jsonUnsafe(response.body, { status: response.status, headers });
+  /** @param {string} name @param {unknown} body @param {AbortSignal} signal */
+  const checkedDispatch = async (name, body, signal) => {
+    const result = await dispatch(name, body, signal);
+    validatePublicResponse(name, result.body, body);
+    return result;
+  };
+  /** @param {import("effect/http/HttpServerRequest").HttpServerRequest} request */
   const handler = (request) =>
     Effect.gen(function* () {
       yield* Effect.try(() => checkRequest(request, boundPort, instanceId));
@@ -216,8 +230,8 @@ export function startServer({
       if (request.method === "GET" && (name === "status" || name === "keep-awake" || command)) {
         return json(
           yield* Effect.tryPromise((signal) =>
-            dispatch(
-              command ? "command-status" : name,
+            checkedDispatch(
+              command ? "command-status" : (name ?? "status"),
               command ? { requestId: command } : {},
               signal,
             ),
@@ -226,11 +240,13 @@ export function startServer({
       }
       if (request.method !== "POST" || !name || !Object.hasOwn(RequestSchemas, name))
         return json({ status: 404, body: { ok: false, error: "Not found" } });
+      if (!(request.source instanceof Request)) throw apiError("Invalid request source", 500);
+      const source = request.source;
       const raw = yield* Effect.tryPromise((signal) =>
-        readBody(request.source, signal, name === "clipboard-write" ? 6 * 1024 * 1024 : undefined),
+        readBody(source, signal, name === "clipboard-write" ? 6 * 1024 * 1024 : undefined),
       );
       const body = yield* decodeRequest(/** @type {keyof typeof RequestSchemas} */ (name), raw);
-      return json(yield* Effect.tryPromise((signal) => dispatch(name, body, signal)));
+      return json(yield* Effect.tryPromise((signal) => checkedDispatch(name, body, signal)));
     }).pipe(
       Effect.catch((e) =>
         Effect.succeed(
@@ -240,6 +256,7 @@ export function startServer({
     );
 
   const routes = HttpRouter.add("*", "/*", handler);
+  /** @param {number} listenPort @returns {Effect.Effect<never, never, never>} */
   const launch = (listenPort) => {
     const listener = Layer.effect(
       HttpServer.HttpServer,

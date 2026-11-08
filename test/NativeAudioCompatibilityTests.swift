@@ -33,3 +33,40 @@ precondition(rejectedMissingError && modernAudio.calls == 3, "A false result wit
 let legacyAudioSupported = try nativeAudioStartUsingErrorAPI(NSObject())
 precondition(!legacyAudioSupported, "Missing capability selects the legacy path before dispatch")
 print("Native audio: old-SDK runtime dispatch, NSError propagation and no replay passed.")
+
+private final class AudioConnectFixture: NSObject {
+    var calls = 0
+    var succeeds = true
+    var reportsError = true
+    var source: AVAudioNode?
+    var destination: AVAudioNode?
+    var format: AVAudioFormat?
+    @objc(connect:to:format:error:)
+    func connect(_ source: AVAudioNode, to destination: AVAudioNode, format: AVAudioFormat?,
+                 error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool {
+        calls += 1
+        self.source = source; self.destination = destination; self.format = format
+        if !succeeds && reportsError { error?.pointee = NSError(domain: "iPortal.Audio.Test", code: 43) }
+        return succeeds
+    }
+}
+private let modernGraph = AudioConnectFixture()
+let graphSource = AVAudioMixerNode(), graphDestination = AVAudioMixerNode()
+let graphFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+let graphConnected = try nativeAudioConnectUsingErrorAPI(modernGraph, source: graphSource,
+                                                        destination: graphDestination, format: graphFormat)
+precondition(graphConnected && modernGraph.calls == 1)
+precondition(modernGraph.source === graphSource && modernGraph.destination === graphDestination && modernGraph.format === graphFormat)
+modernGraph.succeeds = false
+var rejectedGraph = false
+do { _ = try nativeAudioConnectUsingErrorAPI(modernGraph, source: graphSource, destination: graphDestination, format: nil) }
+catch let error as NSError { rejectedGraph = error.domain == "iPortal.Audio.Test" && error.code == 43 }
+precondition(rejectedGraph && modernGraph.calls == 2 && modernGraph.format == nil)
+modernGraph.reportsError = false
+var rejectedGraphWithoutError = false
+do { _ = try nativeAudioConnectUsingErrorAPI(modernGraph, source: graphSource, destination: graphDestination, format: nil) }
+catch { rejectedGraphWithoutError = true }
+precondition(rejectedGraphWithoutError && modernGraph.calls == 3)
+let legacyGraphSupported = try nativeAudioConnectUsingErrorAPI(NSObject(), source: graphSource, destination: graphDestination, format: nil)
+precondition(!legacyGraphSupported)
+print("Native audio: old-SDK graph dispatch preserves arguments, errors and no replay.")

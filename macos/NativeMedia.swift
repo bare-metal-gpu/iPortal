@@ -6,17 +6,138 @@ import VideoToolbox
 func readAvailableMediaBytes(_ handle: FileHandle) -> Data { handle.availableData }
 // END TESTABLE MEDIA INPUT
 
+// BEGIN TESTABLE MEDIA DECODE OWNERSHIP
+// The decoder may complete synchronously, asynchronously, or out of order.
+// Every submitted compressed frame keeps its reference dependencies; only an
+// obsolete decoded presentation is discarded. Saturation applies bounded
+// backpressure instead of silently dropping HEVC reference frames.
+final class MediaDecodeOwnership: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var pending: Set<UInt64> = []
+    private var next: UInt64 = 0
+    private var presented: UInt64?
+    private var retired = false
+    let capacity: Int
+
+    init(capacity: Int = 2) { precondition(capacity > 0); self.capacity = capacity }
+
+    func admit(until deadline: Date) -> UInt64? {
+        condition.lock(); defer { condition.unlock() }
+        while !retired && pending.count >= capacity {
+            if !condition.wait(until: deadline) { return nil }
+        }
+        guard !retired else { return nil }
+        let sequence = next; next &+= 1
+        pending.insert(sequence)
+        return sequence
+    }
+
+    func complete(_ sequence: UInt64) {
+        condition.lock(); defer { condition.unlock() }
+        pending.remove(sequence)
+        condition.broadcast()
+    }
+
+    func retire() {
+        condition.lock(); defer { condition.unlock() }
+        retired = true
+        condition.broadcast()
+    }
+
+    var isCurrent: Bool {
+        condition.lock(); defer { condition.unlock() }
+        return !retired
+    }
+
+    @discardableResult func present(_ sequence: UInt64, _ action: () -> Void) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        guard !retired, pending.contains(sequence), presented.map({ sequence > $0 }) ?? true else { return false }
+        presented = sequence
+        // FrameStore consumption is brief. Holding the ownership lock makes
+        // retirement atomic with delivery, so an old generation cannot flash
+        // after its replacement has started.
+        action()
+        return true
+    }
+}
+
+// Decoder teardown is synchronous inside VideoToolbox and has no deadline API.
+// A per-device budget includes active and retiring sessions across replacement
+// receivers, so a stalled teardown cannot accumulate unbounded generations.
+final class MediaDecoderBudget: @unchecked Sendable {
+    private final class WeakBudget { weak var value: MediaDecoderBudget?; init(_ value: MediaDecoderBudget) { self.value = value } }
+    private static let registryLock = NSLock()
+    private static var devices: [String: WeakBudget] = [:]
+    private let lock = NSLock()
+    private var sessions: Set<UUID> = []
+    private let capacity: Int
+    init(capacity: Int = 3) { precondition(capacity > 0); self.capacity = capacity }
+    static func device(_ identifier: String) -> MediaDecoderBudget {
+        registryLock.lock(); defer { registryLock.unlock() }
+        devices = devices.filter { $0.value.value != nil }
+        let key = identifier.lowercased().filter { $0.isLetter || $0.isNumber }
+        if let existing = devices[key]?.value { return existing }
+        let budget = MediaDecoderBudget()
+        devices[key] = WeakBudget(budget)
+        return budget
+    }
+    func acquire() -> UUID? {
+        lock.lock(); defer { lock.unlock() }
+        guard sessions.count < capacity else { return nil }
+        let token = UUID(); sessions.insert(token); return token
+    }
+    func release(_ token: UUID) { lock.lock(); sessions.remove(token); lock.unlock() }
+}
+// END TESTABLE MEDIA DECODE OWNERSHIP
+
+// BEGIN TESTABLE MEDIA PIXEL ATTRIBUTES
+func nativeMediaUsesYUV(bitsPerComponent: Int?, transferFunction: String?) -> Bool {
+    // The established display/crop path is SDR. Native HDR needs matching
+    // transforms, EDR presentation and screenshot handling before opting in.
+    // Missing metadata is not proof of SDR or of an eight-bit source.
+    guard bitsPerComponent == 8, let transferFunction else { return false }
+    return [kCVImageBufferTransferFunction_ITU_R_709_2 as String,
+            kCVImageBufferTransferFunction_sRGB as String].contains(transferFunction)
+}
+func nativeMediaPixelAttributeCandidates(_ recommended: [String: Any], nativeYUV: Bool = false) -> [[String: Any]] {
+    let surface: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]]
+    let legacy = surface.merging([kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]) { _, new in new }
+    var resolved: CFDictionary?
+    let status = CVPixelBufferCreateResolvedAttributesDictionary(nil, [recommended, surface] as CFArray, &resolved)
+    var candidates: [[String: Any]] = []
+    if status == kCVReturnSuccess, let attributes = resolved as? [String: Any] {
+        // Let VT choose the native range for confirmed eight-bit SDR. All
+        // other formats retain the previous BGRA decode behavior consistently
+        // in portrait, landscape, and codec-padding crops.
+        var native = attributes
+        if nativeYUV { native.removeValue(forKey: kCVPixelBufferPixelFormatTypeKey as String) }
+        else { native[kCVPixelBufferPixelFormatTypeKey as String] = kCVPixelFormatType_32BGRA }
+        candidates.append(native)
+    }
+    if nativeYUV { candidates.append(surface) }
+    candidates.append(legacy)
+    return candidates
+}
+// END TESTABLE MEDIA PIXEL ATTRIBUTES
+
 // One process and decoder per physical device. The child owns only its paired
 // CoreDevice session; malformed records, exit, or stale callbacks cannot migrate
 // into a replacement capture. All queues are bounded by the OS pipe and decoder.
 final class NativeMediaReceiver: @unchecked Sendable {
     private let queue = DispatchQueue(label: "iportal.native-media", qos: .userInteractive)
+    private let presentationQueue = DispatchQueue(label: "iportal.native-media-pixels", qos: .userInteractive)
+    private let decoderCleanupQueue = DispatchQueue(label: "iportal.native-media-cleanup", qos: .utility)
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
     private let lifetime: CaptureLifetime
     private let frames: FrameStore
     private var decoder: VTDecompressionSession?
+    private var decoderBudget = MediaDecoderBudget()
+    private var decoderPermit: UUID?
+    private var decodeOwnership = MediaDecodeOwnership()
+    private let ownershipLock = NSLock()
+    private let pixelBufferAttributes: [String: Any]
     private var format: CMVideoFormatDescription?
     private var waitingForSync = true
     private var receivedFrames = 0
@@ -29,12 +150,14 @@ final class NativeMediaReceiver: @unchecked Sendable {
     static var executable: URL { Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("iPortalTransport") }
     static var available: Bool { FileManager.default.isExecutableFile(atPath: executable.path) }
 
-    init(lifetime: CaptureLifetime, frames: FrameStore, capabilities: @escaping @Sendable (PairedCapabilities) -> Void,
+    init(lifetime: CaptureLifetime, frames: FrameStore, pixelBufferAttributes: [String: Any] = [:], capabilities: @escaping @Sendable (PairedCapabilities) -> Void,
          unchanged: @escaping @Sendable (UInt32) -> Void, failed: @escaping @Sendable () -> Void) {
         self.lifetime = lifetime; self.frames = frames; self.failed = failed; self.capabilities = capabilities
         self.unchanged = unchanged
+        self.pixelBufferAttributes = pixelBufferAttributes
     }
     func start(udid: String) throws {
+        decoderBudget = MediaDecoderBudget.device(udid)
         process.executableURL = Self.executable
         process.arguments = ["--stream", udid]
         process.standardInput = input; process.standardOutput = output
@@ -65,7 +188,10 @@ final class NativeMediaReceiver: @unchecked Sendable {
     }
     func setVolume(_ volume: Float) { audio.setVolume(volume) }
     func setOrientation(_ value: String) { rotation.setOrientation(value) }
+    func setDisplayPixels(_ value: CGSize) { rotation.setDisplayPixels(value) }
     func stop() {
+        ownershipLock.lock(); decodeOwnership.retire(); ownershipLock.unlock()
+        audio.stop()
         try? input.fileHandleForWriting.close()
         // Let the child cancel and drop its lease; force only this owned child
         // after the deadline if an incompatible framework stalls during startup.
@@ -80,8 +206,21 @@ final class NativeMediaReceiver: @unchecked Sendable {
     }
     private func resetDecoder() {
         waitingForSync = true
-        if let decoder { VTDecompressionSessionWaitForAsynchronousFrames(decoder); VTDecompressionSessionInvalidate(decoder) }
-        decoder = nil; format = nil
+        ownershipLock.lock()
+        decodeOwnership.retire()
+        decodeOwnership = MediaDecodeOwnership()
+        ownershipLock.unlock()
+        if let decoder, let permit = decoderPermit {
+            // Invalidation is an orderly teardown; retired callbacks cannot
+            // publish. Never wait for decoder teardown on the media pipe or
+            // main queue, particularly across sleep and format replacement.
+            let budget = decoderBudget
+            decoderCleanupQueue.async {
+                VTDecompressionSessionInvalidate(decoder)
+                budget.release(permit)
+            }
+        }
+        decoder = nil; decoderPermit = nil; format = nil
     }
     private func receive(kind: UInt32, flags: UInt32, time: UInt32, data: Data) throws {
         guard !lifetime.isCancelled else { return }
@@ -114,18 +253,45 @@ final class NativeMediaReceiver: @unchecked Sendable {
         }}}
         guard status == noErr, let description else { throw CocoaError(.coderReadCorrupt) }
         format = description
+        let coded = CMVideoFormatDescriptionGetDimensions(description)
+        let aperture = CMVideoFormatDescriptionGetCleanAperture(description, originIsAtTopLeft: false)
+        let depth = (CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_BitsPerComponent) as? NSNumber)?.intValue
+        let transfer = CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+        let nativeYUV = nativeMediaUsesYUV(bitsPerComponent: depth, transferFunction: transfer)
+        iportalTrace("paired-video-format", ["codedWidth": coded.width, "codedHeight": coded.height,
+            "visibleWidth": aperture.width, "visibleHeight": aperture.height,
+            "visibleX": aperture.minX, "visibleY": aperture.minY,
+            "bitsPerComponent": depth ?? 0, "nativeYUV": nativeYUV])
+        guard let permit = decoderBudget.acquire() else {
+            iportalTrace("paired-decoder-retirement-stalled")
+            throw CocoaError(.coderReadCorrupt)
+        }
         var session: VTDecompressionSession?
-        let pixelOptions: [String: Any] = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                                         kCVPixelBufferIOSurfacePropertiesKey as String: [:]]
-        guard VTDecompressionSessionCreate(allocator: nil, formatDescription: description, decoderSpecification: nil,
-                imageBufferAttributes: pixelOptions as CFDictionary, outputCallback: nil, decompressionSessionOut: &session) == noErr,
-              let session else { throw CocoaError(.coderReadCorrupt) }
+        for attributes in nativeMediaPixelAttributeCandidates(pixelBufferAttributes, nativeYUV: nativeYUV) {
+            let status = VTDecompressionSessionCreate(allocator: nil, formatDescription: description, decoderSpecification: nil,
+                imageBufferAttributes: attributes as CFDictionary, outputCallback: nil, decompressionSessionOut: &session)
+            if status == noErr, session != nil { break }
+            if let rejected = session {
+                // An unexpectedly partially created session still consumes its
+                // budget until orderly teardown. Do not overlap a fallback.
+                decoder = rejected; decoderPermit = permit
+                throw CocoaError(.coderReadCorrupt)
+            }
+        }
+        guard let session else { decoderBudget.release(permit); throw CocoaError(.coderReadCorrupt) }
         VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        decoder = session
+        decoder = session; decoderPermit = permit
     }
     private func decode(_ data: Data, sync: Bool, time: UInt32) throws {
         guard let decoder, let format, !waitingForSync || sync else { return }
         waitingForSync = false
+        ownershipLock.lock(); let ownership = decodeOwnership; ownershipLock.unlock()
+        guard let sequence = ownership.admit(until: Date(timeIntervalSinceNow: 1)) else {
+            if lifetime.isCancelled || !ownership.isCurrent { return }
+            throw CocoaError(.coderReadCorrupt) // Stalled decoder: bounded capture recovery.
+        }
+        var dispatched = false
+        defer { if !dispatched { ownership.complete(sequence) } }
         var block: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: data.count,
                 blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: data.count, flags: 0,
@@ -137,18 +303,38 @@ final class NativeMediaReceiver: @unchecked Sendable {
         guard CMSampleBufferCreateReady(allocator: nil, dataBuffer: block, formatDescription: format, sampleCount: 1,
                 sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &size,
                 sampleBufferOut: &sample) == noErr, let sample else { throw CocoaError(.coderReadCorrupt) }
-        // Synchronous decode on this dedicated queue bounds in-flight work to one.
-        // Presentation independently retains only the newest decoded image.
-        let status = VTDecompressionSessionDecodeFrame(decoder, sampleBuffer: sample, flags: [], infoFlagsOut: nil) { [frames, lifetime, rotation] status, _, pixel, time, duration in
-            guard status == noErr, let pixel, !lifetime.isCancelled else { return }
-            guard let pixel = rotation.apply(pixel) else { return }
-            var format: CMVideoFormatDescription?, output: CMSampleBuffer?
-            guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: pixel, formatDescriptionOut: &format) == noErr, let format else { return }
-            var timing = CMSampleTimingInfo(duration: duration, presentationTimeStamp: time, decodeTimeStamp: .invalid)
-            if CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: pixel, formatDescription: format, sampleTiming: &timing, sampleBufferOut: &output) == noErr, let output {
-                frames.consume(output)
+        // Two asynchronous decodes let the pipe deliver audio while the GPU
+        // works, with no unbounded compressed-frame queue. Do not opt into
+        // temporal processing, which permits delayed output for frame reordering.
+        let aperture = CMVideoFormatDescriptionGetCleanAperture(format, originIsAtTopLeft: false)
+        let started = ProcessInfo.processInfo.systemUptime
+        let status = VTDecompressionSessionDecodeFrame(decoder, sampleBuffer: sample, flags: [._EnableAsynchronousDecompression], infoFlagsOut: nil) { [weak self, frames, lifetime, rotation, presentationQueue] status, _, pixel, time, duration in
+            defer { ownership.complete(sequence) }
+            guard ownership.isCurrent, !lifetime.isCancelled else { return }
+            guard status == noErr else { self?.reportFailure(); return }
+            guard let pixel else { return }
+            // Core Image and its output pool are serial. This callback retains
+            // its admission until conversion finishes, keeping pixel work bounded.
+            presentationQueue.sync {
+                guard ownership.isCurrent, !lifetime.isCancelled,
+                      let rendered = rotation.apply(pixel, aperture: aperture) else { return }
+                var format: CMVideoFormatDescription?, output: CMSampleBuffer?
+                guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: rendered, formatDescriptionOut: &format) == noErr, let format else { return }
+                var timing = CMSampleTimingInfo(duration: duration, presentationTimeStamp: time, decodeTimeStamp: .invalid)
+                if CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: rendered, formatDescription: format, sampleTiming: &timing, sampleBufferOut: &output) == noErr, let output {
+                    ownership.present(sequence) {
+                        guard !lifetime.isCancelled else { return }
+                        frames.consume(output)
+                        if sequence == 0 || sequence % 120 == 0 {
+                            iportalTrace("paired-video-decoded", ["decodeAndTransformMs": (ProcessInfo.processInfo.systemUptime - started) * 1000,
+                                "nativePixelFormat": CVPixelBufferGetPixelFormatType(pixel),
+                                "displayPixelFormat": CVPixelBufferGetPixelFormatType(rendered)])
+                        }
+                    }
+                }
             }
         }
+        dispatched = status == noErr
         guard status == noErr else { throw CocoaError(.coderReadCorrupt) }
     }
 }
@@ -160,9 +346,15 @@ final class NativeMediaReceiver: @unchecked Sendable {
 private final class NativeMediaRotation: @unchecked Sendable {
     private let lock = NSLock()
     private var orientation: CGImagePropertyOrientation = .up
+    private var displayPixels: CGSize?
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var pool: CVPixelBufferPool?
     private var poolSize = CGSize.zero
+    func setDisplayPixels(_ size: CGSize) {
+        guard size.width.isFinite, size.height.isFinite,
+              (1...16384).contains(size.width), (1...16384).contains(size.height) else { return }
+        lock.lock(); displayPixels = CGSize(width: min(size.width, size.height), height: max(size.width, size.height)); lock.unlock()
+    }
     func setOrientation(_ value: String) {
         let next: CGImagePropertyOrientation
         switch value {
@@ -174,10 +366,28 @@ private final class NativeMediaRotation: @unchecked Sendable {
         }
         lock.lock(); orientation = next; lock.unlock()
     }
-    func apply(_ pixel: CVPixelBuffer) -> CVPixelBuffer? {
-        lock.lock(); let orientation = orientation; lock.unlock()
-        guard orientation != .up else { return pixel }
-        let image = CIImage(cvPixelBuffer: pixel).oriented(orientation)
+    func apply(_ pixel: CVPixelBuffer, aperture: CGRect? = nil) -> CVPixelBuffer? {
+        lock.lock(); let orientation = orientation, displayPixels = displayPixels; lock.unlock()
+        let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(pixel), height: CVPixelBufferGetHeight(pixel))
+        var visible = aperture ?? bounds
+        // CoreDevice sometimes omits the HEVC conformance window. In that case
+        // only remove codec-block padding beyond the authenticated device's
+        // actual native pixel dimensions. Never infer a crop from black pixels
+        // or apply full-resolution dimensions to a downscaled stream.
+        if visible == bounds, let displayPixels,
+           (0..<64).contains(bounds.width - displayPixels.width),
+           (0..<64).contains(bounds.height - displayPixels.height) {
+            visible = CGRect(x: 0, y: bounds.height - displayPixels.height,
+                             width: displayPixels.width, height: displayPixels.height)
+        }
+        // HEVC's coded frame can include padding below/right of the display.
+        // Preserve its declared clean aperture before rebuilding the format
+        // description or rotating; otherwise that metadata is lost.
+        guard !visible.isEmpty, !visible.isInfinite, bounds.contains(visible) else { return nil }
+        guard orientation != .up || visible != bounds else { return pixel }
+        let image = CIImage(cvPixelBuffer: pixel).cropped(to: visible)
+            .transformed(by: CGAffineTransform(translationX: -visible.minX, y: -visible.minY))
+            .oriented(orientation)
         let size = image.extent.size
         if pool == nil || size != poolSize {
             pool = nil; poolSize = size
@@ -251,11 +461,36 @@ func startNativeAudioPlayer(_ player: AVAudioPlayerNode) throws {
     guard player.engine?.isRunning == true else { throw CocoaError(.featureUnsupported) }
     player.play()
 }
+
+func nativeAudioConnectUsingErrorAPI(_ receiver: NSObject, source: AVAudioNode,
+                                    destination: AVAudioNode, format: AVAudioFormat?) throws -> Bool {
+    let selector = NSSelectorFromString("connect:to:format:error:")
+    guard receiver.responds(to: selector) else { return false }
+    guard let implementation = receiver.method(for: selector) else {
+        throw CocoaError(.featureUnsupported)
+    }
+    typealias Connect = @convention(c) (AnyObject, Selector, AVAudioNode, AVAudioNode,
+                                      AVAudioFormat?, AutoreleasingUnsafeMutablePointer<NSError?>?) -> ObjCBool
+    let connect = unsafeBitCast(implementation, to: Connect.self)
+    var error: NSError?
+    guard connect(receiver, selector, source, destination, format, &error).boolValue else {
+        throw error ?? NSError(domain: "iPortal.Audio", code: 2,
+                               userInfo: [NSLocalizedDescriptionKey: "Audio nodes could not connect"])
+    }
+    return true
+}
+
+func connectNativeAudioNodes(_ engine: AVAudioEngine, _ source: AVAudioNode,
+                             to destination: AVAudioNode, format: AVAudioFormat?) throws {
+    if try nativeAudioConnectUsingErrorAPI(engine, source: source, destination: destination, format: format) { return }
+    engine.connect(source, to: destination, format: format)
+}
 // END TESTABLE AUDIO START
 
 // Remote system audio needs no access to the Mac microphone. The existing mute
 // control still governs playback. A small queue prevents stale audio catch-up.
-private final class NativeMediaAudio {
+private final class NativeMediaAudio: @unchecked Sendable {
+    private let work = DispatchQueue(label: "iportal.native-audio", qos: .userInteractive)
     private var converter: AVAudioConverter?
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -285,13 +520,36 @@ private final class NativeMediaAudio {
     private let maximumPackets = 24
     private var volume: Float = 1
     private let lock = NSLock()
+    private var stopped = false
+    private var configurationObserver: NSObjectProtocol?
+    private var graphConnected = false
     init() {
         engine.attach(player); engine.attach(rateUnit)
-        engine.connect(player, to: rateUnit, format: output)
-        engine.connect(rateUnit, to: engine.mainMixerNode, format: output)
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: nil) { [weak self] _ in
+                // Apple posts on its internal audio queue. Reconfiguration and
+                // teardown there can deadlock; all graph work belongs to ours.
+                guard let self else { return }
+                self.work.async { [weak self] in self?.configurationChanged() }
+            }
+    }
+    deinit { if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) } }
+    private var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+    private func connectGraph() throws {
+        graphConnected = false
+        try connectNativeAudioNodes(engine, player, to: rateUnit, format: output)
+        try connectNativeAudioNodes(engine, rateUnit, to: engine.mainMixerNode, format: output)
+        graphConnected = true
     }
     func setVolume(_ volume: Float) { lock.lock(); self.volume = volume; lock.unlock() }
     func consume(_ data: Data, timestamp: UInt32) {
+        // A serial owner also keeps a hardware-change notification from
+        // mutating the graph halfway through scheduling a packet. The call is
+        // synchronous so there is no unbounded queue of stale audio payloads.
+        work.sync { consumePacket(data, timestamp: timestamp) }
+    }
+    private func consumePacket(_ data: Data, timestamp: UInt32) {
+        guard !isStopped else { return }
         guard ProcessInfo.processInfo.systemUptime >= nextOutputAttemptAt else { return }
         guard !data.isEmpty, let continuity = clock.observe(timestamp) else { return }
         if continuity.reset {
@@ -305,7 +563,13 @@ private final class NativeMediaAudio {
             if now - lastReport >= 2 {
                 iportalTrace("paired-audio-stats", ["decoded": decodedPackets, "dropped": droppedPackets,
                     "decodeFailures": decodeFailures, "maximumQueue": maximumQueue,
-                    "maximumGapMs": maximumGap * 1000, "rebufferings": rebufferings, "outputFailures": outputFailures])
+                    "maximumGapMs": maximumGap * 1000, "rebufferings": rebufferings, "outputFailures": outputFailures,
+                    "primeMs": primePackets * 10,
+                    // This is measurement, not a safe prediction of the next
+                    // route. Keep the proven 120 ms floor across seamless
+                    // USB/Wi-Fi handover until a lower target passes live tests.
+                    "observedGapBufferMs": min(240, max(40, (ceil(maximumGap * 100) + 1) * 10)),
+                    "outputPresentationLatencyMs": player.outputPresentationLatency * 1000])
                 lastReport = now; maximumGap = 0; maximumQueue = 0
             }
         }
@@ -358,7 +622,7 @@ private final class NativeMediaAudio {
         lock.lock(); let currentVolume = volume; lock.unlock(); player.volume = currentVolume
         rateUnit.rate = drift.rate(pendingPackets: pendingAfterAppend)
         if !engine.isRunning {
-            do { try engine.start() }
+            do { if !graphConnected { try connectGraph() }; try engine.start() }
             catch { outputFailed(); return }
         }
         // Bound pending render work, not hardware latency. dataPlayedBack also
@@ -384,5 +648,28 @@ private final class NativeMediaAudio {
         nextOutputAttemptAt = ProcessInfo.processInfo.systemUptime + 1
         iportalTrace("paired-audio-output-retry", ["failures": outputFailures])
     }
-    func stop() { player.stop(); engine.stop(); converter = nil }
+    private func configurationChanged() {
+        guard !isStopped else { return }
+        // An output format change stops/uninitializes AVAudioEngine while
+        // leaving node connections in their previous formats. Retire their
+        // callbacks before reconnecting, then prime fresh audio on the next
+        // packet. Never restart capture or replay the old device's queued sound.
+        lock.lock(); queueGeneration &+= 1; queued = 0; lock.unlock()
+        player.stop(); engine.stop(); playing = false; converter = nil
+        clock = AudioPacketClock(); drift = AudioDriftControl()
+        engine.disconnectNodeOutput(player)
+        engine.disconnectNodeOutput(rateUnit)
+        do { try connectGraph() }
+        catch { outputFailed(); return }
+        rebufferings += 1
+        nextOutputAttemptAt = 0
+        iportalTrace("paired-audio-output-changed", ["sampleRate": engine.outputNode.outputFormat(forBus: 0).sampleRate])
+    }
+    func stop() {
+        lock.lock()
+        guard !stopped else { lock.unlock(); return }
+        stopped = true; queueGeneration &+= 1; queued = 0
+        lock.unlock()
+        work.async { [self] in player.stop(); engine.stop(); converter = nil }
+    }
 }

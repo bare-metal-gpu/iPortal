@@ -16,6 +16,7 @@ export function createHelperAuthentication(
     reset() {
       verified = false;
     },
+    /** @param {Pick<Response, 'status'|'headers'>} response */
     verify(response) {
       if (response.status === 401 || response.headers.get("x-iportal-helper-auth") !== "1") {
         verified = false;
@@ -33,9 +34,11 @@ export function createHelperAuthentication(
 
 // Xcode can echo launch environment variables. Redact before persistence,
 // including when a credential or UTF-8 character is split across pipe chunks.
+/** @param {string} secret */
 export function createSecretRedactor(secret) {
   const decoder = new StringDecoder("utf8");
   let buffer = "";
+  /** @param {boolean} final */
   const take = (final) => {
     buffer = buffer.replaceAll(secret, "[redacted]");
     const count = final
@@ -46,6 +49,7 @@ export function createSecretRedactor(secret) {
     return text;
   };
   return {
+    /** @param {Buffer|string} chunk */
     write(chunk) {
       buffer += decoder.write(chunk);
       return take(false);

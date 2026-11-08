@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { configure } from "../scripts/configure-ios.ts";
+import { readHelperBuild } from "../helper-build.mjs";
 import { linkHost } from "../ios/link-host.ts";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { helperCommand } from "../helper-launch.mjs";
@@ -34,6 +34,10 @@ test("phone launcher requires one test bundle and keeps device/path arguments di
     await mkdir(products, { recursive: true });
     expect(() => helperCommand("invalid id", directory, directory)).toThrow();
     expect(() => helperCommand("TESTDEVICE01", directory, directory)).toThrow();
+    await Bun.write(
+      path.join(directory, "helper-manifest.json"),
+      JSON.stringify({ protocol: 1, build: "a".repeat(64) }),
+    );
     const run = path.join(products, "iPortal iphoneos.xctestrun");
     await Bun.write(run, "fixture");
     const command = helperCommand("TESTDEVICE01", directory, directory);
@@ -47,24 +51,26 @@ test("phone launcher requires one test bundle and keeps device/path arguments di
   }
 });
 
-test("signing configuration preserves upstream targets across fresh, repeated and changed teams", () => {
-  for (const old of [
-    "com.facebook.WebDriverAgentRunner",
-    "com.testteam01.iphonemirror.WebDriverAgentRunner",
-  ]) {
-    const source =
-      `PRODUCT_BUNDLE_IDENTIFIER = ${old};\nPRODUCT_NAME = "$(TARGET_NAME)";\n`.repeat(3) +
-      'PRODUCT_BUNDLE_IDENTIFIER = com.facebook.WebDriverAgentLib;\nPRODUCT_NAME = "$(TARGET_NAME)";';
-    const changed = configure(source, "TESTTEAM01");
-    expect(changed.match(/com.testteam01.iportal.mobile/g)).toHaveLength(3);
-    expect(changed).toContain('com.facebook.WebDriverAgentLib;\nPRODUCT_NAME = "$(TARGET_NAME)";');
-    expect(configure(changed, "TESTTEAM01")).toBe(changed);
-    expect(configure(changed, "ABCDEFGHIJ").match(/com.abcdefghij.iportal.mobile/g)).toHaveLength(
-      3,
+test("helper build identity rejects missing, malformed and incompatible manifests", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "iportal-manifest-"));
+  try {
+    expect(readHelperBuild(directory)).toBeNull();
+    expect(() => readHelperBuild(directory, true)).toThrow();
+    for (const manifest of [
+      { protocol: 2, build: "a".repeat(64) },
+      { protocol: 1, build: "bad" },
+    ]) {
+      await Bun.write(path.join(directory, "helper-manifest.json"), JSON.stringify(manifest));
+      expect(() => readHelperBuild(directory)).toThrow();
+    }
+    await Bun.write(
+      path.join(directory, "helper-manifest.json"),
+      JSON.stringify({ protocol: 1, build: "b".repeat(64) }),
     );
+    expect(readHelperBuild(directory)).toBe("b".repeat(64));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
-  expect(() => configure("", "../invalid")).toThrow();
-  expect(() => configure("", "TESTTEAM01")).toThrow();
 });
 
 const library = "@executable_path/Frameworks/iPortalUI.framework/iPortalUI";
@@ -124,13 +130,14 @@ test.skipIf(process.platform !== "darwin")(
       await Bun.write(file, JSON.stringify(info));
       expect(Bun.spawnSync(["plutil", "-convert", "binary1", file]).exitCode).toBe(0);
       for (let i = 0; i < 2; i++) {
-        const run = Bun.spawnSync([process.execPath, "ios/configure-host.ts", file]);
+        const run = Bun.spawnSync([process.execPath, "ios/configure-host.ts", file, "", "123.4.5"]);
         expect(run.exitCode).toBe(0);
       }
       const result = JSON.parse(
         Bun.spawnSync(["plutil", "-convert", "json", "-o", "-", file]).stdout.toString(),
       );
       expect(result.CFBundleIdentifier).toBe(info.CFBundleIdentifier);
+      expect(result.CFBundleVersion).toBe("123.4.5");
       expect(result.UIApplicationSceneManifest.unrelated).toBe(true);
       expect(
         result.UIApplicationSceneManifest.UISceneConfigurations

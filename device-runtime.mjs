@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 
 // Do not follow a pre-created symlink in the shared temporary directory, or
 // reuse another user's directory. Tighten permissions on older installations.
+/** @param {string} directory */
 export function ensurePrivateDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const fd = fs.openSync(
@@ -21,6 +22,7 @@ export function ensurePrivateDirectory(directory) {
   }
 }
 
+/** @param {string} value */
 export function canonicalUDID(value) {
   if (!/^[a-zA-Z0-9-]{8,64}$/.test(value)) throw new Error("Invalid device identity");
   const compact = value.replaceAll("-", "");
@@ -32,6 +34,7 @@ export function canonicalUDID(value) {
 
 // The OS owns this lease while the server lives. A crashed process leaves a
 // socket pathname, but no listener; only that confirmed stale inode is removed.
+/** @param {string} udid */
 export async function claimDevice(
   udid,
   directory = path.join(
@@ -58,7 +61,7 @@ export async function claimDevice(
   try {
     await listen();
   } catch (error) {
-    if (error.code !== "EADDRINUSE") throw error;
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") throw error;
     const before = fs.lstatSync(file);
     if (!before.isSocket()) throw new Error("Device lease is not a socket");
     const stale = await new Promise((resolve) => {

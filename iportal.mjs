@@ -4,9 +4,11 @@ import {
   createPairedMonitor,
   selectDevice,
 } from "./paired-devices.ts";
-import { createClipboard } from "./clipboard.mjs";
+import { Schema } from "effect";
+import { StatusSchema } from "./public-contracts.ts";
+import { createClipboard } from "./clipboard.ts";
 // iportal: control your iPhone from your computer.
-// Video comes from WebDriverAgent's MJPEG stream, input goes back through WDA's W3C actions API.
+// The owned XCTest helper provides commands, inspection, and fallback video.
 // USB forwarding talks to usbmuxd directly, so no iproxy / libimobiledevice is needed.
 
 import net from "node:net";
@@ -17,34 +19,37 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { parseArgs } from "node:util";
-import { apiError } from "./errors.mjs";
-import { createInspection } from "./inspection.mjs";
+import { apiError, errorInfo } from "./errors.mjs";
+import { createInspection } from "./inspection.ts";
 import { createKeepAwake } from "./keep-awake.mjs";
 import { createIPortalStatus } from "./iportal-status.mjs";
 import { randomUUID } from "node:crypto";
-import { commandContext, createScheduler } from "./scheduler.mjs";
-import { createCommands } from "./commands.mjs";
-import { ActionSchemas } from "./schemas.mjs";
+import { commandContext, createScheduler } from "./scheduler.ts";
+import { createCommands } from "./commands.ts";
+import { parseNamedRequest, executeAction } from "./schemas.ts";
 import { errorResponse, startServer } from "./server.mjs";
-import { pinchActions, pinchPaths } from "./pinch.mjs";
-import { createUSBMonitor } from "./usb-events.mjs";
-import { createStatusEvents } from "./status-events.mjs";
+import { pinchPaths } from "./pinch.mjs";
+import { createUSBMonitor } from "./usb-events.ts";
+import { createStatusEvents } from "./status-events.ts";
 import { createStartupLock } from "./startup-lock.mjs";
 import { claimDevice, canonicalUDID } from "./device-runtime.mjs";
 import { deviceBuild, runtimeCommand, statePath } from "./runtime-paths.mjs";
 import { helperCommand } from "./helper-launch.mjs";
 import { createHelperAuthentication } from "./helper-auth.mjs";
+import { createHelperClient } from "./helper-client.ts";
+import { readHelperBuild } from "./helper-build.mjs";
+import { createHelperLifecycle } from "./helper-lifecycle.ts";
 
 const instanceId = randomUUID();
+const helperLifecycle = createHelperLifecycle(instanceId);
 const helperAuth = createHelperAuthentication();
 const { values: opts, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     port: { type: "string", default: "7100" },
     udid: { type: "string" },
-    wda: { type: "string" }, // e.g. http://192.168.1.20:8100 to skip USB and go over WiFi
-    "wda-port": { type: "string", default: "8100" },
-    "mjpeg-port": { type: "string", default: "9100" },
+    "helper-url": { type: "string" },
+    "helper-port": { type: "string", default: "8100" },
     first: { type: "boolean", default: false },
     "no-open": { type: "boolean", default: false },
     "no-autostart": { type: "boolean", default: false },
@@ -54,16 +59,14 @@ const { values: opts, positionals } = parseArgs({
   },
 });
 
-// Keep accepting the old forwarding flags for existing app launchers. USB
-// tunnels are now private Unix sockets, never browser-reachable TCP ports.
-const MJPEG_PORT = +opts["mjpeg-port"];
-const MANUAL = Boolean(opts.wda);
-const WDA = (opts.wda ?? "http://127.0.0.1:8100").replace(/\/$/, "");
-const MJPEG = MANUAL
-  ? `${new URL(WDA).protocol}//${new URL(WDA).hostname}:${MJPEG_PORT}`
-  : "http://127.0.0.1:9100";
-let wdaSocket;
-let mjpegSocket;
+const HELPER_PORT = Number(opts["helper-port"]);
+if (!Number.isInteger(HELPER_PORT) || HELPER_PORT < 1 || HELPER_PORT > 65535)
+  throw new Error("Invalid helper port");
+const MANUAL = Boolean(opts["helper-url"]);
+const HELPER_URL = (opts["helper-url"] ?? `http://127.0.0.1:${HELPER_PORT}`).replace(/\/$/, "");
+const MJPEG = HELPER_URL + "/v1/video";
+/** @type {string | undefined} */
+let helperSocket;
 if (!Bun.semver.satisfies(Bun.version, ">=1.4.4")) throw new Error("Bun 1.4.4+ is required");
 if (opts.managed && (!opts.udid || !opts.owner))
   throw new Error("Managed sessions require a device and owner");
@@ -72,6 +75,7 @@ if (opts.managed && (!opts.udid || !opts.owner))
 
 const USBMUXD = process.env.USBMUXD_SOCKET_ADDRESS || "/var/run/usbmuxd";
 
+/** @param {Record<string, string | number>} d */
 const plist = (d) =>
   `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>` +
   Object.entries(d)
@@ -83,9 +87,11 @@ const plist = (d) =>
     .join("") +
   `</dict></plist>\n`;
 
+/** @param {string} xml @param {string} key */
 const plistValue = (xml, key) =>
   xml.match(new RegExp(`<key>${key}</key>\\s*<(?:integer|string)>([^<]*)<`))?.[1];
 
+/** @returns {Promise<net.Socket>} */
 function muxOpen() {
   return new Promise((resolve, reject) => {
     const sock = net.connect(USBMUXD);
@@ -94,6 +100,7 @@ function muxOpen() {
   });
 }
 
+/** @param {net.Socket} sock @param {Record<string,string|number>} dict */
 function muxSend(sock, dict) {
   const body = Buffer.from(plist({ ClientVersionString: "iportal", ProgName: "iportal", ...dict }));
   const head = Buffer.alloc(16);
@@ -106,6 +113,7 @@ function muxSend(sock, dict) {
 
 // Reads exactly one usbmuxd message without putting the socket into flowing mode,
 // so after a Connect the raw tunnel bytes stay buffered for pipe().
+/** @param {net.Socket} sock @returns {Promise<string>} */
 function muxRead(sock) {
   return new Promise((resolve, reject) => {
     let buf = Buffer.alloc(0);
@@ -118,6 +126,7 @@ function muxRead(sock) {
       if (buf.length > len) sock.unshift(buf.subarray(len));
       resolve(buf.subarray(16, len).toString());
     };
+    /** @param {Error} e */
     const onError = (e) => (cleanup(), reject(e));
     const onEnd = () => (cleanup(), reject(new Error("usbmuxd closed the connection")));
     const cleanup = () => {
@@ -137,9 +146,9 @@ async function listDevices() {
     muxSend(sock, { MessageType: "ListDevices" });
     const xml = await muxRead(sock);
     return [...xml.matchAll(/<key>Properties<\/key>\s*<dict>([\s\S]*?)<\/dict>/g)].map(([, p]) => ({
-      id: +plistValue(p, "DeviceID"),
-      udid: canonicalUDID(plistValue(p, "SerialNumber")),
-      connection: plistValue(p, "ConnectionType"),
+      id: Number(plistValue(p, "DeviceID")),
+      udid: canonicalUDID(plistValue(p, "SerialNumber") ?? ""),
+      connection: plistValue(p, "ConnectionType") ?? "Unknown",
     }));
   } finally {
     sock.destroy();
@@ -147,20 +156,25 @@ async function listDevices() {
 }
 
 let pinnedUdid = opts.udid ? canonicalUDID(opts.udid) : null;
+/** @type {string[]} */
 let connectedUsbUdids = [];
+/** @type {ReturnType<typeof createUSBMonitor> | undefined} */
 let usbMonitor;
+/** @type {ReturnType<typeof createPairedMonitor> | undefined} */
 let pairedMonitor;
 const pairedDiscoveryStartedAt = Date.now();
 /** @type {ReturnType<typeof selectDevice>} */
 let selectedDevice = null;
 let lastControlSuccess = 0;
 let reconcileConnection = () => {};
+/** @param {import("./usb-events.ts").USBDevice[]} devices */
 function chooseDevice(devices) {
   return selectDevice(devices, pairedMonitor?.devices() ?? [], pinnedUdid, {
     previous: selectedDevice,
     retainPaired: pairedMonitor?.health() !== "ready" && Date.now() - lastControlSuccess < 5000,
   });
 }
+/** @type {Promise<void> | undefined} */
 let deviceLease;
 async function ensureDeviceLease() {
   if (pinnedUdid && !deviceLease) {
@@ -184,6 +198,7 @@ async function pickDevice() {
   return device;
 }
 
+/** @param {number} deviceId @param {number} port */
 async function muxConnect(deviceId, port) {
   const sock = await muxOpen();
   muxSend(sock, {
@@ -191,7 +206,7 @@ async function muxConnect(deviceId, port) {
     DeviceID: deviceId,
     PortNumber: ((port & 0xff) << 8) | (port >> 8),
   });
-  const code = +plistValue(await muxRead(sock), "Number");
+  const code = Number(plistValue(await muxRead(sock), "Number"));
   if (code !== 0) {
     sock.destroy();
     throw new Error(
@@ -203,6 +218,7 @@ async function muxConnect(deviceId, port) {
   return sock;
 }
 
+/** @param {string} host @param {number} port */
 async function pairedConnect(host, port) {
   const socket = net.connect({ host, port });
   const timer = setTimeout(() => socket.destroy(new Error("Paired connection timed out")), 3000);
@@ -214,11 +230,13 @@ async function pairedConnect(host, port) {
   }
 }
 
-// Private Unix socket -> device port. Raw WDA allows cross-origin requests;
+// Private Unix socket -> device port. Keep device endpoints unreachable by browsers;
 // only the guarded API may expose a TCP listener on the Mac.
+/** @type {Set<net.Socket>} */
 const tunnels = new Set();
 /** @param {string} socketPath @param {number} devicePort */
 async function forward(socketPath, devicePort) {
+  /** @param {net.Socket} client */
   const connect = async (client) => {
     client.pause();
     client.on("error", () => {});
@@ -228,7 +246,7 @@ async function forward(socketPath, devicePort) {
       const generation = transport.signal;
       const remote = dev.address
         ? await pairedConnect(dev.address, devicePort)
-        : await muxConnect(dev.id, devicePort);
+        : await muxConnect(Number(dev.id), devicePort);
       if (generation.aborted || client.destroyed) {
         remote.destroy();
         client.destroy();
@@ -254,250 +272,55 @@ async function forward(socketPath, devicePort) {
   return socketPath;
 }
 
-// ---------- WebDriverAgent ----------
+// ---------- iPortal helper ----------
 
-async function wda(method, p, body, timeout = 8000, signal, headers = {}) {
-  // Discover legacy helpers through a read-only endpoint before any command.
-  // Never fall back to unauthenticated requests or video.
-  if (!helperAuth.verified && p !== "/status") await wda("GET", "/status", null, timeout, signal);
-  const context = commandContext.getStore();
-  if (context?.signal) signal = signal ? AbortSignal.any([signal, context.signal]) : context.signal;
-  signal?.throwIfAborted();
-  if (context?.deadline !== undefined)
-    timeout = Math.min(timeout, Math.ceil(context.deadline - performance.now()));
-  if (timeout <= 0) throw apiError("Command deadline expired", 408, "timeout");
-  if (
-    method === "POST" &&
-    /\/(?:actions|click|value)$|\/wda\/(?:mirror\/(?:touch|text|key)|keys|homescreen|pressButton|lock|unlock|apps\/launch|siri\/activate)$/.test(
-      p,
-    )
-  )
-    context?.onDispatch?.();
-  const res = await fetch(WDA + p, {
-    ...(wdaSocket ? { unix: wdaSocket } : {}),
-    redirect: "error",
-    method,
-    headers: {
-      ...headers,
-      ...helperAuth.headers,
-      ...(body ? { "content-type": "application/json" } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(timeout)])
-      : AbortSignal.timeout(timeout),
-  });
-  try {
-    helperAuth.verify(res);
-  } catch (error) {
-    await res.body?.cancel();
-    throw error;
-  }
-  // WDA response values vary by endpoint and are validated by their consumers.
-  const json = /** @type {{value: any, sessionId?: string}} */ (await res.json());
-  if (!res.ok || json.value?.error) {
-    const err = Object.assign(new Error(json.value?.message || `WDA returned ${res.status}`), {
-      code: json.value?.error,
-    });
-    throw err;
-  }
-  return json;
-}
-
-const wdaUp = (signal) =>
-  wda("GET", "/status", null, 1500, signal, { "x-mirror-purpose": "lifecycle" }).then(
-    () => true,
-    () => false,
-  );
-
-const QUALITY = {
-  low: { mjpegServerFramerate: 20, mjpegServerScreenshotQuality: 25, mjpegScalingFactor: 40 },
-  balanced: { mjpegServerFramerate: 30, mjpegServerScreenshotQuality: 50, mjpegScalingFactor: 50 },
-  high: { mjpegServerFramerate: 60, mjpegServerScreenshotQuality: 70, mjpegScalingFactor: 75 },
-};
 let quality = "balanced";
-/** @type {string | null} */
-let sid = null;
 let transport = new AbortController();
-
-/** @param {{deadline?: number, signal?: AbortSignal}} [options] */
-async function session({ deadline, signal } = {}) {
-  if (sid) return sid;
-  const remaining = () => {
-    const ms = deadline === undefined ? 30000 : Math.ceil(deadline - performance.now());
-    if (ms <= 0) throw apiError("Wait timed out", 408, "timeout");
-    return ms;
-  };
-  const res = await wda(
-    "POST",
-    "/session",
-    {
-      capabilities: {
-        alwaysMatch: { shouldWaitForQuiescence: false, shouldUseCompactResponses: false },
-        firstMatch: [{}],
-      },
-    },
-    remaining(),
-    signal,
-  );
-  sid = res.sessionId ?? res.value?.sessionId;
-  if (!sid) throw apiError("WDA did not return a session ID", 502, "invalid response");
+const helper = createHelperClient({
+  url: HELPER_URL,
+  socket: () => helperSocket,
+  authentication: helperAuth,
+  expectedBuild: readHelperBuild(deviceBuild) ?? "native-1",
+  onGeneration: () => inspection.invalidateObservations(),
+});
+let replacedIncompatibleHelper = false;
+/** @param {AbortSignal} [signal] */
+const helperUp = async (signal) => {
   try {
-    await wda(
-      "POST",
-      `/session/${sid}/appium/settings`,
-      {
-        settings: {
-          ...QUALITY[quality],
-          waitForIdleTimeout: 0,
-          animationCoolOffTimeout: 0,
-          snapshotMaxDepth: 50,
-          shouldUseCompactResponses: false,
-          elementResponseAttributes:
-            "type,label,rect,enabled,displayed,selected,attribute/name,attribute/value,attribute/accessible",
-        },
-      },
-      remaining(),
-      signal,
-    );
-  } catch (e) {
-    sid = null;
-    throw e;
+    const state = await helper.status(signal);
+    helperLifecycle.observe(state);
+    if (state.phase === "blocked") {
+      restartHelper();
+      return false;
+    }
+    return state.automationReady === true || state.locked === true;
+  } catch (error) {
+    if (errorInfo(error).code === "incompatible helper" && !MANUAL && !replacedIncompatibleHelper) {
+      replacedIncompatibleHelper = true;
+      restartHelper();
+    }
+    return false;
   }
-  return sid;
-}
-
-// Runs fn with a live session, recreating it once if WDA restarted.
-async function withSession(fn, options) {
-  try {
-    return await fn(await session(options));
-  } catch (e) {
-    if (e.code !== "invalid session id") throw e;
-    sid = null;
-    return fn(await session(options));
-  }
-}
-
-// Legacy WDA fallback: re-read dimensions for every gesture to follow rotation.
-async function screenSize(s) {
-  return (await wda("GET", `/session/${s}/window/size`)).value;
-}
-
-// Taps and swipes are serialized so gestures never overlap on the device.
+};
 const scheduler = createScheduler();
 const enqueue = scheduler.enqueue;
-
-const clamp = (v) => Math.min(1, Math.max(0, v));
-
-let fastTouch = true; // false once we learn this WDA build lacks /wda/mirror/touch (see scripts/wda-fast-touch.patch)
-let guardedTouch;
-let multiTouch;
-async function supportsGuardedTouch() {
-  if (guardedTouch !== undefined) return guardedTouch;
-  try {
-    const capabilities = (await wda("GET", "/wda/mirror/capabilities")).value;
-    guardedTouch = capabilities?.guardedTouch === true;
-    multiTouch = guardedTouch && capabilities?.multiTouch === true;
-  } catch (e) {
-    if (e.code !== "unknown command") throw e;
-    guardedTouch = false;
-    multiTouch = false;
-  }
-  return guardedTouch;
-}
-async function supportsMultiTouch() {
-  await supportsGuardedTouch();
-  return multiTouch === true;
-}
-async function legacyGestureGuards(guards) {
-  if ((await wda("GET", "/wda/locked")).value)
-    throw apiError("Unlock your iPhone", 409, "device locked");
-  if (
-    guards.expectedBundleId &&
-    (await wda("GET", "/wda/activeAppInfo")).value.bundleId !== guards.expectedBundleId
-  )
-    throw apiError("Foreground app changed", 409, "app changed");
-  if (
-    guards.expectedOrientation &&
-    (await withSession((s) => wda("GET", `/session/${s}/orientation`))).value !==
-      guards.expectedOrientation
-  )
-    throw apiError("Screen orientation changed", 409, "orientation changed");
-}
-
-// points: [[x, y, ms], ...] with x/y as 0..1 fractions of the screen; end: ms when the finger lifts.
-async function gesture(points, end, guards = {}) {
-  if (fastTouch) {
-    try {
-      // Skips WDA's per-action app lookup and snapshots, so the touch lands ~150 ms sooner than /actions.
-      return (await wda("POST", "/wda/mirror/touch", { points, end, ...guards })).value;
-    } catch (e) {
-      if (e.code !== "unknown command") throw e;
-      fastTouch = false;
-      guardedTouch = false;
-      multiTouch = false;
-      // A helper replacement may have removed the guarded route. The fallback
-      // must perform its own checks before dispatch rather than trust cached capability.
-      await legacyGestureGuards(guards);
-      console.log("  WDA has no fast touch endpoint; rerun bun run setup for lower latency");
-    }
-  }
-  return withSession(async (s) => {
-    const { width, height } = await screenSize(s);
-    const at = ([x, y]) => ({
-      x: Math.round(clamp(x) * (width - 1)),
-      y: Math.round(clamp(y) * (height - 1)),
-    });
-    /** @type {{type: string, duration?: number, x?: number, y?: number, button?: number}[]} */
-    const steps = [
-      { type: "pointerMove", duration: 0, ...at(points[0]) },
-      { type: "pointerDown", button: 0 },
-    ];
-    for (let i = 1; i < points.length; i++) {
-      steps.push({
-        type: "pointerMove",
-        duration: Math.max(0, Math.round(points[i][2] - points[i - 1][2])),
-        ...at(points[i]),
-      });
-    }
-    const hold = Math.round(end - points.at(-1)[2]);
-    steps.push({ type: "pause", duration: Math.max(points.length === 1 ? 40 : 0, hold) });
-    steps.push({ type: "pointerUp", button: 0 });
-    await wda("POST", `/session/${s}/actions`, {
-      actions: [
-        { type: "pointer", id: "finger1", parameters: { pointerType: "touch" }, actions: steps },
-      ],
-    });
+/** @param {import("./helper-protocol.ts").HelperArguments<"touch">["points"]} points @param {number} end @param {{expectedBundleId?:string,expectedOrientation?:import("./helper-protocol.ts").HelperResult<"orientation">}} [guards] */
+const gesture = (points, end, guards = {}) => helper.command("touch", { points, end, ...guards });
+const supportsGuardedTouch = async () => (await helper.ready()).capabilities.touch;
+const supportsMultiTouch = async () => (await helper.ready()).capabilities.multiTouch;
+/** @param {import("./schemas.ts").RequestBody<"pinch">} body */
+async function pinch(body) {
+  if (body.scale === 1) return;
+  if (!(await helper.ready()).capabilities.multiTouch)
+    throw apiError("Multi-touch is unavailable", 501, "unsupported operation");
+  return helper.command("touch", {
+    ...pinchPaths(body),
+    expectedBundleId: body.expectedApp,
+    expectedOrientation: body.expectedOrientation,
   });
 }
 
-async function pinch(body) {
-  if (body.scale === 1) return;
-  if (await supportsMultiTouch()) {
-    const guards = {
-      expectedBundleId: body.expectedApp,
-      expectedOrientation: body.expectedOrientation,
-    };
-    try {
-      return (await wda("POST", "/wda/mirror/touch", { ...pinchPaths(body), ...guards })).value;
-    } catch (e) {
-      if (e.code !== "unknown command") throw e; // Never replay an uncertain gesture.
-      fastTouch = false;
-      guardedTouch = false;
-      multiTouch = false;
-      await legacyGestureGuards(guards);
-    }
-  }
-  return withSession(
-    async (s) =>
-      (
-        await wda("POST", `/session/${s}/actions`, {
-          actions: pinchActions(body, await screenSize(s)),
-        })
-      ).value,
-  );
-}
-
+/** @type {Record<import("./schemas.ts").RequestBody<"shortcut">["name"], {points:[number,number,number][],end:number}>} */
 const SHORTCUTS = {
   switcher: {
     points: [
@@ -530,17 +353,19 @@ const SHORTCUTS = {
   },
 };
 
+/** @type {import("./schemas.ts").ActionHandlers} */
 const actions = {
   key: async (body) => {
     const copying =
       body.modifiers?.includes("command") && ["c", "x"].includes(body.key.toLowerCase());
-    const before = copying
-      ? (await wda("POST", "/wda/mirror/clipboard", { operation: "status" })).value?.changeCount
-      : null;
-    await wda("POST", "/wda/mirror/key", { key: body.key, modifiers: body.modifiers ?? [] });
+    const before = copying ? (await helper.command("clipboardStatus")).changeCount : null;
+    await helper.command("key", {
+      key: body.key,
+      modifiers: body.modifiers ?? [],
+      ...inputGuards(body),
+    });
     if (!copying) return;
-    const after = (await wda("POST", "/wda/mirror/clipboard", { operation: "status" })).value
-      ?.changeCount;
+    const after = (await helper.command("clipboardStatus")).changeCount;
     return {
       clipboardChanged:
         Number.isSafeInteger(before) && Number.isSafeInteger(after) && after !== before,
@@ -560,34 +385,36 @@ const actions = {
   type: (body) =>
     body.id || body.selector
       ? inspection.type(body)
-      : wda("POST", "/wda/mirror/text", { text: body.text }),
+      : helper.command("text", { text: body.text, ...inputGuards(body) }),
   tap: (body) => inspection.tap(body),
-  home: () => wda("POST", "/wda/homescreen"),
-  button: ({ name }) => withSession((s) => wda("POST", `/session/${s}/wda/pressButton`, { name })),
-  lock: () => withSession((s) => wda("POST", `/session/${s}/wda/lock`)),
-  unlock: () => withSession((s) => wda("POST", `/session/${s}/wda/unlock`)),
-  launch: ({ bundleId }) =>
-    withSession((s) => wda("POST", `/session/${s}/wda/apps/launch`, { bundleId })),
-  siri: ({ text }) => withSession((s) => wda("POST", `/session/${s}/wda/siri/activate`, { text })),
+  home: (body) => helper.command("home", inputGuards(body)),
+  button: (body) => helper.command("button", { name: body.name, ...inputGuards(body) }),
+  lock: (body) => helper.command("lock", inputGuards(body)),
+  unlock: (body) => helper.command("unlock", inputGuards(body)),
+  launch: (body) => helper.command("launch", { bundleId: body.bundleId, ...inputGuards(body) }),
+  "open-url": (body) => helper.command("openURL", { url: body.url, ...inputGuards(body) }),
+  siri: (body) => helper.command("siri", { text: body.text, ...inputGuards(body) }),
   // Called when the UI opens, so opening the mirror turns automation back on if it was stopped.
   ensure: async () => {
-    if (!(await automationAllowed())) restartWda();
+    if (!(await automationAllowed())) restartHelper();
   },
   quality: ({ level }) => {
-    if (!QUALITY[level]) throw new Error("unknown quality");
     quality = level;
-    return withSession((s) =>
-      wda("POST", `/session/${s}/appium/settings`, { settings: QUALITY[level] }),
-    );
+    return helper.command("quality", { preset: level });
   },
 };
+/** @param {{expectedApp?:string,expectedOrientation?:import("./helper-protocol.ts").HelperResult<"orientation">}} body */
+const inputGuards = (body) => ({
+  expectedBundleId: body.expectedApp,
+  expectedOrientation: body.expectedOrientation,
+});
 
-// ---------- Auto-start WDA on macOS ----------
+// ---------- Auto-start the helper on macOS ----------
 
-// Launch failures that need the user to do something on the phone or Mac. Every launch reinstalls WDA, which
+// Launch failures that need the user to do something on the phone or Mac. Every launch reinstalls the helper, which
 // also hides the trust entry in Settings for a moment, so these back off instead of retrying right away.
 /** @type {[RegExp, string][]} */
-const WDA_PROBLEMS = [
+const HELPER_PROBLEMS = [
   [
     /not trusted|explicitly trusted/,
     "On your iPhone: Settings → General → VPN & Device Management → your Apple ID → Trust.",
@@ -604,23 +431,24 @@ const WDA_PROBLEMS = [
 ];
 
 /** @type {import("node:child_process").ChildProcessWithoutNullStreams | null} */
-let wdaProcess = null;
+let helperProcess = null;
 /** @type {string | null} */
-let wdaProblem = null;
-let wdaRetryAt = 0;
+let helperProblem = null;
+let helperRetryAt = 0;
 /** @type {string | null} */
 let launchLockedDevice = null;
 let shuttingDown = false;
 const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
-function maybeStartWda(udid, connectionID, address) {
+/** @param {string} udid @param {string | number} connectionID @param {string} [address] */
+function maybeStartHelper(udid, connectionID, address) {
   // Select the migratable endpoint before binding a helper to legacy loopback.
   // Only the first snapshot is awaited; unsupported hosts proceed immediately.
   if (awaitInitialPairedDiscovery(pairedMonitor?.health(), Date.now() - pairedDiscoveryStartedAt))
     return;
   if (
     shuttingDown ||
-    wdaProcess ||
-    Date.now() < wdaRetryAt ||
+    helperProcess ||
+    Date.now() < helperRetryAt ||
     opts["no-autostart"] ||
     MANUAL ||
     process.platform !== "darwin"
@@ -631,11 +459,11 @@ function maybeStartWda(udid, connectionID, address) {
   try {
     command = helperCommand(udid);
   } catch {
-    wdaProblem = "Finish setting up iPortal on your Mac.";
-    wdaRetryAt = Date.now() + 30000;
+    helperProblem = "Finish setting up iPortal on your Mac.";
+    helperRetryAt = Date.now() + 30000;
     return;
   }
-  const logPath = statePath(`wda-${udid}.log`);
+  const logPath = statePath(`helper-${udid}.log`);
   const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   const log = fs.openSync(
     logPath,
@@ -643,10 +471,11 @@ function maybeStartWda(udid, connectionID, address) {
     0o600,
   );
   fs.fchmodSync(log, 0o600);
-  console.log(`  starting WebDriverAgent on ${udid}`);
+  console.log(`  starting iPortal helper on ${udid}`);
   const [executable, ...args] = runtimeCommand("--owned-command", ...command);
-  wdaProblem = null;
-  wdaProcess = spawn(executable, args, {
+  helperProblem = null;
+  const ticket = helperLifecycle.begin();
+  const child = spawn(executable, args, {
     env: {
       ...process.env,
       UDID: udid,
@@ -657,86 +486,99 @@ function maybeStartWda(udid, connectionID, address) {
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  wdaProcess.stdin.on("error", () => {});
+  helperProcess = child;
+  child.stdin.on("error", () => {});
   let tail = "";
   const redactors = [helperAuth.redactor(), helperAuth.redactor()];
+  /** @param {ReturnType<typeof helperAuth.redactor>} redactor @returns {(chunk:Buffer|string)=>void} */
   const output = (redactor) => (chunk) => {
     const text = redactor.write(chunk);
     fs.writeSync(log, text);
     tail = (tail + text).slice(-4096);
-    if (/device is locked|DeviceLocked/i.test(tail)) {
+    if (
+      helperProcess === child &&
+      helperLifecycle.owns(ticket) &&
+      /device is locked|DeviceLocked/i.test(tail)
+    ) {
       launchLockedDevice = `${udid}:${connectionID}`;
-      wdaProblem = "Unlock your iPhone.";
+      helperProblem = "Unlock your iPhone.";
       statusEvents.invalidate();
       tail = "";
-    }
-    if (/ServerURLHere/.test(tail)) {
-      launchLockedDevice = null;
-      tail = "";
-      statusEvents.invalidate();
     }
   };
-  wdaProcess.stdout.on("data", output(redactors[0]));
-  wdaProcess.stderr.on("data", output(redactors[1]));
-  wdaProcess.on("close", () => {
+  child.stdout.on("data", output(redactors[0]));
+  child.stderr.on("data", output(redactors[1]));
+  child.on("close", () => {
     for (const redactor of redactors) fs.writeSync(log, redactor.end());
     fs.closeSync(log);
   });
-  wdaProcess.on("exit", () => {
-    wdaProcess = null;
+  child.on("exit", () => {
+    if (helperProcess !== child || !helperLifecycle.exit(ticket)) return;
+    helperProcess = null;
     helperAuth.reset();
-    sid = null;
-    guardedTouch = undefined;
-    fastTouch = true;
+    helper.reset();
     const output = fs.readFileSync(logPath).subarray(from).toString();
-    wdaProblem = WDA_PROBLEMS.find(([re]) => re.test(output))?.[1] ?? null;
-    wdaRetryAt = Date.now() + (wdaProblem ? 30000 : 3000);
-    if (wdaProblem) console.log(`  ${wdaProblem} (retrying in 30 s)`);
+    helperProblem = HELPER_PROBLEMS.find(([re]) => re.test(output))?.[1] ?? null;
+    helperRetryAt = Date.now() + (helperProblem ? 30000 : 3000);
+    if (helperProblem) console.log(`  ${helperProblem} (retrying in 30 s)`);
     statusEvents.invalidate();
   });
 }
-process.on("exit", () => wdaProcess?.kill());
+process.on("exit", () => helperProcess?.kill());
 
-// Holding both volume buttons on the iPhone stops automation: WDA keeps running but every input fails with
-// XCTest error 41. Restarting WDA asks iOS for automation again (and brings back its "Automation Running" banner).
+// Holding both volume buttons on the iPhone stops automation: the helper keeps running but every input fails with
+// XCTest error 41. Restarting the helper asks iOS for automation again (and brings back its "Automation Running" banner).
 const NOT_AUTHORIZED = /Code=41|Not authorized for performing UI testing/;
 
-function restartWda() {
-  console.log("  automation is off on the iPhone, restarting WebDriverAgent");
-  sid = null;
-  if (wdaProcess) wdaProcess.kill();
-  else {
-    wdaRetryAt = 0;
+function restartHelper() {
+  if (helperLifecycle.state.phase === "recovering" || shuttingDown) return;
+  if (!helperLifecycle.recover()) {
+    helperProblem = "Reconnect your iPhone.";
+    return;
+  }
+  console.log("  restarting iPortal helper");
+  helper.reset();
+  if (helperProcess) {
+    const child = helperProcess;
+    void helper
+      .command("shutdown", {}, { timeout: 750 })
+      .catch(() => {})
+      .finally(() => child.kill());
+  } else {
+    helperRetryAt = 0;
     void pickDevice()
       .then((device) => {
-        if (device) maybeStartWda(device.udid, device.id, device.address);
+        if (device) maybeStartHelper(device.udid, device.id, device.address);
       })
       .catch(() => {});
   }
-  // The next status poll sees WDA down and starts it again.
+  // The next status poll sees the helper down and starts it again.
 }
 
-// Without automation WDA can't see any app, so the foreground app comes back as pid 0.
+// Without automation the helper can't see any app, so the foreground app comes back as pid 0.
 async function automationAllowed() {
   try {
-    return (await wda("GET", "/wda/activeAppInfo", null, 5000)).value?.pid > 0;
+    return (await helper.status()).automationReady !== false;
   } catch {
-    return true; // WDA isn't up yet; status() takes care of starting it
+    return true;
   }
 }
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  helperLifecycle.stop();
   keepAwake.stop("mirror closed");
   portalStatus.stop();
+  stopHelperEvents();
   statusEvents.stop();
   usbMonitor?.stop();
   pairedMonitor?.stop();
+  if (helperProcess) await helper.command("shutdown", {}, { timeout: 750 }).catch(() => {});
   transport.abort(apiError("Mirror closed", 409, "session closed"));
   for (const tunnel of tunnels) tunnel.destroy();
   // Retain the per-device lease until its owned test launcher has exited. A
   // quick close/reopen cannot race an old launcher tearing down the new runner.
-  const child = wdaProcess;
+  const child = helperProcess;
   if (child && child.exitCode === null && child.signalCode === null) {
     const exited = once(child, "exit");
     const timer = setTimeout(() => child.kill("SIGKILL"), 2000);
@@ -755,6 +597,7 @@ process.on("SIGTERM", () => void shutdown());
 
 // ---------- HTTP server ----------
 
+/** @param {AbortSignal} [signal] */
 async function status(signal) {
   const observedAt = Date.now();
   /** @type {Awaited<ReturnType<typeof pickDevice>>} */
@@ -770,7 +613,7 @@ async function status(signal) {
     }
   }
   signal?.throwIfAborted();
-  const up = (MANUAL || device) && (await wdaUp(signal));
+  const up = (MANUAL || device) && (await helperUp(signal));
   if (up) lastControlSuccess = Date.now();
   else {
     lastControlSuccess = 0;
@@ -790,9 +633,7 @@ async function status(signal) {
       : null;
   if (up) {
     try {
-      const value = (
-        await wda("GET", "/wda/locked", null, 1200, signal, { "x-mirror-purpose": "lifecycle" })
-      ).value;
+      const value = helper.cached?.locked;
       if (typeof value !== "boolean") throw new Error("Invalid lock state");
       locked = value;
       if (locked) keepAwake.stop("locked");
@@ -802,14 +643,15 @@ async function status(signal) {
   }
   signal?.throwIfAborted();
   if (up) {
-    wdaProblem = null;
+    helperProblem = null;
     launchLockedDevice = null;
     startupLock.reset();
   }
+  /** @type {import('./helper-protocol.ts').HelperResult<'orientation'> | null} */
   let orientation = null;
   if (device?.connection === "Paired" && up && locked === false) {
     try {
-      const value = (await wda("GET", "/orientation", null, 1200, signal)).value;
+      const value = await helper.command("orientation", {}, { timeout: 1200, signal });
       if (
         [
           "PORTRAIT",
@@ -824,10 +666,10 @@ async function status(signal) {
     }
   }
   if (device && !up) {
-    maybeStartWda(device.udid, device.id, device.address);
-    error = wdaProblem
-      ? wdaProblem
-      : wdaProcess || (fs.existsSync(deviceBuild) && !opts["no-autostart"])
+    maybeStartHelper(device.udid, device.id, device.address);
+    error = helperProblem
+      ? helperProblem
+      : helperProcess || (fs.existsSync(deviceBuild) && !opts["no-autostart"])
         ? null
         : "Finish setting up iPortal on your Mac.";
   } else if (MANUAL && !up) error = "Reconnect your iPhone.";
@@ -852,6 +694,7 @@ async function status(signal) {
     locked,
     lifecycle,
     orientation,
+    displayPixels: up ? (helper.cached?.displayPixels ?? null) : null,
     captureIdentity: {
       singleUsbDevice: Boolean(
         pinnedUdid && connectedUsbUdids.length === 1 && connectedUsbUdids[0] === pinnedUdid,
@@ -880,12 +723,16 @@ if (positionals[0] === "devices") {
   process.exit(0);
 }
 
-const clipboard = createClipboard({ wda, withSession });
-const inspection = createInspection({ wda, withSession, enqueue });
-const keepAwake = createKeepAwake({ wda, withSession, enqueue: (fn) => scheduler.maintenance(fn) });
-const portalStatus = createIPortalStatus({ wda, keepAwake: keepAwake.status });
-const statusEvents = createStatusEvents({ read: status });
+const clipboard = createClipboard({ helper });
+const inspection = createInspection({ helper, enqueue });
+const keepAwake = createKeepAwake({ helper, enqueue: (fn) => scheduler.maintenance(fn) });
+const portalStatus = createIPortalStatus({ helper, keepAwake: keepAwake.status });
+const statusEvents = createStatusEvents({
+  read: async (signal) => Schema.decodeUnknownSync(StatusSchema)(await status(signal)),
+});
+let stopHelperEvents = () => {};
 process.on("exit", () => portalStatus.stop());
+/** @type {ReturnType<typeof createCommands> | undefined} */
 let commands;
 const commandLedger = () =>
   (commands ??= createCommands({
@@ -900,23 +747,32 @@ const commandLedger = () =>
       ),
   }));
 
-async function dispatch(name, body, signal) {
+/** @param {string} rawName @param {unknown} rawBody @param {AbortSignal} [signal] */
+async function dispatch(rawName, rawBody, signal) {
   // A command submitted before detach must never execute after reattachment.
   signal = signal ? AbortSignal.any([signal, transport.signal]) : transport.signal;
   const started = performance.now();
-  if (name === "status") return { status: 200, body: await statusEvents.refresh() };
-  if (name === "presence") {
-    portalStatus.receive(body);
-    return { status: 200, body: { ok: true } };
-  }
-  if (name === "command-status") {
-    const value = commandLedger().get(body.requestId);
+  if (rawName === "status") return { status: 200, body: await statusEvents.refresh() };
+  if (rawName === "command-status") {
+    if (
+      !rawBody ||
+      typeof rawBody !== "object" ||
+      !("requestId" in rawBody) ||
+      typeof rawBody.requestId !== "string"
+    )
+      throw apiError("Missing request ID");
+    const value = commandLedger().get(rawBody.requestId);
     return {
       status: value ? 200 : 404,
       body: value
         ? { ok: true, value }
         : { ok: false, code: "not found", error: "Unknown request ID" },
     };
+  }
+  const { name, body } = parseNamedRequest(rawName, rawBody);
+  if (name === "presence") {
+    portalStatus.receive(body);
+    return { status: 200, body: { ok: true } };
   }
   if (name === "keep-awake")
     return { status: 200, body: { ok: true, value: await keepAwake.configure(body) } };
@@ -936,11 +792,36 @@ async function dispatch(name, body, signal) {
     );
     return { status: 200, body: { ok: true, value, meta: { instanceId } } };
   }
-  const deadline = performance.now() + (body.timeoutMs ?? (name === "wait" ? 10000 : 15000));
-  if (!Object.hasOwn(ActionSchemas, name)) {
-    const value = await commandContext.run({ signal, deadline }, () =>
-      inspection[name](body, signal),
-    );
+  const deadline =
+    performance.now() +
+    (("timeoutMs" in body ? body.timeoutMs : undefined) ?? (name === "wait" ? 10000 : 15000));
+  if (
+    name === "state" ||
+    name === "elements" ||
+    name === "element" ||
+    name === "source" ||
+    name === "screenshot" ||
+    name === "observe" ||
+    name === "wait"
+  ) {
+    const value = await commandContext.run({ signal, deadline }, () => {
+      switch (name) {
+        case "state":
+          return inspection.state(body, signal);
+        case "elements":
+          return inspection.elements(body, signal);
+        case "element":
+          return inspection.element(body, signal);
+        case "source":
+          return inspection.source(body, signal);
+        case "screenshot":
+          return inspection.screenshot(body, signal);
+        case "observe":
+          return inspection.observe(body, signal);
+        case "wait":
+          return inspection.wait(body, signal);
+      }
+    });
     return {
       status: 200,
       body: { ok: true, value, meta: { instanceId, observedAt: new Date().toISOString() } },
@@ -951,9 +832,13 @@ async function dispatch(name, body, signal) {
     if (name === "lock") keepAwake.stop("lock requested");
     let dispatched = false,
       executed = false;
+    let nativeStarted = 0,
+      nativeCompleted = 0;
+    /** @type {{queueMs?:number,preflightMs?:number,actionMs?:number,totalMs?:number,native?:unknown}} */
     const timing = {};
     let clipboardChanged;
     const onDispatch = () => {
+      nativeStarted++;
       if (!dispatched) {
         dispatched = true;
         mark("running");
@@ -966,40 +851,47 @@ async function dispatch(name, body, signal) {
           signal,
           deadline,
           onDispatch,
+          onComplete: () => {
+            nativeCompleted++;
+          },
           priority: 5,
-          operationTimeoutMs: Math.max(8000, (body.end ?? 0) + 2000),
+          operationTimeoutMs: Math.max(8000, (("end" in body ? body.end : undefined) ?? 0) + 2000),
         },
         async () => {
           await enqueue(async () => {
             timing.queueMs = Math.round(performance.now() - started);
             const nativeGuards =
-              name === "pinch"
+              ["type", "key", "tap", "home", "button", "launch", "siri"].includes(name) ||
+              (name === "pinch"
                 ? await supportsMultiTouch()
-                : ["gesture", "shortcut"].includes(name) && (await supportsGuardedTouch());
+                : ["gesture", "shortcut"].includes(name) && (await supportsGuardedTouch()));
             if (!nativeGuards && !["unlock", "lock", "ensure", "quality"].includes(name)) {
-              if ((await wda("GET", "/wda/locked")).value)
+              if ((await helper.status()).locked)
                 throw apiError("Unlock your iPhone", 409, "device locked");
             }
             if (!nativeGuards && body.expectedApp) {
-              const active = (await wda("GET", "/wda/activeAppInfo")).value;
+              const active = await helper.command("app");
               if (active.bundleId !== body.expectedApp)
                 throw apiError("Foreground app changed", 409, "app changed");
             }
             if (
               !nativeGuards &&
               body.expectedOrientation &&
-              (await withSession((s) => wda("GET", `/session/${s}/orientation`))).value !==
-                body.expectedOrientation
+              (await helper.command("orientation")) !== body.expectedOrientation
             )
               throw apiError("Screen orientation changed", 409, "orientation changed");
             if (body.observationId) await inspection.verifyObservation(body.observationId, signal);
             signal?.throwIfAborted();
             const actionStarted = performance.now();
-            timing.preflightMs = Math.round(actionStarted - started - timing.queueMs);
-            const result = await actions[name](body);
+            timing.preflightMs = Math.round(actionStarted - started - (timing.queueMs ?? 0));
+            const result = await executeAction(actions, name, body);
             timing.actionMs = Math.round(performance.now() - actionStarted);
-            if (result?.timing) timing.native = result.timing;
-            if (typeof result?.clipboardChanged === "boolean")
+            if (result && "timing" in result) timing.native = result.timing;
+            if (
+              result &&
+              "clipboardChanged" in result &&
+              typeof result.clipboardChanged === "boolean"
+            )
               clipboardChanged = result.clipboardChanged;
             executed = true;
             if (
@@ -1025,16 +917,24 @@ async function dispatch(name, body, signal) {
         },
       };
     } catch (e) {
+      const failure = errorInfo(e);
       const result = errorResponse(e);
       result.body = {
         ...result.body,
         requestId,
-        outcome: executed ? "executed" : dispatched ? "unknown" : "not executed",
+        outcome:
+          executed ||
+          (nativeCompleted > 0 &&
+            (nativeStarted === nativeCompleted || failure.outcome === "notExecuted"))
+            ? "executed"
+            : failure.outcome === "notExecuted" || !dispatched
+              ? "not executed"
+              : "unknown",
         verified: false,
       };
-      if (NOT_AUTHORIZED.test(e.message)) {
+      if (failure.code === "automation denied" || NOT_AUTHORIZED.test(failure.message)) {
         keepAwake.stop("automation unavailable");
-        restartWda();
+        restartHelper();
       }
       return result;
     }
@@ -1051,15 +951,14 @@ if (!MANUAL) {
     path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "iportal-usb-"),
   );
   process.on("exit", () => fs.rmSync(directory, { recursive: true, force: true }));
-  wdaSocket = await forward(path.join(directory, "wda.sock"), 8100);
-  mjpegSocket = await forward(path.join(directory, "mjpeg.sock"), 9100);
+  helperSocket = await forward(path.join(directory, "helper.sock"), HELPER_PORT);
 }
 startServer({
   port: +opts.port,
   instanceId,
   html: loadIPortalHTML(),
   mjpeg: MJPEG,
-  mjpegSocket,
+  mjpegSocket: helperSocket,
   helperAuth,
   dispatch,
   statusEvents,
@@ -1077,7 +976,9 @@ startServer({
   },
 });
 if (!MANUAL) {
+  /** @type {string | number | null | undefined} */
   let observedDeviceID;
+  /** @type {import("./usb-events.ts").USBDevice[]} */
   let usbInventory = [];
   const onDevicesChanged = () => {
     let devices = usbInventory;
@@ -1099,18 +1000,16 @@ if (!MANUAL) {
       return;
     }
     if (observedDeviceID !== undefined) {
+      helperLifecycle.routeChanged();
       transport.abort(apiError("Device connection changed", 409, "device changed"));
       transport = new AbortController();
       helperAuth.reset();
       for (const tunnel of tunnels) tunnel.destroy();
-      if (wdaProcess && device?.address !== observedAddress) {
-        wdaProcess.stdin.end();
-        wdaProcess.kill();
+      if (helperProcess && device?.address !== observedAddress) {
+        helperProcess.stdin.end();
+        helperProcess.kill();
       }
-      sid = null;
-      guardedTouch = undefined;
-      fastTouch = true;
-      multiTouch = undefined;
+      helper.reset();
     }
     selectedDevice = device;
     observedDeviceID = device?.id ?? null;
@@ -1127,6 +1026,7 @@ if (!MANUAL) {
       },
     });
   };
+  /** @type {string | undefined} */
   let observedAddress;
   reconcileConnection = onDevicesChanged;
   pairedMonitor = createPairedMonitor(onDevicesChanged);
@@ -1139,9 +1039,10 @@ if (!MANUAL) {
     },
   });
   process.on("exit", () => {
-    usbMonitor.stop();
-    pairedMonitor.stop();
+    usbMonitor?.stop();
+    pairedMonitor?.stop();
   });
 }
+stopHelperEvents = helper.watch(() => statusEvents.invalidate());
 void statusEvents.refresh();
 process.on("exit", () => statusEvents.stop());

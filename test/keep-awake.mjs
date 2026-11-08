@@ -19,14 +19,21 @@ function fixture() {
     cancel: (id) => timers.delete(id),
     enqueue: (fn) =>
       device.blocked
-        ? new Promise((resolve, reject) => pending.push(() => fn().then(resolve, reject)))
-        : fn(),
-    withSession: (fn) => fn("S1"),
-    wda: async (method, path, body) => {
-      calls.push({ method, path, body });
-      if (device.fail) throw Error("disconnected");
-      if (path === "/wda/mirror/keepalive") return { value: { completed: true } };
-      return { value: path.endsWith("/locked") ? device.locked : null };
+        ? new Promise((resolve, reject) =>
+            pending.push(() => Promise.resolve(fn()).then(resolve, reject)),
+          )
+        : Promise.resolve(fn()),
+    helper: {
+      status: async () => {
+        calls.push({ operation: "status" });
+        if (device.fail) throw Error("disconnected");
+        return { locked: device.locked };
+      },
+      command: async (operation, body) => {
+        calls.push({ operation, body });
+        if (device.fail) throw Error("disconnected");
+        return operation === "keepAlive" ? { completed: true } : null;
+      },
     },
   });
   async function advance(ms) {
@@ -51,7 +58,7 @@ test("bounded lease pulses, renews, expires, and leaves no background timers", a
   await f.advance(15000);
   assert.equal(f.api.status().pulses, 2);
   await f.api.configure({ enabled: true, durationMs: 20000, method: "hid" });
-  assert.equal(f.calls.at(-1).path, "/wda/mirror/keepalive");
+  assert.equal(f.calls.at(-1).operation, "keepAlive");
   assert.equal(f.api.status().backend, "hid-event-stream");
   await f.advance(15000);
   assert.equal(f.api.status().pulses, 2);
@@ -102,7 +109,7 @@ test("manual locking ends an active lease without sending another event", async 
   await f.advance(15000);
   assert.equal(f.api.status().reason, "locked");
   assert.equal(f.calls.length, count + 1);
-  assert.ok(f.calls.at(-1).path.endsWith("/locked"));
+  assert.equal(f.calls.at(-1).operation, "status");
   assert.equal(f.timers.size, 0);
 });
 
@@ -133,6 +140,7 @@ test("invalid options do not replace an active lease; status is read-only", asyn
     { enabled: true, method: "unknown" },
     { enabled: true, typo: 1 },
   ]) {
+    // @ts-expect-error Deliberately malformed runtime inputs.
     await assert.rejects(f.api.configure(body), { status: 400 });
     assert.equal(f.api.status().enabled, true);
   }

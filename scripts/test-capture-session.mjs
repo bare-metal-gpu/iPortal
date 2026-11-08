@@ -46,9 +46,13 @@ try {
   assert(store, "frame-store markers must exist");
   const geometryHelper = join(temporary, "CaptureGeometry.swift");
   const geometryBinary = join(temporary, "capture-geometry-tests");
+  const presentation = capture.match(
+    /\/\/ BEGIN TESTABLE PRESENTATION POLICY\n([\s\S]*?)\/\/ END TESTABLE PRESENTATION POLICY/,
+  );
+  assert(presentation, "presentation policy markers must exist");
   await writeFile(
     geometryHelper,
-    `@preconcurrency import AVFoundation\nimport Cocoa\nimport CoreImage\n${executor}\n${store[1]}`,
+    `@preconcurrency import AVFoundation\nimport Cocoa\nimport CoreImage\n${executor}\n${presentation[1]}\n${store[1]}`,
   );
   execFileSync(
     "xcrun",

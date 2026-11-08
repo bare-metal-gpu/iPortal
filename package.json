@@ -8,18 +8,22 @@
     "iportal": "iportal.mjs"
   },
   "scripts": {
-    "setup": "scripts/setup-wda.sh",
+    "setup": "scripts/setup-helper.sh",
     "start": "bun iportal.mjs",
-    "test": "bun test ./test/clipboard.mjs ./test/core.mjs ./test/keep-awake.mjs ./test/server-lifecycle.mjs ./test/status-events.mjs ./test/iportal-status.mjs ./test/iportal-install.mjs ./test/startup-lock.mjs ./test/owned-process.mjs ./test/build-tools.test.ts ./test/helper-auth.test.ts ./test/paired-devices.test.ts --timeout 20000 && bun test/e2e.mjs && bun test/multi-device.mjs && bun test/guarded-touch.mjs && bun scripts/test-native-contract.mjs && bun scripts/test-native-media.mjs && bun scripts/test-capture-session.mjs && bun scripts/test-lifecycle.mjs && bun test/packaged-runtime.mjs",
+    "test": "bun test ./test/clipboard.mjs ./test/core.mjs ./test/keep-awake.mjs ./test/server-lifecycle.mjs ./test/status-events.mjs ./test/iportal-status.mjs ./test/iportal-install.mjs ./test/startup-lock.mjs ./test/owned-process.mjs ./test/build-tools.test.ts ./test/helper-auth.test.ts ./test/helper-client.test.ts ./test/receipts.test.ts ./test/contracts.test.ts ./test/paired-devices.test.ts --timeout 20000 && bun test/e2e.mjs && bun test/multi-device.mjs && bun test/guarded-touch.mjs && bun scripts/test-native-contract.mjs && bun scripts/test-native-media.mjs && bun scripts/test-capture-session.mjs && bun scripts/test-lifecycle.mjs && bun scripts/test-accessibility.mjs && bun test/packaged-runtime.mjs",
     "build:server": "bun scripts/build-server.ts",
+    "test:simulator": "bun scripts/test-helper-simulator.ts",
+    "test:apple-bridge": "bun scripts/test-apple-bridge.ts",
+    "test:peer-transport": "bun scripts/test-peer-transport.ts",
     "app": "macos/build.sh --install",
-    "typecheck": "bun --bun run tsc --noEmit && bun --bun run tsc --project public/tsconfig.json --noEmit",
+    "typecheck": "bun --bun run tsc --noEmit && bun --bun run tsc --project public/tsconfig.json --noEmit && bun --bun run tsc --project test/tsconfig.json --noEmit",
     "lint": "oxlint .",
     "lint:fix": "oxlint --fix .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "check": "bun run typecheck && bun run lint && bun run format:check",
-    "verify": "bun run check && bun run test"
+    "verify": "bun run check && bun run test",
+    "test:accessibility": "bun scripts/test-accessibility.mjs"
   },
   "engines": {
     "bun": ">=1.4.4"

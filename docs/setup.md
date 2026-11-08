@@ -1,6 +1,6 @@
 # Setup and troubleshooting
 
-Start with the [installation steps](../README.md#install). Full Xcode is needed to build and launch the signed phone helper; Command Line Tools alone are insufficient. Use an Xcode version that supports your device's OS, open it once, and finish its component installation.
+Start with the [installation steps](../README.md#install). Building the pinned helper dependencies requires full Xcode 27+ with Swift 6.4+; Command Line Tools alone are insufficient. Your Mac must support that Xcode version, and Xcode must support your device's OS. Open Xcode once and finish its component installation. The macOS 14 and iOS/iPadOS 17 deployment targets do not mean older Xcode versions can build the current dependencies.
 
 ## Wireless builds
 
