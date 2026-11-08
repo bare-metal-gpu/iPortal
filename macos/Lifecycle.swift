@@ -435,6 +435,7 @@ enum MirrorPageMessage {
     }
     struct Frame: Decodable {
         let w: Double, h: Double, videoEpoch: Int, bridgeId: String
+        let accessibilityChanged: Bool?
         var valid: Bool { w.isFinite && h.isFinite && w > 0 && h > 0 && videoEpoch >= 0 && !bridgeId.isEmpty }
     }
     case status(Status), frame(Frame)

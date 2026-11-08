@@ -63,18 +63,31 @@ to Computer and screen readers. It contains the phone's reported roles, labels,
 non-password values, hierarchy and oriented screen bounds. No setup switch or
 extra permission is needed beyond the existing mirroring and Mac accessibility access.
 
-Reading this group asynchronously refreshes a cached `/api/observe` snapshot
-without taking a screenshot. Repeated reads coalesce, with at most one new
-inspection every two seconds; ordinary mirroring does not poll this tree.
-An initial read may need a second read after the snapshot arrives. The bridge
-posts an accessibility layout notification when content changes.
+An initial read asynchronously obtains a cached `/api/observe` snapshot without
+capturing an image. Subsequent command completions and changes in presented video
+invalidate the cache and push a refresh, coalesced over 120 ms. One snapshot runs
+at a time, with one trailing refresh if content changes during it. Unchanged trees
+preserve accessibility object identity. Layout changes post native notifications.
 
-Press actions use the existing guarded element API; scroll containers expose
-Scroll up/down custom actions. Focus a text field and use the existing Mac
-keyboard route. Setting `AXValue` is deliberately unsupported: inserting text
-is not equivalent to replacing a field's contents. Actions are asynchronous;
-acceptance means admission, so read the resulting tree to verify the outcome.
-An unconfirmed command is never replayed automatically.
+Inspection is active only while a reader has used the tree within 12 seconds.
+Frame detection samples a tiny luminance grid and retains no image data. There is
+no two-second refresh gate; a read of a cache older than ten seconds is the safety
+net for missed events and off-screen changes that produce no visible difference.
+An initial read can need a second read after the snapshot arrives.
+
+The bridge exposes native Press, slider Increment/Decrement, editable text values,
+and custom Focus, Double tap, Long press and four-direction scroll actions where
+applicable. Slider steps move by five percent of the range; supported numeric
+`AXValue` values are normalized from zero to one. Text `AXValue` replaces the
+field's contents, including clearing it, through the existing stable keyboard
+path. Password fields remain on the keyboard path and never export values.
+
+These targeted operations are also available through `POST /api/element-action`
+with an `id` or `selector`, and `action`: `focus`, `replaceText` (with `text`),
+`adjust` (with normalized `value`), `increment`, `decrement`, `doubleTap` or
+`longPress`. The same observation and receipt guards apply. Actions are
+asynchronous: acceptance means admission, so read the resulting tree to verify
+the outcome. An unconfirmed command is never replayed automatically.
 
 Actions require a recent stable observation, the same server/device generation,
 foreground app and orientation, and current actionability checks. Closing the

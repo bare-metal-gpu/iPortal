@@ -1,4 +1,5 @@
 import Cocoa
+import CoreVideo
 
 // Screen readers and Computer see cached native elements, never a synchronous
 // network call in an AX getter. The helper remains the authority for mutations.
@@ -34,6 +35,15 @@ struct MirrorAXNode {
     }
 
     var secure: Bool { type == "SecureTextField" }
+    var editable: Bool { ["TextField", "SecureTextField", "SearchField", "TextView"].contains(type) }
+    var normalizedValue: Double? {
+        guard type == "Slider", let value = value as? String, value.contains("%") else { return nil }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .percent
+        guard let number = formatter.number(from: value)?.doubleValue, number.isFinite, (0...1).contains(number) else { return nil }
+        return number
+    }
+    var settable: Bool { (editable && !secure) || normalizedValue != nil }
     var scrollable: Bool { ["ScrollView", "Table", "CollectionView", "WebView"].contains(type) }
     var pressable: Bool {
         ["Button", "Cell", "Link", "Switch", "CheckBox", "RadioButton", "TextField",
@@ -164,16 +174,19 @@ final class MirrorAXElement: NSAccessibilityElement {
         setAccessibilityRole(node.role)
         if node.secure { setAccessibilitySubrole(.secureTextField) }
         setAccessibilityLabel(node.label)
-        setAccessibilityValue(node.value)
+        super.setAccessibilityValue(node.normalizedValue.map { $0 as Any } ?? node.value)
+        if node.normalizedValue != nil { setAccessibilityMinValue(0); setAccessibilityMaxValue(1) }
         setAccessibilityIdentifier("iportal.remote.\(revision.uuidString).\(node.path)")
-        if node.scrollable {
-            setAccessibilityCustomActions(["Scroll down", "Scroll up"].enumerated().map { index, name in
-                NSAccessibilityCustomAction(name: name) { [weak self] in
-                    guard let self else { return false }
-                    return self.bridge?.perform(self, scrollDown: index == 0) ?? false
-                }
-            })
-        }
+        let actions: [(String, MirrorAXAction)] = node.scrollable
+            ? [("Scroll down", .scroll(.down)), ("Scroll up", .scroll(.up)), ("Scroll left", .scroll(.left)), ("Scroll right", .scroll(.right))]
+            : node.editable ? [("Focus", .element("focus"))]
+            : node.pressable ? [("Long press", .element("longPress")), ("Double tap", .element("doubleTap"))] : []
+        setAccessibilityCustomActions(actions.map { name, action in
+            NSAccessibilityCustomAction(name: name) { [weak self] in
+                guard let self else { return false }
+                return self.bridge?.perform(self, action: action) ?? false
+            }
+        })
         descendants = node.children.map { MirrorAXElement(node: $0, revision: revision, bridge: bridge, parent: self) }
     }
     override func isAccessibilityElement() -> Bool { bridge?.isCurrent(self) == true }
@@ -196,15 +209,39 @@ final class MirrorAXElement: NSAccessibilityElement {
     override func isAccessibilityFocused() -> Bool { node.focused }
     override func accessibilityHelp() -> String? { node.visible ? nil : "Off screen" }
     override func accessibilityPerformPress() -> Bool { bridge?.perform(self) ?? false }
+    override func accessibilityPerformIncrement() -> Bool {
+        node.type == "Slider" && bridge?.perform(self, action: .element("increment")) == true
+    }
+    override func accessibilityPerformDecrement() -> Bool {
+        node.type == "Slider" && bridge?.perform(self, action: .element("decrement")) == true
+    }
+    override func setAccessibilityValue(_ value: Any?) {
+        // Initialization sets the cached value before an observation is bound.
+        guard bridge?.isCurrent(self) == true else { return }
+        if node.editable && !node.secure, let text = value as? String, text.count <= 10000 {
+            _ = bridge?.perform(self, action: .replaceText(text))
+        } else if node.type == "Slider", let value = value as? NSNumber,
+                  CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite,
+                  (0...1).contains(value.doubleValue) {
+            _ = bridge?.perform(self, action: .adjust(value.doubleValue))
+        }
+    }
     override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
         if selector == #selector(accessibilityPerformPress) {
             return node.pressable && node.visible && bridge?.isCurrent(self) == true
         }
-        // Setting AXValue means replacement, whereas /api/type inserts. Keep
-        // the existing Mac keyboard route rather than pretending these agree.
-        if selector == #selector(setAccessibilityValue(_:)) || selector == #selector(setAccessibilityFocused(_:)) { return false }
+        if selector == #selector(setAccessibilityValue(_:)) { return node.settable && node.visible && node.enabled && bridge?.isCurrent(self) == true }
+        if selector == #selector(accessibilityPerformIncrement) || selector == #selector(accessibilityPerformDecrement) {
+            return node.type == "Slider" && node.visible && node.enabled && bridge?.isCurrent(self) == true
+        }
+        if selector == #selector(setAccessibilityFocused(_:)) { return false }
         return super.isAccessibilitySelectorAllowed(selector)
     }
+}
+
+enum MirrorAXDirection { case up, down, left, right }
+enum MirrorAXAction {
+    case press, scroll(MirrorAXDirection), element(String), replaceText(String), adjust(Double)
 }
 
 @MainActor
@@ -224,7 +261,18 @@ final class MirrorAccessibilityBridge {
     private var actionTask: Task<Void, Never>?
     private var actionID = UUID()
     private var sampledAt = -Double.infinity
-    private var attemptedAt = -Double.infinity
+    private var dirty = true
+    private var demandUntil = -Double.infinity
+    private var demandReportedAt = -Double.infinity
+    private var retryAt = -Double.infinity
+    private var readID = UUID()
+    private var changeVersion = 0
+    private var scheduled: Task<Void, Never>?
+    private var visualHash: UInt64?
+    private var contentRevision: Int?
+    var demandChanged: (Bool) -> Void = { _ in }
+    var wantsVisualEvents: Bool { target != nil && clock() < demandUntil }
+
     private let clock: () -> TimeInterval
     private let send: (URLRequest) async throws -> (Data, URLResponse)
 
@@ -241,54 +289,123 @@ final class MirrorAccessibilityBridge {
         actionID = UUID()
         actionTask?.cancel(); actionTask = nil
         invalidate()
-        attemptedAt = -Double.infinity
+        scheduled?.cancel(); scheduled = nil
+        demandUntil = -Double.infinity; demandReportedAt = -Double.infinity
+        retryAt = -Double.infinity; visualHash = nil; contentRevision = nil
+        demandChanged(false)
         help = next == nil ? "Device content unavailable." : "Read the device’s accessible content."
     }
 
     func invalidate() {
         diagnostic("invalidate", ["roots": elements.count, "pending": task != nil])
+        readID = UUID()
         task?.cancel(); task = nil
+        dirty = true
         revision = UUID(); observation = nil; elements = []; sampledAt = -Double.infinity
         if let host { NSAccessibility.post(element: host, notification: .layoutChanged) }
     }
 
+    // AX getters are cache-only. Interest is leased by real reads, so a video
+    // or animation never starts tree inspection during ordinary mirroring.
     func refreshIfNeeded() {
-        guard let target, task == nil, actionTask == nil, clock() - attemptedAt >= 2 else { return }
-        let token = revision
+        guard target != nil else { return }
+        demandUntil = clock() + 12
+        if clock() - demandReportedAt >= 4 {
+            demandReportedAt = clock(); demandChanged(true)
+        }
+        // On-read safety net for missed events and invisible/off-screen changes.
+        // Healthy reads do not have a two-second polling/refresh gate.
+        if observation == nil || clock() - sampledAt >= 10 { dirty = true }
+        startRefresh()
+    }
+
+    func contentDidChange(_ reason: String = "content") {
+        dirty = true; changeVersion &+= 1
+        guard wantsVisualEvents else { return }
+        diagnostic("changed", ["reason": reason])
+        scheduleRefresh()
+    }
+
+    func receiveContentRevision(_ value: Int, instance: String) {
+        guard target?.instance == instance, value >= 0,
+              contentRevision == nil || value > contentRevision! else { return }
+        contentRevision = value
+        contentDidChange("command")
+    }
+
+    private func scheduleRefresh() {
+        guard scheduled == nil, task == nil, actionTask == nil, wantsVisualEvents else { return }
+        let wait = max(0.12, retryAt - clock())
+        scheduled = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(min(wait, 5) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.scheduled = nil
+            if self.wantsVisualEvents { self.startRefresh() }
+        }
+    }
+
+    private func startRefresh() {
+        guard dirty, let target, task == nil, actionTask == nil, clock() >= retryAt else { return }
+        scheduled?.cancel(); scheduled = nil
+        let token = UUID(), version = changeVersion
+        readID = token; dirty = false
         diagnostic("request", [:])
-        attemptedAt = clock()
         task = Task { [weak self] in
             guard let self else { return }
-            defer { if self.revision == token { self.task = nil } }
             do {
                 let value = try await request("observe", body: ["screenshot": false, "timeoutMs": 8000], target: target)
                 try Task.checkCancellation()
-                guard self.target == target, self.revision == token else { return }
+                guard self.target == target, self.readID == token else { return }
                 let observed = try MirrorAXObservation.parse(value)
                 diagnostic("response", ["children": observed.root.children.count, "stable": observed.stable])
                 let changed = observation?.root.matches(observed.root) != true
                     || observation?.app != observed.app || observation?.orientation != observed.orientation
                 self.observation = observed; self.sampledAt = clock()
-                // Keep object identity for an unchanged tree (screen readers may
-                // still be traversing it). Changed content retires every handle.
                 if changed { self.revision = UUID() }
                 if let host = self.host {
                     if changed { self.elements = [MirrorAXElement(node: observed.root, revision: self.revision, bridge: self, parent: host)] }
                     self.help = observed.stable ? "Device accessibility content." : "Device content is changing; read again before acting."
                     if changed { NSAccessibility.post(element: host, notification: .layoutChanged) }
                 }
-                self.task = nil
+                self.retryAt = -Double.infinity
+                self.dirty = self.changeVersion != version || !observed.stable
             } catch {
                 diagnostic("failure", ["kind": String(reflecting: type(of: error)), "cancelled": Task.isCancelled])
-                // Input deliberately cancels its overlapping read. That old
-                // callback must not erase the tree owned by the admitted action.
-                guard !Task.isCancelled else { return }
-                guard self.target == target, self.revision == token else { return }
-                self.task = nil
+                guard !Task.isCancelled, self.target == target, self.readID == token else { return }
                 self.invalidate()
+                self.retryAt = clock() + 1
                 self.help = "Device content unavailable. Read again to retry."
             }
+            guard self.target == target, self.readID == token || self.task == nil else { return }
+            self.task = nil
+            if self.dirty { self.scheduleRefresh() }
         }
+    }
+
+    // Presentation is an event source for changes made on the physical phone
+    // and third-party app updates. Sample a small luminance grid only while AX
+    // has a reader. Never retain pixels or hash them for identity/analytics.
+    func presented(_ pixel: CVPixelBuffer) {
+        guard wantsVisualEvents else { visualHash = nil; return }
+        guard CVPixelBufferLockBaseAddress(pixel, .readOnly) == kCVReturnSuccess else { return }
+        defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+        let planar = CVPixelBufferIsPlanar(pixel)
+        guard planar || CVPixelBufferGetPixelFormatType(pixel) == kCVPixelFormatType_32BGRA else { return }
+        let width = planar ? CVPixelBufferGetWidthOfPlane(pixel, 0) : CVPixelBufferGetWidth(pixel)
+        let height = planar ? CVPixelBufferGetHeightOfPlane(pixel, 0) : CVPixelBufferGetHeight(pixel)
+        let stride = planar ? CVPixelBufferGetBytesPerRowOfPlane(pixel, 0) : CVPixelBufferGetBytesPerRow(pixel)
+        guard width > 0, height > 0,
+              let base = planar ? CVPixelBufferGetBaseAddressOfPlane(pixel, 0) : CVPixelBufferGetBaseAddress(pixel) else { return }
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        var hash = UInt64(width) &* 1099511628211 ^ UInt64(height)
+        for row in 0..<32 { for column in 0..<24 {
+            let x = min(width - 1, (2 * column + 1) * width / 48)
+            let y = min(height - 1, (2 * row + 1) * height / 64)
+            let offset = y * stride + x * (planar ? 1 : 4)
+            let luminance = planar ? Int(bytes[offset]) : (Int(bytes[offset]) + 2 * Int(bytes[offset + 1]) + Int(bytes[offset + 2])) / 4
+            hash = (hash ^ UInt64(luminance / 16)) &* 1099511628211
+        } }
+        if visualHash != hash { visualHash = hash; contentDidChange("frame") }
     }
 
     func canAct(_ element: MirrorAXElement) -> Bool {
@@ -300,7 +417,11 @@ final class MirrorAccessibilityBridge {
         target != nil && element.revision == revision && clock() - sampledAt < 12
     }
 
-    func perform(_ element: MirrorAXElement, scrollDown: Bool? = nil) -> Bool {
+    func perform(_ element: MirrorAXElement, scrollDown: Bool) -> Bool {
+        perform(element, action: .scroll(scrollDown ? .down : .up))
+    }
+
+    func perform(_ element: MirrorAXElement, action requested: MirrorAXAction = .press) -> Bool {
         diagnostic("action", ["current": element.revision == revision, "stable": observation?.stable == true,
             "fresh": clock() - sampledAt < 12, "ready": allowsActions(), "visible": element.node.visible,
             "busy": actionTask != nil])
@@ -308,25 +429,46 @@ final class MirrorAccessibilityBridge {
         var body: [String: Any] = ["requestId": UUID().uuidString, "observationId": observation.id,
             "expectedApp": observation.app, "expectedOrientation": observation.orientation, "timeoutMs": 8000]
         let action: String
-        if let down = scrollDown {
+        switch requested {
+        case .scroll(let direction):
             guard element.node.scrollable else { return false }
             let visible = element.node.rect.intersection(observation.root.rect)
-            guard !visible.isNull, visible.width > 20, visible.height > 40 else { return false }
+            guard !visible.isNull, visible.width > 40, visible.height > 40 else { return false }
             let screen = observation.root.rect
-            let x = (visible.midX - screen.minX) / screen.width
+            let left = (visible.minX + visible.width * 0.25 - screen.minX) / screen.width
+            let right = (visible.minX + visible.width * 0.75 - screen.minX) / screen.width
             let top = (visible.minY + visible.height * 0.25 - screen.minY) / screen.height
             let bottom = (visible.minY + visible.height * 0.75 - screen.minY) / screen.height
-            body["points"] = [[x, down ? bottom : top, 0], [x, down ? top : bottom, 250]]
-            body["end"] = 250
-            action = "gesture"
-        } else {
+            let x = (left + right) / 2, y = (top + bottom) / 2
+            switch direction {
+            case .down: body["points"] = [[x, bottom, 0], [x, top, 250]]
+            case .up: body["points"] = [[x, top, 0], [x, bottom, 250]]
+            case .left: body["points"] = [[left, y, 0], [right, y, 250]]
+            case .right: body["points"] = [[right, y, 0], [left, y, 250]]
+            }
+            body["end"] = 250; action = "gesture"
+        case .press:
             guard element.node.pressable else { return false }
             body["selector"] = ["using": "xpath", "value": element.node.path]
             action = "tap"
+        case .replaceText(let text):
+            guard element.node.editable, !element.node.secure, text.count <= 10000 else { return false }
+            body["action"] = "replaceText"; body["text"] = text; action = "element-action"
+        case .adjust(let value):
+            guard element.node.type == "Slider", value.isFinite, (0...1).contains(value) else { return false }
+            body["action"] = "adjust"; body["value"] = value; action = "element-action"
+        case .element(let name):
+            guard (name == "focus" && element.node.editable)
+                || (["increment", "decrement"].contains(name) && element.node.type == "Slider")
+                || (["doubleTap", "longPress"].contains(name) && element.node.pressable) else { return false }
+            body["action"] = name; action = "element-action"
         }
+        if action == "element-action" { body["selector"] = ["using": "xpath", "value": element.node.path] }
         let token = UUID()
         actionID = token
+        readID = UUID()
         task?.cancel(); task = nil
+        scheduled?.cancel(); scheduled = nil
         actionTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -342,7 +484,7 @@ final class MirrorAccessibilityBridge {
             guard self.target == target, self.actionID == token else { return }
             self.actionTask = nil
             self.invalidate()
-            self.attemptedAt = -Double.infinity
+            self.retryAt = -Double.infinity
             self.refreshIfNeeded()
         }
         prepareInput()

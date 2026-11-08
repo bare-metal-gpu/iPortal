@@ -72,6 +72,7 @@ struct FixtureView: View {
       .alert("Fixture alert", isPresented: $alert) { Button("Close", role: .cancel) {} }
       .toolbar {
         NavigationLink("Editors") { EditorFixtureView() }.accessibilityIdentifier("fixture.editors")
+        NavigationLink("Controls") { ControlFixtureView() }.accessibilityIdentifier("fixture.controls")
       }
     }
   }
@@ -91,6 +92,31 @@ struct FixtureView: View {
     keyboardEvents.append(
       "\(event):\(Int(frame.minY)),\(Int(frame.height)),hardware:\(hardware)@\(Int(CACurrentMediaTime() * 1000))")
     if keyboardEvents.count > 32 { keyboardEvents.removeFirst() }
+  }
+}
+
+private struct ControlFixtureView: View {
+  @State private var text = "Initial value"
+  @State private var level = 0.5
+  @State private var enabled = false
+  @State private var changes = 0
+  var body: some View {
+    VStack(spacing: 24) {
+      TextField("Replacement input", text: $text).textFieldStyle(.roundedBorder)
+        .accessibilityIdentifier("fixture.replace")
+      Text("Value:\(text)").accessibilityIdentifier("fixture.replacedValue")
+      Slider(value: $level, in: 0...1).accessibilityLabel("Level")
+        .accessibilityIdentifier("fixture.slider")
+      Toggle("Enabled", isOn: $enabled).accessibilityIdentifier("fixture.toggle")
+      Button("Delayed update") {
+        Task { @MainActor in
+          try? await Task.sleep(for: .milliseconds(700))
+          changes += 1
+        }
+      }.accessibilityIdentifier("fixture.delayed")
+      Text("Changes: \(changes)").accessibilityIdentifier("fixture.changes")
+      Spacer()
+    }.padding().navigationTitle("Controls")
   }
 }
 

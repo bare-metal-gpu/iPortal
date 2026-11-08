@@ -742,6 +742,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             self.window.makeKeyAndOrderFront(nil)
             self.window.makeFirstResponder(self.web)
         }
+        accessibilityHost.bridge.demandChanged = { [weak self] active in
+            self?.nativeCall("setNativeAccessibilityActive", ready: active)
+        }
         phone.addSubview(accessibilityHost)
         // Do not clear the tree for Mac focus/menu events: AX clients can
         // generate them while reading. Real phone mutations already retire
@@ -985,6 +988,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         if priorBridge != videoGate.bridgeID { nativeCall("setNativeSettingsVisible", ready: settingsBlocksInput) }
         if case .frame(let frame) = payload {
             if videoMode == "stream" { setAspect(width: frame.w, height: frame.h) }
+            if frame.accessibilityChanged == true { accessibilityHost?.bridge.contentDidChange("frame") }
             return
         }
         guard case .status(let status) = payload else { return }
@@ -1130,6 +1134,10 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             trace("fresh-frame", ["sampleAt": c.lastFrameAt])
             self.checkVideoLifecycle()
         }
+        c.onPresented = { [weak self, weak c] pixel in
+            guard let self, self.capture === c else { return }
+            self.accessibilityHost?.bridge.presented(pixel)
+        }
         c.awaitFreshFrame()
         videoHost.layer?.addSublayer(c.layer)
         c.layer.frame = videoHost.bounds
@@ -1244,6 +1252,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                         self.lastServerEventAt = ProcessInfo.processInfo.systemUptime
                         if let instance = status["instanceId"] as? String, instance != self.serverInstance { self.ensureServer(); continue }
                         self.latestServerStatus = json
+                        if let revision = status["contentRevision"] as? Int, let instance = status["instanceId"] as? String {
+                            self.accessibilityHost?.bridge.receiveContentRevision(revision, instance: instance)
+                        }
                         self.deliverServerStatus(json)
                     }
                 } catch { /* Native watchdog probes and reloads a replaced server. */ }

@@ -8,6 +8,24 @@ import { validatePublicResponse } from "../responses.ts";
 import urls from "./fixtures/web-urls.json" with { type: "json" };
 import { ActionSchemas } from "../schemas.ts";
 
+test("element actions validate discriminated payloads before native dispatch", () => {
+  for (const schema of [ActionSchemas["element-action"], helperOperations.elementAction.request]) {
+    const decode = Schema.decodeUnknownSync(schema, { onExcessProperty: "error" });
+    expect(() => decode({ id: "a", action: "replaceText", text: "" })).not.toThrow();
+    expect(() => decode({ id: "a", action: "adjust", value: 0.7 })).not.toThrow();
+    for (const args of [
+      { action: "replaceText" },
+      { action: "focus", text: "unexpected" },
+      { action: "adjust", value: 1.1 },
+      { action: "adjust", value: "0.5" },
+      { action: "adjust", value: NaN },
+      { action: "increment", value: 0.5 },
+      { action: "executeArbitraryAction" },
+    ])
+      expect(() => decode({ id: "a", ...args })).toThrow();
+  }
+});
+
 test("web navigation rejects repaired URLs and non-web schemes on both boundaries", () => {
   for (const schema of [ActionSchemas["open-url"], helperOperations.openURL.request]) {
     const decode = Schema.decodeUnknownSync(schema, { onExcessProperty: "error" });

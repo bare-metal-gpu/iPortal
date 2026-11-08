@@ -17,7 +17,9 @@ async function api(name: string, body: object = {}, expected: number | readonly 
     ...(process.env.IPORTAL_SIMULATOR === "1" && Object.hasOwn(ActionSchemas, name)
       ? { timeoutMs: 30000 }
       : {}),
-    ...(["tap", "type", "key", "gesture"].includes(name) ? { expectedApp: bundleId } : {}),
+    ...(["tap", "type", "key", "gesture", "element-action"].includes(name)
+      ? { expectedApp: bundleId }
+      : {}),
     ...body,
   };
   const response = await fetch(`${url}/api/${name}`, {
@@ -545,4 +547,40 @@ const replay = await api("home", { requestId: once });
 assert.equal(replay.outcome, first.outcome);
 assert.equal((await waitForApp()).app.bundleId, bundleId, "duplicate public request replayed Home");
 passed("durable receipt replay returns the original outcome without repeating input");
+// The editor page is still on the navigation stack after Home/launch.
+await api("tap", {
+  selector: selector(
+    "type == 'XCUIElementTypeButton' AND (name == 'Back' OR label == 'Back')",
+    "predicate string",
+  ),
+});
+await api("tap", target("fixture.controls"));
+await api("wait", target("fixture.replace"));
+await api("element-action", { ...target("fixture.replace"), action: "focus" });
+for (const text of ["Replacement café 世界 👋", "", "Final replacement"]) {
+  await api("element-action", { ...target("fixture.replace"), action: "replaceText", text });
+  // A separate label distinguishes an empty editor's placeholder from its value.
+  await api("wait", {
+    ...target("fixture.replacedValue"),
+    condition: "attribute",
+    attribute: "label",
+    equals: `Value:${text}`,
+    stableForMs: 100,
+  });
+}
+await api("key", { key: "Enter" });
+await api("element-action", { ...target("fixture.slider"), action: "adjust", value: 0.75 });
+const percent = async () => parseFloat((await element("fixture.slider")).value);
+const adjusted = await percent();
+assert(Math.abs(adjusted - 75) < 10, `Slider adjustment: ${adjusted}`);
+await api("element-action", { ...target("fixture.slider"), action: "decrement" });
+assert((await percent()) < adjusted, "Native decrement did not lower slider");
+await api("element-action", { ...target("fixture.slider"), action: "increment" });
+const wrongType = await api(
+  "element-action",
+  { ...target("fixture.delayed"), action: "replaceText", text: "must-not-type" },
+  [400, 422, 502],
+);
+assert.equal(wrongType.outcome, "not executed");
+passed("Targeted focus, replacement, empty/Unicode text and normalized slider actions");
 console.log(`${checks} native fixture checks passed`);

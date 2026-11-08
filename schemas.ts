@@ -121,6 +121,18 @@ export const ActionSchemas = {
     ),
   ),
   tap: action(target).check(hasTarget),
+  "element-action": Schema.Union([
+    action({
+      ...target,
+      action: enumOf("focus", "doubleTap", "longPress", "increment", "decrement"),
+    }).check(hasTarget),
+    action({
+      ...target,
+      action: enumOf("replaceText"),
+      text: Schema.String.check(Schema.isMaxLength(10000)),
+    }).check(hasTarget),
+    action({ ...target, action: enumOf("adjust"), value: coordinate }).check(hasTarget),
+  ]),
   home: action({}),
   lock: action({}),
   unlock: action({}),

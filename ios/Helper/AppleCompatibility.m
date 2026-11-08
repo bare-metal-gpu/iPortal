@@ -466,9 +466,29 @@ static id IPStream(void (^actions)(id<IPAppleRuntime>)) {
              key:(BOOL)isKey
        modifiers:(NSArray<NSString *> *)modifiers
       completion:(void (^)(NSError *))completion {
+    [self keyboard:text key:isKey modifiers:modifiers element:nil completion:completion];
+}
++ (NSNumber *)keyboardFocused:(XCUIElement *)element error:(NSError **)error {
+    return [self protect:^id {
+        IPRequire(element, NSSelectorFromString(@"hasKeyboardFocus"));
+        return [element valueForKey:@"hasKeyboardFocus"];
+    } error:error];
+}
++ (void)keyboard:(NSString *)text key:(BOOL)isKey modifiers:(NSArray<NSString *> *)modifiers
+         element:(XCUIElement *)expectedElement completion:(void (^)(NSError *))completion {
     NSError *error;
     [self
         protect:^id {
+          // Targeted editing must never follow focus into another editor. Check
+          // inside the compatibility boundary immediately before dispatch, for
+          // both the selection chord and insertion/deletion. No fallback/replay.
+          if (expectedElement) {
+              IPRequire(expectedElement, NSSelectorFromString(@"hasKeyboardFocus"));
+              if (![[expectedElement valueForKey:@"hasKeyboardFocus"] boolValue]) {
+                  completion(IPFailure(@"Target editor no longer has keyboard focus"));
+                  return @YES;
+              }
+          }
           NSDictionary *keys = @{
               @"ArrowLeft" : @80,
               @"ArrowRight" : @79,
@@ -585,8 +605,10 @@ static id IPStream(void (^actions)(id<IPAppleRuntime>)) {
 + (NSDictionary *)snapshotExtras:(id)snapshot {
     NSMutableDictionary *result = [NSMutableDictionary new];
     @try {
-        result[@"focused"] = [snapshot valueForKey:@"hasFocus"] ?: @NO;
+        result[@"focused"] = [snapshot valueForKey:@"hasKeyboardFocus"] ?: @NO;
     } @catch (NSException *e) {
+        @try { result[@"focused"] = [snapshot valueForKey:@"hasFocus"] ?: @NO; }
+        @catch (NSException *ignored) { }
     } @
     try {
         result[@"customActions"] = [snapshot valueForKey:@"customActions"] ?: NSNull.null;

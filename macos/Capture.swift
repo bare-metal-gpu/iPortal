@@ -242,6 +242,7 @@ final class PhoneCapture {
     var onSize: ((CGSize) -> Void)?
     var onFailure: (() -> Void)?
     var onFrame: (() -> Void)?
+    var onPresented: ((CVPixelBuffer) -> Void)?
     private var discoveryRetry: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
     private let lifetime = CaptureLifetime()
@@ -351,6 +352,7 @@ final class PhoneCapture {
         CATransaction.commit()
         recordRendererMetrics(frame: frame)
         lastFrameAt = frame.timestamp
+        if let pixel = CMSampleBufferGetImageBuffer(frame.sample) { onPresented?(pixel) }
         idleConfirmedAt = 0
         presentedRTPTime = usesPairedMedia ? UInt32(truncatingIfNeeded: CMSampleBufferGetPresentationTimeStamp(frame.sample).value) : nil
         if waitingForFreshFrame {

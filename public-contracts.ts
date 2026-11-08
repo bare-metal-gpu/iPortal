@@ -30,6 +30,7 @@ export const StatusSchema = Schema.Struct({
   instanceId: text,
   observedAt: integer,
   eventSequence: optional(integer),
+  contentRevision: optional(integer),
   ok: Schema.Boolean,
   device: Schema.NullOr(
     Schema.Struct({
@@ -70,6 +71,7 @@ export const NativeStatusMessageSchema = Schema.Struct({
   videoMode: Schema.Literals(["native", "stream"]),
 });
 export const NativeFrameMessageSchema = Schema.Struct({
+  accessibilityChanged: optional(Schema.Boolean),
   w: Schema.Finite.check(Schema.isGreaterThan(0)),
   h: Schema.Finite.check(Schema.isGreaterThan(0)),
   videoEpoch: integer,

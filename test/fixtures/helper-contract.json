@@ -266,6 +266,89 @@
         "url": "https://example.com/"
       },
       "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-0",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "focus"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-1",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "replaceText",
+        "text": "café 世界"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-2",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "replaceText",
+        "text": ""
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-3",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "adjust",
+        "value": 0.75
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-4",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "increment"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-5",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "decrement"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-6",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "doubleTap"
+      },
+      "budgetMs": 8000
+    },
+    {
+      "id": "fixture-element-action-7",
+      "generation": "00000000-0000-4000-8000-000000000001",
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "longPress"
+      },
+      "budgetMs": 8000
     }
   ],
   "errors": [
@@ -597,6 +680,14 @@
       "operation": "openURL",
       "arguments": {
         "url": "https://example.com/"
+      },
+      "result": null
+    },
+    {
+      "operation": "elementAction",
+      "arguments": {
+        "id": "element-a",
+        "action": "focus"
       },
       "result": null
     }

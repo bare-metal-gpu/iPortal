@@ -273,6 +273,24 @@ export const helperOperations = {
   ),
   tapElement: contract(Schema.Struct({ id, ...inputGuards }), nil, true),
   typeElement: contract(Schema.Struct({ id, text: text(), ...inputGuards }), nil, true),
+  elementAction: contract(
+    Schema.Union([
+      Schema.Struct({
+        id,
+        action: Schema.Literals(["focus", "doubleTap", "longPress", "increment", "decrement"]),
+        ...inputGuards,
+      }),
+      Schema.Struct({ id, action: Schema.Literal("replaceText"), text: text(), ...inputGuards }),
+      Schema.Struct({
+        id,
+        action: Schema.Literal("adjust"),
+        value: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+        ...inputGuards,
+      }),
+    ]),
+    nil,
+    true,
+  ),
   source: contract(
     Schema.Struct({ format: Schema.Literals(["json", "xml", "description"]) }),
     Schema.Union([Schema.String, SourceSchema]),

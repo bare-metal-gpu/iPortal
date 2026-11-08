@@ -304,6 +304,74 @@ import XCTest
       try unlocked()
       return try inspection.attribute(
         a.text("id", max: 256), name: a.text("name", max: 64), app: foreground())
+    case .elementAction:
+      try unlocked()
+      let app = try foreground()
+      let (element, _) = try inspection.resolve(a.text("id", max: 256), app: app)
+      let action = try a.text("action", max: 32)
+      let editorTypes: [XCUIElement.ElementType] = [.textField, .secureTextField, .textView, .searchField]
+      let editable = editorTypes.contains(element.elementType)
+      guard try withApple({ element.isEnabled && element.isHittable }) else {
+        throw HelperFailure("element not actionable", "Element is not currently actionable")
+      }
+      if ["focus", "replaceText"].contains(action), !editable {
+        throw HelperFailure("unsupported operation", "Element is not an editable text field")
+      }
+      if ["adjust", "increment", "decrement"].contains(action), element.elementType != .slider {
+        throw HelperFailure("unsupported operation", "Element is not a slider")
+      }
+      // Password insertion keeps its existing specialized keyboard path. Do
+      // not claim generic replacement semantics for masked/secure values.
+      if action == "replaceText", element.elementType == .secureTextField {
+        throw HelperFailure("unsupported operation", "Use keyboard input for password fields")
+      }
+      var dispatched = false
+      do {
+        var guards = command.arguments.object ?? [:]
+        guards["expectedBundleId"] = .string(app.bundleIdentifier)
+        func validateTarget() throws {
+          try self.unlocked()
+          try self.checkInputGuard(.object(guards))
+        }
+        try validateTarget()
+        switch action {
+        case "focus", "replaceText":
+          if try !IPApple.keyboardFocused(element).boolValue {
+            dispatched = true
+            try withApple { element.tap() }
+          }
+          if action == "replaceText" {
+            let text = try a.text("text", empty: true)
+            try validateTarget()
+            dispatched = true
+            try await playback {
+              IPApple.keyboard("a", key: true, modifiers: ["command"], element: element, completion: $0)
+            }
+            try validateTarget()
+            try await playback {
+              IPApple.keyboard(text.isEmpty ? "Backspace" : text, key: text.isEmpty,
+                modifiers: [], element: element, completion: $0)
+            }
+          }
+        case "adjust", "increment", "decrement":
+          let value = action == "adjust" ? a["value"].number!
+            : Double(try withApple { element.normalizedSliderPosition }) + (action == "increment" ? 0.05 : -0.05)
+          dispatched = true
+          try withApple { element.adjust(toNormalizedSliderPosition: CGFloat(min(1, max(0, value)))) }
+        case "doubleTap":
+          dispatched = true
+          try withApple { element.doubleTap() }
+        case "longPress":
+          dispatched = true
+          try withApple { element.press(forDuration: 0.6) }
+        default: throw HelperFailure.invalid("Unknown element action")
+        }
+      } catch let error as HelperFailure {
+        throw HelperFailure(error.code, error.message, outcome: dispatched ? "unknown" : error.outcome)
+      } catch {
+        throw HelperFailure("unknown error", "Element action could not be confirmed", outcome: dispatched ? "unknown" : "notExecuted")
+      }
+      return .null
     case .tapElement, .typeElement:
       try a.keys(
         command.operation == .typeElement ? ["id", "text"] : ["id"],

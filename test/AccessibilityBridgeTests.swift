@@ -28,7 +28,7 @@ import Cocoa
         ["id": id, "app": ["bundleId": "com.example.fixture"], "orientation": "PORTRAIT", "stable": stable, "source": source]
     }
     @MainActor static func eventually(_ condition: () -> Bool) async {
-        for _ in 0..<10000 { if condition() { return }; await Task.yield() }
+        for _ in 0..<5000 { if condition() { return }; try? await Task.sleep(nanoseconds: 1_000_000) }
         preconditionFailure("Asynchronous bridge did not settle")
     }
     static func rejects(_ source: [String: Any]) {
@@ -82,7 +82,7 @@ import Cocoa
         precondition(!offscreen.accessibilityPerformPress() && !root.descendants[3].accessibilityPerformPress())
         precondition(!root.descendants[2].isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.setAccessibilityValue(_:))), "Inserting text cannot masquerade as replacing AXValue")
         for _ in 0..<50 { _ = host.accessibilityChildren() }
-        precondition(network.requests.count == 1, "Reads must coalesce and throttle")
+        precondition(network.requests.count == 1, "Unchanged reads must use the cache without polling")
         precondition(focusCount == 0, "Inspection and rejected actions cannot steal focus")
         bridge.allowsActions = { false }
         precondition(!button.accessibilityPerformPress(), "A video refresh cannot admit input")
@@ -90,7 +90,7 @@ import Cocoa
                      "Video-only interruption cannot erase readable phone state or falsify the phone's enabled attribute")
         bridge.allowsActions = { true }
 
-        now = 3; _ = host.accessibilityChildren()
+        now = 0.1; bridge.contentDidChange("test")
         await eventually { network.requests.count == 2 }
         network.reply(1, observation(source, id: "observation-b"))
         await eventually { bridge.observation?.id == "observation-b" }
@@ -162,7 +162,7 @@ import Cocoa
         racingNetwork.reply(0, observation(source))
         await eventually { !racingBridge.elements.isEmpty }
         let racingRoot = racingBridge.elements[0]
-        now += 3; _ = racingHost.accessibilityChildren()
+        now += 0.1; racingBridge.contentDidChange("test"); _ = racingHost.accessibilityChildren()
         await eventually { racingNetwork.requests.count == 2 }
         precondition(racingRoot.descendants[0].accessibilityPerformPress())
         await eventually { racingNetwork.requests.count == 3 }
@@ -175,6 +175,71 @@ import Cocoa
         racingNetwork.reply(3, observation(source))
         await eventually { !racingBridge.elements.isEmpty }
         racingBridge.update(target: nil)
+        // A changed frame is a push source, independent of another AX read.
+        let frameNetwork = Network()
+        let frameBridge = MirrorAccessibilityBridge(clock: { now }, send: frameNetwork.send)
+        let frameHost = MirrorAXHost(frame: hostRect, bridge: frameBridge)
+        frameBridge.update(target: a)
+        frameBridge.contentDidChange()
+        precondition(frameNetwork.requests.isEmpty, "Events without an AX reader do no inspection")
+        _ = frameHost.accessibilityChildren()
+        await eventually { frameNetwork.requests.count == 1 }
+        frameNetwork.reply(0, observation(source))
+        await eventually { !frameBridge.elements.isEmpty }
+        for _ in 0..<100 { frameBridge.contentDidChange("burst") }
+        await eventually { frameNetwork.requests.count == 2 }
+        frameBridge.contentDidChange("during read")
+        frameNetwork.reply(1, observation(source))
+        await eventually { frameNetwork.requests.count == 3 }
+        frameNetwork.reply(2, observation(source))
+        await eventually { frameBridge.observation != nil && frameNetwork.pending.isEmpty }
+        let previous = frameBridge.elements[0]
+        now += 13
+        frameBridge.contentDidChange("idle")
+        precondition(!frameBridge.wantsVisualEvents && !previous.isAccessibilityElement())
+        precondition(frameNetwork.requests.count == 3, "Idle events must not turn into background polling")
+        frameBridge.update(target: nil)
+
+        let actionNetwork = Network()
+        let actionBridge = MirrorAccessibilityBridge(clock: { now }, send: actionNetwork.send)
+        let actionHost = MirrorAXHost(frame: hostRect, bridge: actionBridge)
+        var slider = node("Slider", label: "Level"); slider["value"] = "50%"
+        let controls = node(children: [node("TextField", label: "Input"), slider,
+            node("Button", label: "Tap"), node("ScrollView", label: "Content"), node("SecureTextField", label: "Password")])
+        actionBridge.update(target: a); _ = actionHost.accessibilityChildren()
+        await eventually { actionNetwork.requests.count == 1 }
+        actionNetwork.reply(0, observation(controls))
+        await eventually { !actionBridge.elements.isEmpty }
+        func act(_ index: Int, _ action: MirrorAXAction, expected: String, extra: String? = nil) async throws {
+            let offset = actionNetwork.requests.count
+            precondition(actionBridge.perform(actionBridge.elements[0].descendants[index], action: action))
+            await eventually { actionNetwork.requests.count == offset + 1 }
+            let request = actionNetwork.requests[offset]
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            precondition(request.url!.lastPathComponent == expected)
+            if let extra { precondition(body["action"] as? String == extra) }
+            precondition(body["observationId"] != nil && body["expectedApp"] != nil)
+            actionNetwork.reply(offset, [:])
+            await eventually { actionNetwork.requests.count == offset + 2 }
+            actionNetwork.reply(offset + 1, observation(controls))
+            await eventually { !actionBridge.elements.isEmpty }
+        }
+        try await act(0, .element("focus"), expected: "element-action", extra: "focus")
+        try await act(0, .replaceText("café 世界"), expected: "element-action", extra: "replaceText")
+        try await act(0, .replaceText(""), expected: "element-action", extra: "replaceText")
+        try await act(1, .element("increment"), expected: "element-action", extra: "increment")
+        try await act(1, .element("decrement"), expected: "element-action", extra: "decrement")
+        try await act(1, .adjust(0.75), expected: "element-action", extra: "adjust")
+        try await act(2, .element("doubleTap"), expected: "element-action", extra: "doubleTap")
+        try await act(2, .element("longPress"), expected: "element-action", extra: "longPress")
+        try await act(3, .scroll(.left), expected: "gesture")
+        try await act(3, .scroll(.right), expected: "gesture")
+        let secure = actionBridge.elements[0].descendants[4]
+        precondition(!actionBridge.perform(secure, action: .replaceText("secret")))
+        precondition(!actionBridge.perform(actionBridge.elements[0].descendants[2], action: .adjust(0.5)))
+        precondition(!actionBridge.perform(actionBridge.elements[0].descendants[1], action: .adjust(.nan)))
+        precondition(!secure.isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.setAccessibilityValue(_:))))
+        actionBridge.update(target: nil)
         print("Accessibility bridge: roles, off-screen content, password redaction, geometry, guarded actions, scroll, expiry, cancellation and device isolation passed.")
     }
 }

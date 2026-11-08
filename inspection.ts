@@ -154,6 +154,19 @@ export function createInspection({
     call("attribute", { id, name });
 
   const api = {
+    elementAction: (body: RequestBody<"element-action">, signal?: AbortSignal) =>
+      run(async (call) => {
+        const id = await resolve(call, target(body));
+        await call("elementAction", {
+          id,
+          action: body.action,
+          ...("text" in body ? { text: body.text } : {}),
+          ...("value" in body ? { value: body.value } : {}),
+          expectedBundleId: body.expectedApp,
+          expectedOrientation: body.expectedOrientation,
+        } as HelperArguments<"elementAction">);
+        return { id };
+      }, signal),
     tap: (body: RequestBody<"tap">, signal?: AbortSignal) =>
       run(async (call) => {
         const id = await resolve(call, target(body));

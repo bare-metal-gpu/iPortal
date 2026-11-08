@@ -387,6 +387,7 @@ const actions = {
       ? inspection.type(body)
       : helper.command("text", { text: body.text, ...inputGuards(body) }),
   tap: (body) => inspection.tap(body),
+  "element-action": (body) => inspection.elementAction(body),
   home: (body) => helper.command("home", inputGuards(body)),
   button: (body) => helper.command("button", { name: body.name, ...inputGuards(body) }),
   lock: (body) => helper.command("lock", inputGuards(body)),
@@ -730,6 +731,8 @@ const portalStatus = createIPortalStatus({ helper, keepAwake: keepAwake.status }
 const statusEvents = createStatusEvents({
   read: async (signal) => Schema.decodeUnknownSync(StatusSchema)(await status(signal)),
 });
+let contentRevision = 0;
+const contentChanged = () => statusEvents.patch({ contentRevision: ++contentRevision });
 let stopHelperEvents = () => {};
 process.on("exit", () => portalStatus.stop());
 /** @type {ReturnType<typeof createCommands> | undefined} */
@@ -866,7 +869,9 @@ async function dispatch(rawName, rawBody, signal) {
           await enqueue(async () => {
             timing.queueMs = Math.round(performance.now() - started);
             const nativeGuards =
-              ["type", "key", "tap", "home", "button", "launch", "siri"].includes(name) ||
+              ["type", "key", "tap", "element-action", "home", "button", "launch", "siri"].includes(
+                name,
+              ) ||
               (name === "pinch"
                 ? await supportsMultiTouch()
                 : ["gesture", "shortcut"].includes(name) && (await supportsGuardedTouch()));
@@ -900,9 +905,17 @@ async function dispatch(rawName, rawBody, signal) {
               clipboardChanged = result.clipboardChanged;
             executed = true;
             if (
-              ["gesture", "pinch", "shortcut", "tap", "type", "key", "home", "button"].includes(
-                name,
-              )
+              [
+                "gesture",
+                "pinch",
+                "shortcut",
+                "tap",
+                "element-action",
+                "type",
+                "key",
+                "home",
+                "button",
+              ].includes(name)
             )
               keepAwake.activity();
           });
@@ -942,6 +955,10 @@ async function dispatch(rawName, rawBody, signal) {
         restartHelper();
       }
       return result;
+    } finally {
+      // Include uncertain outcomes: pixels may have changed even when the
+      // response was lost. The event never replays the input.
+      if (dispatched) contentChanged();
     }
   });
 }

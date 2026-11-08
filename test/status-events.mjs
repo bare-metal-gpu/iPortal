@@ -9,6 +9,27 @@ import { createUSBMonitor } from "../usb-events.ts";
 const settle = () => new Promise((r) => setImmediate(r));
 const decode = (data) => JSON.parse(new TextDecoder().decode(data).slice(6));
 
+test("content revisions publish without probing and cannot roll back behind a stale probe", async () => {
+  const reads = [];
+  const hub = createStatusEvents({ read: () => new Promise((resolve) => reads.push(resolve)) });
+  try {
+    const ready = hub.refresh();
+    reads[0]({ lifecycle: "ready", contentRevision: 0 });
+    await ready;
+    const reader = hub.stream().getReader();
+    await reader.read();
+    assert.equal(reads.length, 2);
+    hub.patch({ contentRevision: 1 });
+    assert.equal(decode((await reader.read()).value).contentRevision, 1);
+    assert.equal(reads.length, 2, "No status probe for a content event");
+    reads[1]({ lifecycle: "ready", contentRevision: 0 });
+    assert.equal(decode((await reader.read()).value).contentRevision, 1);
+    await reader.cancel();
+  } finally {
+    hub.stop();
+  }
+});
+
 test("status events coalesce probes, cancel obsolete readiness, and publish detach immediately", async () => {
   const reads = [];
   const hub = createStatusEvents({

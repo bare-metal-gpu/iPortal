@@ -13,6 +13,7 @@ export function createStatusEvents<T extends { lifecycle: string }>({
 }) {
   type Snapshot = T & { eventSequence: number };
   const listeners = new Set<(value: Snapshot) => void>();
+  const persistentPatch: Partial<T> = {};
   let current: Snapshot | undefined;
   let running: Promise<Snapshot | undefined> | undefined;
   let controller: AbortController | undefined;
@@ -21,7 +22,7 @@ export function createStatusEvents<T extends { lifecycle: string }>({
     sequence = 0,
     stopped = false;
   function publish(value: T) {
-    current = { ...value, eventSequence: ++sequence };
+    current = { ...value, ...persistentPatch, eventSequence: ++sequence };
     for (const listener of listeners) listener(current);
   }
   function refresh(): Promise<Snapshot | undefined> {
@@ -61,6 +62,12 @@ export function createStatusEvents<T extends { lifecycle: string }>({
   }
   return {
     refresh,
+    // Content events must not start a status probe or wait behind one. Reapply
+    // the patch to in-flight probe results so an older read cannot roll it back.
+    patch(patch: Partial<T>) {
+      Object.assign(persistentPatch, patch);
+      if (current && !stopped) publish(current);
+    },
     invalidate(patch?: Partial<T>) {
       version++;
       controller?.abort();

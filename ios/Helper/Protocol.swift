@@ -91,14 +91,14 @@ struct HelperFailure: Error, Codable, Equatable, Sendable {
 
 enum Operation: String, Codable, CaseIterable, Sendable {
   case touch, text, key, home, button, lock, unlock, launch, openURL, siri, keepAlive
-  case state, app, orientation, geometry, elements, attribute, tapElement, typeElement, source,
+  case state, app, orientation, geometry, elements, attribute, tapElement, typeElement, elementAction, source,
     screenshot
   case clipboardPrepare, clipboardRead, clipboardWrite, clipboardStatus, clipboardRestore,
     clipboardCancel
   case presence, portal, quality, shutdown
   var guarded: Bool {
     [
-      .touch, .text, .key, .tapElement, .typeElement, .home, .button, .lock, .unlock, .launch,
+      .touch, .text, .key, .tapElement, .typeElement, .elementAction, .home, .button, .lock, .unlock, .launch,
       .openURL, .siri,
     ].contains(self)
   }
@@ -247,6 +247,10 @@ extension Operation {
       ]
     case .tapElement: required = ["id": id]
     case .typeElement: required = ["id": id, "text": text]
+    case .elementAction:
+      required = ["id": id, "action": .oneOf(["focus", "replaceText", "adjust", "increment", "decrement", "doubleTap", "longPress"])]
+      if args["action"] == .string("replaceText") { required["text"] = text }
+      if args["action"] == .string("adjust") { required["value"] = .number(0, 1, false) }
     case .source: required = ["format": .oneOf(["json", "xml", "description"])]
     case .screenshot: optional = ["id": id]
     case .clipboardRead, .clipboardRestore, .clipboardCancel: required = ["lease": id]

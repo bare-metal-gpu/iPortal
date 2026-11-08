@@ -3,6 +3,25 @@ import XCTest
 @testable import HelperCore
 
 final class HelperCoreTests: XCTestCase {
+  func testElementActionsRejectMalformedPayloadsBeforeDispatch() throws {
+    XCTAssertTrue(Operation.elementAction.mutates)
+    XCTAssertTrue(Operation.elementAction.guarded)
+    for fields: [String: JSONValue] in [
+      ["action": .string("replaceText")],
+      ["action": .string("focus"), "text": .string("unexpected")],
+      ["action": .string("adjust"), "value": .number(1.1)],
+      ["action": .string("adjust"), "value": .string("0.5")],
+      ["action": .string("increment"), "value": .number(0.5)],
+      ["action": .string("unknown")],
+    ] {
+      var args = fields
+      args["id"] = .string("synthetic-element")
+      XCTAssertThrowsError(try Operation.elementAction.validate(.object(args)))
+    }
+    XCTAssertNoThrow(try Operation.elementAction.validate(.object([
+      "id": .string("synthetic-element"), "action": .string("replaceText"), "text": .string("")
+    ])))
+  }
   func testWebNavigationSharesStrictURLCorpus() throws {
     let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .appendingPathComponent("../../../test/fixtures/web-urls.json")

@@ -25,6 +25,9 @@ NS_ASSUME_NONNULL_BEGIN
              key:(BOOL)isKey
        modifiers:(NSArray<NSString *> *)modifiers
       completion:(void (^)(NSError *_Nullable))completion;
++ (nullable NSNumber *)keyboardFocused:(XCUIElement *)element error:(NSError **)error;
++ (void)keyboard:(NSString *)text key:(BOOL)isKey modifiers:(NSArray<NSString *> *)modifiers
+         element:(XCUIElement *_Nullable)element completion:(void (^)(NSError *_Nullable))completion;
 + (void)consumer:(NSUInteger)usage
         duration:(double)duration
       completion:(void (^)(NSError *_Nullable))completion;
