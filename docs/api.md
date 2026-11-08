@@ -56,6 +56,46 @@ Element attributes: `type`, `name`, `label`, `value`, `enabled`, `visible`, `sel
 
 Inspection depends on the app exposing meaningful accessibility elements. Element IDs can become stale; resolve selectors again after UI changes. Combined state is not an atomic snapshot, and deep hierarchy inspection can be slow.
 
+## Mac accessibility bridge
+
+Each live device window exposes a native **Device content** accessibility group
+to Computer and screen readers. It contains the phone's reported roles, labels,
+non-password values, hierarchy and oriented screen bounds. No setup switch or
+extra permission is needed beyond the existing mirroring and Mac accessibility access.
+
+Reading this group asynchronously refreshes a cached `/api/observe` snapshot
+without taking a screenshot. Repeated reads coalesce, with at most one new
+inspection every two seconds; ordinary mirroring does not poll this tree.
+An initial read may need a second read after the snapshot arrives. The bridge
+posts an accessibility layout notification when content changes.
+
+Press actions use the existing guarded element API; scroll containers expose
+Scroll up/down custom actions. Focus a text field and use the existing Mac
+keyboard route. Setting `AXValue` is deliberately unsupported: inserting text
+is not equivalent to replacing a field's contents. Actions are asynchronous;
+acceptance means admission, so read the resulting tree to verify the outcome.
+An unconfirmed command is never replayed automatically.
+
+Actions require a recent stable observation, the same server/device generation,
+foreground app and orientation, and current actionability checks. Closing the
+window, losing readiness, opening Settings, or changing connection identity
+retires the tree. Password values are excluded. The bridge stores no snapshots
+on disk and does not log their text.
+Video-only refreshes preserve readable content; input still requires the
+window's existing video/readiness checks.
+
+Off-screen nodes remain readable when the iPhone app includes them in its
+accessibility tree. They are not advertised as visible or pressable. Content
+that an app lazily creates after scrolling, and unlabeled photo details, still
+require scrolling or screenshots; a complete Hinge profile is not guaranteed.
+
+Physical-phone check (2026-11-08, Wi-Fi, one Hinge profile): Computer read all
+10 profile sections from the top, including eight off screen, three text
+answers and six photo entries. Named scroll actions and More options → Cancel
+worked through the bridge. Photo entries exposed labels, not image descriptions.
+
+Run `bun run test:accessibility` for the native bridge regression checks.
+
 ## Waits
 
 ```bash

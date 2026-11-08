@@ -101,6 +101,67 @@ test("late status from a retired transport cannot overwrite new readiness", asyn
     await s.stop();
   }
 });
+test("cancelled status observations do not invalidate a healthy helper", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let count = 0;
+  const s = setup(async () => {
+    if (++count === 2) {
+      entered();
+      await pending;
+    }
+    return reply(state);
+  });
+  try {
+    const healthy = await s.client.status();
+    const controller = new AbortController();
+    const probe = s.client.status(controller.signal).catch((error) => error);
+    await started;
+    controller.abort();
+    await probe;
+    assert.equal(s.client.cached, healthy, "Cancelling an obsolete read is not a disconnect");
+  } finally {
+    release();
+    await s.stop();
+  }
+});
+test("failed older probes cannot erase newer authenticated status", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let count = 0;
+  const s = setup(async () => {
+    if (++count === 2) {
+      entered();
+      await pending;
+      return new Response(null, { status: 503 });
+    }
+    return reply(state);
+  });
+  try {
+    await s.client.status();
+    const probe = s.client.status().catch((error) => error);
+    await started;
+    const healthy = await s.client.status();
+    release();
+    await probe;
+    assert.equal(s.client.cached, healthy);
+  } finally {
+    release();
+    await s.stop();
+  }
+});
 test("opening a URL is not replayed when the helper response has an unknown outcome", async () => {
   let commands = 0;
   const s = setup(async (request) => {

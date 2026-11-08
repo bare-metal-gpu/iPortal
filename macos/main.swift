@@ -263,6 +263,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     var systemSleeping = false
     var retiredBridgeIDs: Set<String> = []
     var scrollMonitor: Any?
+    var accessibilityHost: MirrorAXHost?
     var trackingScroll = false
     var trackingMagnify = false
     var settingsVisible = false
@@ -297,7 +298,20 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         if phase == "disconnected" { loadingBorderState.detail = "Connect your \(kind.rawValue)" }
         if phase == "reconnecting" { loadingBorderState.detail = "" }
         capture?.layer.isHidden = phase != "live"
+        updateAccessibilityTarget()
         updateSettingsSnapshot()
+    }
+
+    func updateAccessibilityTarget() {
+        // pageLoading is the page's combined video/input loading indicator,
+        // not document readiness. A stream refresh must not cancel inspection.
+        let available = mirroringActive && !terminating && !systemSleeping && !settingsBlocksInput
+            && deviceLifecycle == "ready"
+        let selected = available ? clipboardTarget : nil
+        accessibilityHost?.bridge.update(target: selected.map {
+            MirrorAXTarget(port: $0.port, instance: $0.instance, device: $0.device, generation: $0.generation, epoch: $0.epoch)
+        })
+        accessibilityHost?.setAccessibilityHidden(selected == nil)
     }
 
     func nativeCall(_ function: String, ready: Bool? = nil) {
@@ -310,7 +324,11 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         js("\(function)(...\(json))")
     }
 
-    func freezeVideo() {
+    func freezeVideo(reason: String = #function) {
+        let now = ProcessInfo.processInfo.systemUptime
+        trace("video-freeze", ["reason": reason, "statusAge": now - lastStatusAt,
+            "eventAge": now - lastServerEventAt, "frameAge": now - (capture?.lastFrameAt ?? 0),
+            "idleAge": now - (capture?.idleConfirmedAt ?? 0), "state": deviceLifecycle])
         trackingScroll = false
         trackingMagnify = false
         if videoMode == "native" {
@@ -420,6 +438,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             ensureServer()
         }
         if now - lastStatusAt > 5, deviceLifecycle == "ready" || deviceLifecycle == "locked" {
+            trace("status-watchdog", ["statusAge": now - lastStatusAt, "eventAge": now - lastServerEventAt])
             suspendLifecycle()
         }
         guard deviceLifecycle == "ready" else { return }
@@ -620,6 +639,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         mirroringActive = false
         mirrorGeneration += 1
         statusEventTask?.cancel(); statusEventTask = nil
+        accessibilityHost?.bridge.update(target: nil)
+        accessibilityHost = nil
         lifecycleTimer?.invalidate(); lifecycleTimer = nil
         hideBar?.cancel(); hideBar = nil
         if let permissionObserver { NotificationCenter.default.removeObserver(permissionObserver) }
@@ -706,6 +727,25 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         web.setValue(false, forKey: "drawsBackground")
         web.navigationDelegate = self
         phone.addSubview(web)
+        let accessibilityHost = MirrorAXHost(frame: phone.bounds)
+        self.accessibilityHost = accessibilityHost
+        accessibilityHost.bridge.diagnostic = { event, fields in iportalTrace("accessibility-\(event)", fields) }
+        accessibilityHost.bridge.allowsActions = { [weak self] in
+            guard let self else { return false }
+            return self.mirroringActive && !self.terminating && !self.systemSleeping && !self.settingsBlocksInput
+                && !self.pageLoading && !self.captureLoading && !self.waitingForVideo && self.deviceLifecycle == "ready"
+        }
+        accessibilityHost.bridge.prepareInput = { [weak self] in
+            guard let self, self.mirroringActive else { return }
+            // Subsequent typing belongs to this device even when an AX client
+            // pressed a field in a different, previously inactive mirror window.
+            self.window.makeKeyAndOrderFront(nil)
+            self.window.makeFirstResponder(self.web)
+        }
+        phone.addSubview(accessibilityHost)
+        // Do not clear the tree for Mac focus/menu events: AX clients can
+        // generate them while reading. Real phone mutations already retire
+        // their server observations; every AX action revalidates that guard.
         loadingBorder = LoadingBorderHost(rootView: LoadingBorder(state: loadingBorderState))
         phone.addSubview(loadingBorder)
         resizeHandles = ResizeCorner.allCases.map { corner in
@@ -793,6 +833,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         phone.frame = NSRect(x: 0, y: 0, width: w, height: phoneHeight)
         phone.layer?.cornerRadius = kind.radius(width: w, height: phoneHeight)
         web.frame = phone.bounds
+        accessibilityHost?.frame = phone.bounds
         loadingBorder.frame = phone.bounds
         settingsHost?.frame = phone.bounds
         loadingBorderState.radius = max(0, kind.radius(width: w, height: phoneHeight) - 2)
@@ -988,6 +1029,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     func setSettingsVisible(_ visible: Bool) {
         guard mirroringActive, settingsVisible != visible, let settingsHost else { return }
         settingsVisible = visible; settingsGeneration += 1; settingsSnapshotInFlight = false
+        updateAccessibilityTarget()
         let generation = settingsGeneration
         CapturePermissions.shared.inspect(sessionID, visible: visible)
         if visible { nativeCall("setNativeSettingsVisible", ready: true) }
@@ -1010,6 +1052,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                 guard let self, self.mirroringActive, self.settingsGeneration == generation else { return }
                 if !visible {
                     settingsHost.isHidden = true
+                    self.updateAccessibilityTarget()
                     self.loadingBorder.isHidden = false
                     self.nativeCall("setNativeSettingsVisible", ready: false)
                     for index in [4, 5] { (self.barButtons[index] as? NSButton)?.isEnabled = true }

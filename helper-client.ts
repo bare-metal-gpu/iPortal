@@ -133,6 +133,7 @@ export function createHelperClient({
   const status = async (signal?: AbortSignal, timeout = 1500) => {
     signal?.throwIfAborted();
     const requestEpoch = epoch;
+    const previous = current;
     let next;
     try {
       next = decodeHelper(
@@ -140,7 +141,10 @@ export function createHelperClient({
         await request("/v1/status", undefined, timeout, signal),
       );
     } catch (error) {
-      if (requestEpoch === epoch) current = null;
+      // Status invalidation cancels obsolete probes. That cancellation is not
+      // evidence of a disconnected helper, nor can an older failure erase a
+      // newer authenticated heartbeat/status received while it was in flight.
+      if (requestEpoch === epoch && !signal?.aborted && current === previous) current = null;
       if (error instanceof Error && error.name === "SchemaError")
         throw apiError("Invalid helper status", 502, "invalid response");
       throw error;
