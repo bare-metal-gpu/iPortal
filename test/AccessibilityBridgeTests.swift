@@ -229,7 +229,8 @@ import CoreVideo
             let parsed = try MirrorAXNode.parse(invalid)
             precondition(parsed.normalizedValue == nil)
         }
-        let controls = node(children: [node("TextField", label: "Input"), slider,
+        var emptyEditor = node("TextField", label: "Input"); emptyEditor["value"] = NSNull()
+        let controls = node(children: [emptyEditor, slider,
             node("Button", label: "Tap"), node("ScrollView", label: "Content"), node("SecureTextField", label: "Password")])
         actionBridge.update(target: a); _ = actionHost.accessibilityChildren()
         await eventually { actionNetwork.requests.count == 1 }
