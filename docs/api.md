@@ -76,9 +76,11 @@ net for missed events and off-screen changes that produce no visible difference.
 An initial read can need a second read after the snapshot arrives.
 
 The bridge exposes native Press, slider Increment/Decrement, editable text values,
-and custom Focus, Double tap, Long press and four-direction scroll actions where
-applicable. Slider steps move by five percent of the range; supported numeric
-`AXValue` values are normalized from zero to one. Text `AXValue` replaces the
+and custom Focus, Increase/Decrease, Double tap, Long press and four-direction
+scroll actions where applicable. Slider steps request five percent of the range;
+supported numeric `AXValue` values are normalized from zero to one. Apple's slider
+gesture is approximate, so read the resulting value rather than assuming an exact
+position. Text `AXValue` replaces the
 field's contents, including clearing it, through the existing stable keyboard
 path. Password fields remain on the keyboard path and never export values.
 
@@ -106,6 +108,15 @@ Physical-phone check (2026-11-08, Wi-Fi, one Hinge profile): Computer read all
 10 profile sections from the top, including eight off screen, three text
 answers and six photo entries. Named scroll actions and More options → Cancel
 worked through the bridge. Photo entries exposed labels, not image descriptions.
+
+The event/action update was checked on a physical iPhone over Wi-Fi in the owned
+fixture: Computer read rows 0–59 including off-screen rows, focused and replaced
+a field with Unicode text, cleared it, adjusted a slider, invoked Increase and
+Decrease, and verified double-tap and long-press counters. A delayed UI change
+also reached the tree. Slider adjustment to 0.75 reported 0.79 on this device.
+Remote host regression checks pass; the simulator run timed out on the initial
+Controls navigation, before reaching the new action checks. It does not establish
+simulator or older-device parity.
 
 Run `bun run test:accessibility` for the native bridge regression checks.
 
