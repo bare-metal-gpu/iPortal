@@ -225,7 +225,18 @@ import CoreVideo
         await eventually { !actionBridge.elements.isEmpty }
         func act(_ index: Int, _ action: MirrorAXAction, expected: String, extra: String? = nil) async throws {
             let offset = actionNetwork.requests.count
-            precondition(actionBridge.perform(actionBridge.elements[0].descendants[index], action: action))
+            let element = actionBridge.elements[0].descendants[index]
+            switch action {
+            case .replaceText(let text):
+                precondition(element.isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.setAccessibilityValue(_:))))
+                element.setAccessibilityValue(text)
+            case .element(.increment): precondition(element.accessibilityPerformIncrement())
+            case .element(.decrement): precondition(element.accessibilityPerformDecrement())
+            case .adjust(let value):
+                precondition(element.isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.setAccessibilityValue(_:))))
+                element.setAccessibilityValue(NSNumber(value: value))
+            default: precondition(actionBridge.perform(element, action: action))
+            }
             await eventually { actionNetwork.requests.count == offset + 1 }
             let request = actionNetwork.requests[offset]
             let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
