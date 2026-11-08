@@ -7,7 +7,6 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
     private var usbMonitor: PhoneUSBMonitor?
     private let names = PhoneDeviceNames(defaults: IPortalWatcher.preferences)
     private var invitations = USBInvitationGate()
-    private var networkInvitations = USBInvitationGate()
     private var workspaceObservers: [NSObjectProtocol] = []
     private var sessionsObserver: NSObjectProtocol?
 
@@ -32,7 +31,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         usbMonitor = PhoneUSBMonitor(usbChanged: { [weak self] serial, attached in
             self?.usbChanged(serial, attached: attached)
         }, metadataChanged: { [weak self] in self?.updateMenu() }) {
-            [weak self] serial, attached in self?.availabilityChanged(serial, attached: attached)
+            [weak self] _, attached in self?.availabilityChanged(attached: attached)
         }
         let now = ProcessInfo.processInfo.systemUptime
         for serial in usbMonitor?.usbSerials ?? [] { _ = invitations.attached(serial, at: now) }
@@ -51,8 +50,9 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         // Subscribe before reading: launches or closes during startup cannot
         // leave the watcher with a permanently missed transition.
         updateMenu()
-        if ProcessInfo.processInfo.arguments.contains("--show-devices") ||
-            (IPortalWatcher.mainApplications.isEmpty && usbMonitor?.connectedDevices.isEmpty == false) {
+        // Login/restart inventory is not a new cable attachment. Only an
+        // explicit request may show the list during watcher startup.
+        if ProcessInfo.processInfo.arguments.contains("--show-devices") {
             menuBar?.show()
         }
         NSLog("iPortal watcher started: %d", ProcessInfo.processInfo.processIdentifier)
@@ -75,17 +75,11 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
         if invite && IPortalWatcher.mainApplications.isEmpty { menuBar?.show() }
     }
 
-    private func availabilityChanged(_ serial: String, attached: Bool) {
+    private func availabilityChanged(attached: Bool) {
         updateMenu()
-        let now = ProcessInfo.processInfo.systemUptime
-        if !attached { networkInvitations.detached(serial, at: now); return }
-        names.refresh(usbMonitor?.connectedSerials ?? [])
-        // A USB plug has its own invitation, including when this endpoint was
-        // already reachable. Paired discovery must not consume that invitation.
-        guard usbMonitor?.isUSBConnected(serial) == false else { return }
-        if networkInvitations.attached(serial, at: now), IPortalWatcher.mainApplications.isEmpty {
-            menuBar?.show()
-        }
+        // Paired discovery can disappear/recover while a phone is locked or
+        // idle. Refresh its row silently; only usbChanged can auto-invite.
+        if attached { names.refresh(usbMonitor?.connectedSerials ?? []) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -103,6 +97,7 @@ final class WatcherDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+#if !IPORTAL_WATCHER_TESTS
 @main
 struct IPortalWatcherApp {
     @MainActor static func main() {
@@ -126,3 +121,4 @@ struct IPortalWatcherApp {
         app.run()
     }
 }
+#endif

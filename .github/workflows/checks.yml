@@ -7,6 +7,10 @@ on:
         description: Run only the simulator checks after an already verified commit
         type: boolean
         default: false
+      skip_simulator:
+        description: Skip the iOS simulator for host-only changes (manual runs only)
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -40,6 +44,7 @@ jobs:
       - run: cargo +1.95.0 clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
 
   simulator:
+    if: github.event_name != 'workflow_dispatch' || inputs.simulator_only || !inputs.skip_simulator
     # The pinned iOS dependencies need Swift 6.4. Keep verify on macos-15
     # separately so new SDK-only references in the Mac code remain detectable.
     runs-on: xcode-27

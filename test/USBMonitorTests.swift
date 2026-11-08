@@ -9,16 +9,15 @@ struct USBMonitorTests {
         let serial = "00008140-00000000000000A1"
         let usbSerial = "0000814000000000000000a1"
         var physical: [Bool] = [], availability: [Bool] = []
-        var cableInvitations = USBInvitationGate(), networkInvitations = USBInvitationGate()
-        var now: TimeInterval = 0, cablePrompts = 0, networkPrompts = 0
+        var cableInvitations = USBInvitationGate()
+        var now: TimeInterval = 0, cablePrompts = 0
         let monitor = PhoneUSBMonitor(observeDevices: false, usbChanged: { serial, attached in
             physical.append(attached)
             if attached {
                 if cableInvitations.attached(serial, at: now) { cablePrompts += 1 }
             } else { cableInvitations.detached(serial, at: now) }
-        }, changed: { serial, attached in
+        }, changed: { _, attached in
             availability.append(attached)
-            if attached, networkInvitations.attached(serial, at: now) { networkPrompts += 1 }
         })
         defer { monitor.stop() }
         let row: [String: Any] = ["udid": serial, "name": "Test Phone", "kind": "iPhone", "transport": "wifi",
@@ -26,10 +25,10 @@ struct USBMonitorTests {
             "capabilities": ["control": "eligible", "video": "eligible", "audio": "eligible"]]
         let paired = try JSONSerialization.data(withJSONObject: ["version": 1, "devices": [row]])
         monitor.receivePaired(paired)
-        assert(availability == [true] && physical.isEmpty && networkPrompts == 1)
+        assert(availability == [true] && physical.isEmpty)
         monitor.receiveUSB(serviceID: 1, serial: usbSerial, attached: true)
         assert(physical == [true] && cablePrompts == 1,
-               "USB must offer mirroring even when Wi-Fi already announced the phone")
+               "USB must offer mirroring even when Wi-Fi already discovered the phone")
         assert(availability == [true], "plug-in cannot restart a reachable paired mirror")
         assert(monitor.connectedDevices.count == 1 && monitor.isUSBConnected(serial))
         monitor.receiveUSB(serviceID: 1, serial: usbSerial, attached: true)
@@ -43,7 +42,7 @@ struct USBMonitorTests {
         monitor.receiveUSB(serviceID: 3, serial: serial, attached: true)
         assert(cablePrompts == 2, "a subsequent cable connection can invite again while Wi-Fi stays reachable")
         monitor.receivePaired(paired)
-        assert(cablePrompts == 2 && networkPrompts == 1, "metadata refreshes cannot retrigger invitations")
+        assert(cablePrompts == 2, "metadata refreshes cannot retrigger invitations")
         monitor.receivePaired(Data("{\"version\":1,\"devices\":[]}".utf8))
         assert(availability == [true], "USB keeps the device reachable when the paired route disappears")
         monitor.receiveUSB(serviceID: 3, serial: serial, attached: false)

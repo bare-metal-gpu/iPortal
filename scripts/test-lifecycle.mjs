@@ -64,6 +64,27 @@ try {
   execFileSync(usbMonitor, [join(root, "test/fixtures/paired-inventory.json")], {
     stdio: "inherit",
   });
+  const watcher = join(directory, "watcher-tests");
+  execFileSync(
+    "xcrun",
+    [
+      "swiftc",
+      "-swift-version",
+      "5",
+      "-warnings-as-errors",
+      "-D",
+      "IPORTAL_WATCHER_TESTS",
+      join(root, "shared/DeviceCapabilities.swift"),
+      join(root, "macos/Lifecycle.swift"),
+      join(root, "macos/WatcherMain.swift"),
+      join(root, "test/WatcherTests.swift"),
+      "-o",
+      watcher,
+    ],
+    { stdio: "pipe" },
+  );
+  execFileSync(watcher, [], { stdio: "inherit" });
+  execFileSync(watcher, ["--show-devices"], { stdio: "inherit" });
   const permissions = join(directory, "permission-tests");
   execFileSync(
     "xcrun",
