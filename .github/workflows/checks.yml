@@ -37,6 +37,19 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun audit
       - run: bun run verify
+      - name: Build the menu-bar app
+        run: |
+          xcodebuild -project macos/iPortal.xcodeproj -target iPortalWatcher -configuration Release \
+            SYMROOT="$RUNNER_TEMP/watcher-products" OBJROOT="$RUNNER_TEMP/watcher-objects" \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
+          ditto -c -k --keepParent "$RUNNER_TEMP/watcher-products/Release/iPortal Watcher.app" "$RUNNER_TEMP/iPortal-Watcher.zip"
+      - name: Retain the menu-bar app for local signing
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: iPortal-Watcher
+          path: ${{ runner.temp }}/iPortal-Watcher.zip
+          retention-days: 3
       # Protocol parsing tests need no paired device or private Apple framework.
       - run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
       - run: cargo +1.95.0 fmt --manifest-path native/Cargo.toml --check

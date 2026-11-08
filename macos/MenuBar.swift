@@ -48,32 +48,13 @@ private final class MenuBarState: ObservableObject {
     var height: CGFloat { CGFloat(max(1, devices.count) * 56 + 30) }
 }
 
-private final class NotchedMaterialView: NSVisualEffectView {
-    var notchX: CGFloat = 150 { didSet { needsLayout = true } }
-    override var isFlipped: Bool { true }
-    override func layout() {
-        super.layout()
-        let size = bounds.size
-        guard size.width > 0, size.height > 0 else { return }
-        let path = NotchedOutline(notchX: notchX).path(in: CGRect(origin: .zero, size: size)).cgPath
-        maskImage = NSImage(size: size, flipped: true) { _ in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            context.addPath(path)
-            context.setFillColor(NSColor.black.cgColor)
-            context.fillPath()
-            return true
-        }
-    }
-}
-
 private struct NotchedBackdrop: NSViewRepresentable {
-    let notchX: CGFloat
-    func makeNSView(context: Context) -> NotchedMaterialView {
-        let view = NotchedMaterialView()
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
         configureIPortalMaterial(view)
         return view
     }
-    func updateNSView(_ view: NotchedMaterialView, context: Context) { view.notchX = notchX }
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 // One path owns both the backdrop and the beam, including the arrow. Native
@@ -167,9 +148,12 @@ private struct MirrorPopover: View {
         }
         .padding(.top, 20).padding(.bottom, 10)
         .frame(width: 300, height: state.height)
-        .background { NotchedBackdrop(notchX: state.notchX).allowsHitTesting(false) }
+        .background { NotchedBackdrop().allowsHitTesting(false) }
         .overlay(outline.stroke(IPortalStyle.Palette.border, lineWidth: 0.7))
         .overlay(NotchedBeam(outline: outline, active: state.visible && !state.devices.isEmpty))
+        // Clip the material and animated glow together. An independent material
+        // mask leaves glow outside the silhouette used by the window shadow.
+        .clipShape(outline, style: FillStyle(antialiased: true))
         .preferredColorScheme(.dark)
     }
 }
