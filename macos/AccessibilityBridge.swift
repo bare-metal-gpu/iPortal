@@ -179,8 +179,8 @@ final class MirrorAXElement: NSAccessibilityElement {
         setAccessibilityIdentifier("iportal.remote.\(revision.uuidString).\(node.path)")
         let actions: [(String, MirrorAXAction)] = node.scrollable
             ? [("Scroll down", .scroll(.down)), ("Scroll up", .scroll(.up)), ("Scroll left", .scroll(.left)), ("Scroll right", .scroll(.right))]
-            : node.editable ? [("Focus", .element("focus"))]
-            : node.pressable ? [("Long press", .element("longPress")), ("Double tap", .element("doubleTap"))] : []
+            : node.editable ? [("Focus", .element(.focus))]
+            : node.pressable ? [("Long press", .element(.longPress)), ("Double tap", .element(.doubleTap))] : []
         setAccessibilityCustomActions(actions.map { name, action in
             NSAccessibilityCustomAction(name: name) { [weak self] in
                 guard let self else { return false }
@@ -210,10 +210,10 @@ final class MirrorAXElement: NSAccessibilityElement {
     override func accessibilityHelp() -> String? { node.visible ? nil : "Off screen" }
     override func accessibilityPerformPress() -> Bool { bridge?.perform(self) ?? false }
     override func accessibilityPerformIncrement() -> Bool {
-        node.type == "Slider" && bridge?.perform(self, action: .element("increment")) == true
+        node.type == "Slider" && bridge?.perform(self, action: .element(.increment)) == true
     }
     override func accessibilityPerformDecrement() -> Bool {
-        node.type == "Slider" && bridge?.perform(self, action: .element("decrement")) == true
+        node.type == "Slider" && bridge?.perform(self, action: .element(.decrement)) == true
     }
     override func setAccessibilityValue(_ value: Any?) {
         // Initialization sets the cached value before an observation is bound.
@@ -240,8 +240,9 @@ final class MirrorAXElement: NSAccessibilityElement {
 }
 
 enum MirrorAXDirection { case up, down, left, right }
+enum MirrorAXElementAction: String { case focus, doubleTap, longPress, increment, decrement }
 enum MirrorAXAction {
-    case press, scroll(MirrorAXDirection), element(String), replaceText(String), adjust(Double)
+    case press, scroll(MirrorAXDirection), element(MirrorAXElementAction), replaceText(String), adjust(Double)
 }
 
 @MainActor
@@ -458,10 +459,10 @@ final class MirrorAccessibilityBridge {
             guard element.node.type == "Slider", value.isFinite, (0...1).contains(value) else { return false }
             body["action"] = "adjust"; body["value"] = value; action = "element-action"
         case .element(let name):
-            guard (name == "focus" && element.node.editable)
-                || (["increment", "decrement"].contains(name) && element.node.type == "Slider")
-                || (["doubleTap", "longPress"].contains(name) && element.node.pressable) else { return false }
-            body["action"] = name; action = "element-action"
+            guard (name == .focus && element.node.editable)
+                || ([MirrorAXElementAction.increment, .decrement].contains(name) && element.node.type == "Slider")
+                || ([MirrorAXElementAction.doubleTap, .longPress].contains(name) && element.node.pressable) else { return false }
+            body["action"] = name.rawValue; action = "element-action"
         }
         if action == "element-action" { body["selector"] = ["using": "xpath", "value": element.node.path] }
         let token = UUID()

@@ -37,7 +37,7 @@ import CoreVideo
         precondition(CVPixelBufferCreate(kCFAllocatorDefault, 48, 64, kCVPixelFormatType_32BGRA, nil, &pixel) == kCVReturnSuccess)
         let result = pixel!
         CVPixelBufferLockBaseAddress(result, [])
-        memset(CVPixelBufferGetBaseAddress(result), Int32(value), CVPixelBufferGetDataSize(result))
+        memset(CVPixelBufferGetBaseAddress(result)!, Int32(value), CVPixelBufferGetDataSize(result))
         CVPixelBufferUnlockBaseAddress(result, [])
         return result
     }
@@ -237,14 +237,14 @@ import CoreVideo
             actionNetwork.reply(offset + 1, observation(controls))
             await eventually { !actionBridge.elements.isEmpty }
         }
-        try await act(0, .element("focus"), expected: "element-action", extra: "focus")
+        try await act(0, .element(.focus), expected: "element-action", extra: "focus")
         try await act(0, .replaceText("café 世界"), expected: "element-action", extra: "replaceText")
         try await act(0, .replaceText(""), expected: "element-action", extra: "replaceText")
-        try await act(1, .element("increment"), expected: "element-action", extra: "increment")
-        try await act(1, .element("decrement"), expected: "element-action", extra: "decrement")
+        try await act(1, .element(.increment), expected: "element-action", extra: "increment")
+        try await act(1, .element(.decrement), expected: "element-action", extra: "decrement")
         try await act(1, .adjust(0.75), expected: "element-action", extra: "adjust")
-        try await act(2, .element("doubleTap"), expected: "element-action", extra: "doubleTap")
-        try await act(2, .element("longPress"), expected: "element-action", extra: "longPress")
+        try await act(2, .element(.doubleTap), expected: "element-action", extra: "doubleTap")
+        try await act(2, .element(.longPress), expected: "element-action", extra: "longPress")
         try await act(3, .scroll(.left), expected: "gesture")
         try await act(3, .scroll(.right), expected: "gesture")
         let secure = actionBridge.elements[0].descendants[4]

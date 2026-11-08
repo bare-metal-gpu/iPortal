@@ -583,4 +583,20 @@ const wrongType = await api(
 );
 assert.equal(wrongType.outcome, "not executed");
 passed("Targeted focus, replacement, empty/Unicode text and normalized slider actions");
+await api("element-action", { ...target("fixture.gestures"), action: "doubleTap" });
+await api("wait", {
+  ...target("fixture.gestureCount"),
+  condition: "attribute",
+  attribute: "label",
+  equals: "Double: 1, Long: 0",
+});
+await api("element-action", { ...target("fixture.gestures"), action: "longPress" });
+await api("wait", {
+  ...target("fixture.gestureCount"),
+  condition: "attribute",
+  attribute: "label",
+  equals: "Double: 1, Long: 1",
+});
+passed("Native double tap and long press");
+
 console.log(`${checks} native fixture checks passed`);

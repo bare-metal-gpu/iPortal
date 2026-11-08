@@ -100,10 +100,14 @@ private struct ControlFixtureView: View {
   @State private var level = 0.5
   @State private var enabled = false
   @State private var changes = 0
+  @State private var doubles = 0
+  @State private var holds = 0
+  @FocusState private var focused: Bool
   var body: some View {
     VStack(spacing: 24) {
       TextField("Replacement input", text: $text).textFieldStyle(.roundedBorder)
-        .accessibilityIdentifier("fixture.replace")
+        .accessibilityIdentifier("fixture.replace").focused($focused)
+        .submitLabel(.done).onSubmit { focused = false }
       Text("Value:\(text)").accessibilityIdentifier("fixture.replacedValue")
       Slider(value: $level, in: 0...1).accessibilityLabel("Level")
         .accessibilityIdentifier("fixture.slider")
@@ -115,6 +119,12 @@ private struct ControlFixtureView: View {
         }
       }.accessibilityIdentifier("fixture.delayed")
       Text("Changes: \(changes)").accessibilityIdentifier("fixture.changes")
+      Text("Gesture target").frame(maxWidth: .infinity).frame(height: 50)
+        .background(Color.gray.opacity(0.2))
+        .onTapGesture(count: 2) { doubles += 1 }
+        .onLongPressGesture { holds += 1 }
+        .accessibilityAddTraits(.isButton).accessibilityIdentifier("fixture.gestures")
+      Text("Double: \(doubles), Long: \(holds)").accessibilityIdentifier("fixture.gestureCount")
       Spacer()
     }.padding().navigationTitle("Controls")
   }
