@@ -1091,6 +1091,7 @@ document.querySelectorAll("button").forEach((b) => b.addEventListener("mouseup",
 
 // Explicit entry points called by WKWebView, kept as classic-script globals.
 Object.assign(window, {
+  setNativeAccessibilityActive,
   setNativeSettingsVisible,
   nativeGeometryChanged,
   setNativeVideoReady,

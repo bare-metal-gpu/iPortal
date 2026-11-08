@@ -1,4 +1,5 @@
 import Cocoa
+import CoreVideo
 
 @MainActor private final class Network {
     var requests: [URLRequest] = []
@@ -30,6 +31,15 @@ import Cocoa
     @MainActor static func eventually(_ condition: () -> Bool) async {
         for _ in 0..<5000 { if condition() { return }; try? await Task.sleep(nanoseconds: 1_000_000) }
         preconditionFailure("Asynchronous bridge did not settle")
+    }
+    static func pixels(_ value: UInt8) -> CVPixelBuffer {
+        var pixel: CVPixelBuffer?
+        precondition(CVPixelBufferCreate(kCFAllocatorDefault, 48, 64, kCVPixelFormatType_32BGRA, nil, &pixel) == kCVReturnSuccess)
+        let result = pixel!
+        CVPixelBufferLockBaseAddress(result, [])
+        memset(CVPixelBufferGetBaseAddress(result), Int32(value), CVPixelBufferGetDataSize(result))
+        CVPixelBufferUnlockBaseAddress(result, [])
+        return result
     }
     static func rejects(_ source: [String: Any]) {
         do { _ = try MirrorAXNode.parse(source); preconditionFailure("Invalid tree accepted") }
@@ -186,13 +196,16 @@ import Cocoa
         await eventually { frameNetwork.requests.count == 1 }
         frameNetwork.reply(0, observation(source))
         await eventually { !frameBridge.elements.isEmpty }
-        for _ in 0..<100 { frameBridge.contentDidChange("burst") }
+        let white = pixels(255), black = pixels(0)
+        for _ in 0..<100 { frameBridge.presented(white) }
         await eventually { frameNetwork.requests.count == 2 }
-        frameBridge.contentDidChange("during read")
+        frameBridge.presented(black)
         frameNetwork.reply(1, observation(source))
         await eventually { frameNetwork.requests.count == 3 }
         frameNetwork.reply(2, observation(source))
         await eventually { frameBridge.observation != nil && frameNetwork.pending.isEmpty }
+        for _ in 0..<100 { frameBridge.presented(black) }
+        precondition(frameNetwork.requests.count == 3, "Identical frames cannot trigger another inspection")
         let previous = frameBridge.elements[0]
         now += 13
         frameBridge.contentDidChange("idle")

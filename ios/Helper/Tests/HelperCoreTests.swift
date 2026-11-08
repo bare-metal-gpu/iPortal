@@ -6,14 +6,15 @@ final class HelperCoreTests: XCTestCase {
   func testElementActionsRejectMalformedPayloadsBeforeDispatch() throws {
     XCTAssertTrue(Operation.elementAction.mutates)
     XCTAssertTrue(Operation.elementAction.guarded)
-    for fields: [String: JSONValue] in [
+    let cases: [[String: JSONValue]] = [
       ["action": .string("replaceText")],
       ["action": .string("focus"), "text": .string("unexpected")],
       ["action": .string("adjust"), "value": .number(1.1)],
       ["action": .string("adjust"), "value": .string("0.5")],
       ["action": .string("increment"), "value": .number(0.5)],
       ["action": .string("unknown")],
-    ] {
+    ]
+    for fields in cases {
       var args = fields
       args["id"] = .string("synthetic-element")
       XCTAssertThrowsError(try Operation.elementAction.validate(.object(args)))
