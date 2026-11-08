@@ -100,7 +100,12 @@ assert.equal(state.app.bundleId, bundleId);
 assert.equal(state.locked, false);
 assert(state.screen.width > 320 && state.screen.height > 480);
 passed("foreground identity and logical geometry");
-await api("tap", target("fixture.controls"));
+await api("tap", {
+  selector: selector(
+    "type == 'XCUIElementTypeButton' AND name == 'fixture.controls'",
+    "predicate string",
+  ),
+});
 await api("wait", target("fixture.replace"));
 await api("element-action", { ...target("fixture.replace"), action: "focus" });
 for (const text of ["Replacement café 世界 👋", "", "Final replacement"]) {
