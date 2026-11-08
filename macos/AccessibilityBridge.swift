@@ -37,11 +37,14 @@ struct MirrorAXNode {
     var secure: Bool { type == "SecureTextField" }
     var editable: Bool { ["TextField", "SecureTextField", "SearchField", "TextView"].contains(type) }
     var normalizedValue: Double? {
-        guard type == "Slider", let value = value as? String, value.contains("%") else { return nil }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .percent
-        guard let number = formatter.number(from: value)?.doubleValue, number.isFinite, (0...1).contains(number) else { return nil }
-        return number
+        guard type == "Slider", let value = value as? String else { return nil }
+        // Phone and Mac locales can differ. Accept an unambiguous percentage,
+        // including iOS's non-breaking space, but not grouped/arbitrary units.
+        let compact = value.filter { !$0.isWhitespace }
+        guard compact.range(of: "^[0-9]{1,3}([.,][0-9]{1,2})?%$", options: .regularExpression) != nil,
+              let number = Double(compact.dropLast().replacingOccurrences(of: ",", with: ".")),
+              (0...100).contains(number) else { return nil }
+        return number / 100
     }
     var settable: Bool { (editable && !secure) || normalizedValue != nil }
     var scrollable: Bool { ["ScrollView", "Table", "CollectionView", "WebView"].contains(type) }
@@ -174,11 +177,13 @@ final class MirrorAXElement: NSAccessibilityElement {
         setAccessibilityRole(node.role)
         if node.secure { setAccessibilitySubrole(.secureTextField) }
         setAccessibilityLabel(node.label)
-        super.setAccessibilityValue(node.normalizedValue.map { $0 as Any } ?? node.value)
+        super.setAccessibilityValue(node.normalizedValue.map { $0 as Any } ?? node.value
+            ?? (node.editable && !node.secure ? "" : nil))
         if node.normalizedValue != nil { setAccessibilityMinValue(0); setAccessibilityMaxValue(1) }
         setAccessibilityIdentifier("iportal.remote.\(revision.uuidString).\(node.path)")
         let actions: [(String, MirrorAXAction)] = node.scrollable
             ? [("Scroll down", .scroll(.down)), ("Scroll up", .scroll(.up)), ("Scroll left", .scroll(.left)), ("Scroll right", .scroll(.right))]
+            : node.type == "Slider" ? [("Increase", .element(.increment)), ("Decrease", .element(.decrement))]
             : node.editable ? [("Focus", .element(.focus))]
             : node.pressable ? [("Long press", .element(.longPress)), ("Double tap", .element(.doubleTap))] : []
         setAccessibilityCustomActions(actions.map { name, action in
@@ -220,10 +225,15 @@ final class MirrorAXElement: NSAccessibilityElement {
         guard bridge?.isCurrent(self) == true else { return }
         if node.editable && !node.secure, let text = value as? String, text.count <= 10000 {
             _ = bridge?.perform(self, action: .replaceText(text))
-        } else if node.type == "Slider", let value = value as? NSNumber,
-                  CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite,
-                  (0...1).contains(value.doubleValue) {
-            _ = bridge?.perform(self, action: .adjust(value.doubleValue))
+        } else if node.type == "Slider", node.normalizedValue != nil {
+            let number: Double?
+            if let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() {
+                number = value.doubleValue
+            } else if let value = value as? String { number = Double(value) }
+            else { number = nil }
+            if let number, number.isFinite, (0...1).contains(number) {
+                _ = bridge?.perform(self, action: .adjust(number))
+            }
         }
     }
     override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {

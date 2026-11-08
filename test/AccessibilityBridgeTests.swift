@@ -216,13 +216,28 @@ import CoreVideo
         let actionNetwork = Network()
         let actionBridge = MirrorAccessibilityBridge(clock: { now }, send: actionNetwork.send)
         let actionHost = MirrorAXHost(frame: hostRect, bridge: actionBridge)
-        var slider = node("Slider", label: "Level"); slider["value"] = "50%"
+        var slider = node("Slider", label: "Level"); slider["value"] = "50\u{00a0}%"
+        let parsedSlider = try MirrorAXNode.parse(slider)
+        precondition(parsedSlider.normalizedValue == 0.5)
+        for (text, expected) in [("12,5 %", 0.125), ("100%", 1.0)] {
+            var localized = slider; localized["value"] = text
+            let parsed = try MirrorAXNode.parse(localized)
+            precondition(parsed.normalizedValue == expected)
+        }
+        for text in ["101%", "1,000%", "50% invalid", "50 points"] {
+            var invalid = slider; invalid["value"] = text
+            let parsed = try MirrorAXNode.parse(invalid)
+            precondition(parsed.normalizedValue == nil)
+        }
         let controls = node(children: [node("TextField", label: "Input"), slider,
             node("Button", label: "Tap"), node("ScrollView", label: "Content"), node("SecureTextField", label: "Password")])
         actionBridge.update(target: a); _ = actionHost.accessibilityChildren()
         await eventually { actionNetwork.requests.count == 1 }
         actionNetwork.reply(0, observation(controls))
         await eventually { !actionBridge.elements.isEmpty }
+        precondition(actionBridge.elements[0].descendants[0].accessibilityValue() as? String == "")
+        precondition(actionBridge.elements[0].descendants[1].accessibilityValue() as? Double == 0.5)
+        precondition(actionBridge.elements[0].descendants[1].accessibilityCustomActions()?.map(\.name) == ["Increase", "Decrease"])
         func act(_ index: Int, _ action: MirrorAXAction, expected: String, extra: String? = nil) async throws {
             let offset = actionNetwork.requests.count
             let element = actionBridge.elements[0].descendants[index]
@@ -234,7 +249,7 @@ import CoreVideo
             case .element(.decrement): precondition(element.accessibilityPerformDecrement())
             case .adjust(let value):
                 precondition(element.isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.setAccessibilityValue(_:))))
-                element.setAccessibilityValue(NSNumber(value: value))
+                element.setAccessibilityValue(String(value)) // Computer sends string values.
             default: precondition(actionBridge.perform(element, action: action))
             }
             await eventually { actionNetwork.requests.count == offset + 1 }
