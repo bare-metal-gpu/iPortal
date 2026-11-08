@@ -100,6 +100,59 @@ assert.equal(state.app.bundleId, bundleId);
 assert.equal(state.locked, false);
 assert(state.screen.width > 320 && state.screen.height > 480);
 passed("foreground identity and logical geometry");
+await api("tap", target("fixture.controls"));
+await api("wait", target("fixture.replace"));
+await api("element-action", { ...target("fixture.replace"), action: "focus" });
+for (const text of ["Replacement café 世界 👋", "", "Final replacement"]) {
+  await api("element-action", { ...target("fixture.replace"), action: "replaceText", text });
+  // A separate label distinguishes an empty editor's placeholder from its value.
+  await api("wait", {
+    ...target("fixture.replacedValue"),
+    condition: "attribute",
+    attribute: "label",
+    equals: `Value:${text}`,
+    stableForMs: 100,
+  });
+}
+await api("key", { key: "Enter" });
+await api("element-action", { ...target("fixture.slider"), action: "adjust", value: 0.75 });
+const percent = async () => parseFloat((await element("fixture.slider")).value);
+const adjusted = await percent();
+assert(Math.abs(adjusted - 75) < 10, `Slider adjustment: ${adjusted}`);
+await api("element-action", { ...target("fixture.slider"), action: "decrement" });
+assert((await percent()) < adjusted, "Native decrement did not lower slider");
+await api("element-action", { ...target("fixture.slider"), action: "increment" });
+const wrongType = await api(
+  "element-action",
+  { ...target("fixture.delayed"), action: "replaceText", text: "must-not-type" },
+  [400, 422, 502],
+);
+assert.equal(wrongType.outcome, "not executed");
+passed("Targeted focus, replacement, empty/Unicode text and normalized slider actions");
+await api("element-action", { ...target("fixture.gestures"), action: "doubleTap" });
+await api("wait", {
+  ...target("fixture.gestureCount"),
+  condition: "attribute",
+  attribute: "label",
+  equals: "Double: 1, Long: 0",
+});
+await api("element-action", { ...target("fixture.gestures"), action: "longPress" });
+await api("wait", {
+  ...target("fixture.gestureCount"),
+  condition: "attribute",
+  attribute: "label",
+  equals: "Double: 1, Long: 1",
+});
+passed("Native double tap and long press");
+
+await api("tap", {
+  selector: selector(
+    "type == 'XCUIElementTypeButton' AND (name == 'Back' OR label == 'Back')",
+    "predicate string",
+  ),
+});
+await api("wait", target("fixture.title"));
+
 for (const using of [
   "id",
   "name",
@@ -318,8 +371,19 @@ await api("gesture", {
   end: 300,
   expectedApp: bundleId,
 });
-const rowAfter = (await element("fixture.row.0")).rect;
-assert(Math.abs(rowAfter.y - rowBefore.y) > 50, "Scroll did not move fixture content");
+// Completion confirms dispatch; UI presentation can trail it on hosted devices.
+// Wait for movement without replaying a possibly executed gesture.
+const scrollDeadline = performance.now() + observationTimeoutMs;
+let rowAfter;
+do {
+  rowAfter = (await element("fixture.row.0")).rect;
+  if (Math.abs(rowAfter.y - rowBefore.y) > 50) break;
+  await Bun.sleep(100);
+} while (performance.now() < scrollDeadline);
+assert(
+  Math.abs(rowAfter.y - rowBefore.y) > 50,
+  `Scroll did not move fixture content: ${JSON.stringify({ before: rowBefore, after: rowAfter, screen: state.screen, orientation: state.orientation })}`,
+);
 await api("gesture", {
   points: [
     [0.5, 0.3, 0],
@@ -547,56 +611,4 @@ const replay = await api("home", { requestId: once });
 assert.equal(replay.outcome, first.outcome);
 assert.equal((await waitForApp()).app.bundleId, bundleId, "duplicate public request replayed Home");
 passed("durable receipt replay returns the original outcome without repeating input");
-// The editor page is still on the navigation stack after Home/launch.
-await api("tap", {
-  selector: selector(
-    "type == 'XCUIElementTypeButton' AND (name == 'Back' OR label == 'Back')",
-    "predicate string",
-  ),
-});
-await api("tap", target("fixture.controls"));
-await api("wait", target("fixture.replace"));
-await api("element-action", { ...target("fixture.replace"), action: "focus" });
-for (const text of ["Replacement café 世界 👋", "", "Final replacement"]) {
-  await api("element-action", { ...target("fixture.replace"), action: "replaceText", text });
-  // A separate label distinguishes an empty editor's placeholder from its value.
-  await api("wait", {
-    ...target("fixture.replacedValue"),
-    condition: "attribute",
-    attribute: "label",
-    equals: `Value:${text}`,
-    stableForMs: 100,
-  });
-}
-await api("key", { key: "Enter" });
-await api("element-action", { ...target("fixture.slider"), action: "adjust", value: 0.75 });
-const percent = async () => parseFloat((await element("fixture.slider")).value);
-const adjusted = await percent();
-assert(Math.abs(adjusted - 75) < 10, `Slider adjustment: ${adjusted}`);
-await api("element-action", { ...target("fixture.slider"), action: "decrement" });
-assert((await percent()) < adjusted, "Native decrement did not lower slider");
-await api("element-action", { ...target("fixture.slider"), action: "increment" });
-const wrongType = await api(
-  "element-action",
-  { ...target("fixture.delayed"), action: "replaceText", text: "must-not-type" },
-  [400, 422, 502],
-);
-assert.equal(wrongType.outcome, "not executed");
-passed("Targeted focus, replacement, empty/Unicode text and normalized slider actions");
-await api("element-action", { ...target("fixture.gestures"), action: "doubleTap" });
-await api("wait", {
-  ...target("fixture.gestureCount"),
-  condition: "attribute",
-  attribute: "label",
-  equals: "Double: 1, Long: 0",
-});
-await api("element-action", { ...target("fixture.gestures"), action: "longPress" });
-await api("wait", {
-  ...target("fixture.gestureCount"),
-  condition: "attribute",
-  attribute: "label",
-  equals: "Double: 1, Long: 1",
-});
-passed("Native double tap and long press");
-
 console.log(`${checks} native fixture checks passed`);
