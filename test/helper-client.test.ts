@@ -215,7 +215,10 @@ test("lifecycle isolates launcher generations, route changes and bounded recover
 });
 
 test("Effect accepts the shared native command/error corpus and rejects unknown fields", () => {
-  assert.equal(corpus.commands.length, Object.keys(helperOperations).length);
+  assert.deepEqual(
+    new Set(corpus.commands.map((command) => command.operation)),
+    new Set(Object.keys(helperOperations)),
+  );
   for (const command of corpus.commands) {
     const schema = helperOperations[command.operation].request;
     decodeHelper(schema, command.arguments);

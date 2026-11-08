@@ -449,6 +449,37 @@ function mjpegPart(bytes) {
   ]);
 }
 
+test("fallback frame change detection is reader-leased and rejects obsolete bridge messages", async () => {
+  const h = browserHarness();
+  await h.settle();
+  assert.equal(h.run("accessibilityFrameChanged({width: 400, height: 800})"), false);
+  assert.equal(
+    h.run("accessibilityCanvas"),
+    undefined,
+    "Normal mirroring allocates no inspection canvas",
+  );
+  h.run("setNativeAccessibilityActive(true, videoEpoch, 'retired-page')");
+  assert.equal(h.run("accessibilityFrameChanged({width: 400, height: 800})"), false);
+  let luminance = 0,
+    samples = 0;
+  h.element("ripple").getContext = () => ({
+    drawImage() {},
+    getImageData() {
+      samples++;
+      return { data: new Uint8ClampedArray(96 * 128 * 4).fill(luminance) };
+    },
+  });
+  h.run("setNativeAccessibilityActive(true, videoEpoch, bridgeId)");
+  assert.equal(h.run("accessibilityFrameChanged({width: 400, height: 800})"), true);
+  assert.equal(h.run("accessibilityFrameChanged({width: 400, height: 800})"), false);
+  luminance = 255;
+  assert.equal(h.run("accessibilityFrameChanged({width: 400, height: 800})"), true);
+  await h.advance(12001);
+  const before = samples;
+  assert.equal(h.run("accessibilityFrameChanged({width: 400, height: 800})"), false);
+  assert.equal(samples, before, "Expired interest stops pixel sampling");
+});
+
 test("rotation cancels old gesture buffers and ignores stale geometry callbacks", async () => {
   const h = browserHarness();
   await h.settle();

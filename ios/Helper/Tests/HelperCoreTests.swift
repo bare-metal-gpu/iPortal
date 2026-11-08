@@ -180,7 +180,7 @@ final class HelperCoreTests: XCTestCase {
       .appendingPathComponent("../../../test/fixtures/helper-contract.json")
     let corpus = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: url))
     let commands = try XCTUnwrap(corpus["commands"].array)
-    XCTAssertEqual(commands.count, Operation.allCases.count)
+    XCTAssertEqual(Set(commands.compactMap { $0["operation"].string }), Set(Operation.allCases.map(\.rawValue)))
     for raw in commands {
       let data = try JSONEncoder().encode(raw)
       let command = try HelperCommand.decode(data)

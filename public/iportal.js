@@ -241,9 +241,8 @@ class MjpegFrames {
 let hasStreamFrame = false;
 let accessibilityUntil = 0;
 let accessibilityFrameHash = 0;
-const accessibilityCanvas = document.createElement("canvas");
-accessibilityCanvas.width = 24;
-accessibilityCanvas.height = 32;
+/** @type {HTMLCanvasElement | undefined} */
+let accessibilityCanvas;
 /** @param {boolean} active @param {number} epoch @param {string} documentId */
 function setNativeAccessibilityActive(active, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId) return;
@@ -252,10 +251,15 @@ function setNativeAccessibilityActive(active, epoch, documentId) {
 /** @param {ImageBitmap} frame */
 function accessibilityFrameChanged(frame) {
   if (performance.now() >= accessibilityUntil) return false;
+  if (!accessibilityCanvas) {
+    accessibilityCanvas = document.createElement("canvas");
+    accessibilityCanvas.width = 96;
+    accessibilityCanvas.height = 128;
+  }
   const context = accessibilityCanvas.getContext("2d");
   if (!context) return false;
-  context.drawImage(frame, 0, 0, 24, 32);
-  const pixels = context.getImageData(0, 0, 24, 32).data;
+  context.drawImage(frame, 0, 0, 96, 128);
+  const pixels = context.getImageData(0, 0, 96, 128).data;
   let hash = frame.width ^ frame.height;
   for (let i = 0; i < pixels.length; i += 4) {
     const luminance = (pixels[i] + 2 * pixels[i + 1] + pixels[i + 2]) / 4;

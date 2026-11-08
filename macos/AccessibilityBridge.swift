@@ -399,9 +399,9 @@ final class MirrorAccessibilityBridge {
               let base = planar ? CVPixelBufferGetBaseAddressOfPlane(pixel, 0) : CVPixelBufferGetBaseAddress(pixel) else { return }
         let bytes = base.assumingMemoryBound(to: UInt8.self)
         var hash = UInt64(width) &* 1099511628211 ^ UInt64(height)
-        for row in 0..<32 { for column in 0..<24 {
-            let x = min(width - 1, (2 * column + 1) * width / 48)
-            let y = min(height - 1, (2 * row + 1) * height / 64)
+        for row in 0..<128 { for column in 0..<96 {
+            let x = min(width - 1, (2 * column + 1) * width / 192)
+            let y = min(height - 1, (2 * row + 1) * height / 256)
             let offset = y * stride + x * (planar ? 1 : 4)
             let luminance = planar ? Int(bytes[offset]) : (Int(bytes[offset]) + 2 * Int(bytes[offset + 1]) + Int(bytes[offset + 2])) / 4
             hash = (hash ^ UInt64(luminance / 16)) &* 1099511628211
