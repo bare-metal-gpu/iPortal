@@ -115,68 +115,50 @@ enum IPortalWatcherService {
         return data.base64EncodedString()
     }
 
+    private static var configurationTask: Task<Void, Never>?
+
     private static func configure(enabled: Bool, showDevicesAfterDisable: Bool, completion: @escaping () -> Void) {
+        // A second startup/settings request must not race an update whose
+        // asynchronous unregister operation is still in progress.
+        let previous = configurationTask
+        configurationTask = Task { @MainActor in
+            await previous?.value
+            await configureService(enabled: enabled, showDevicesAfterDisable: showDevicesAfterDisable)
+            completion()
+        }
+    }
+
+    private static func configureService(enabled: Bool, showDevicesAfterDisable: Bool) async {
         let fingerprint = codeFingerprint
         let needsUpdate = enabled && fingerprint != IPortalWatcher.preferences.string(forKey: "WatcherRegisteredCode")
         let removeRegistration = (service.status == .enabled && (!enabled || needsUpdate))
             || (service.status == .requiresApproval && !enabled)
-        let previous = removeRegistration ? NSRunningApplication.runningApplications(withBundleIdentifier: IPortalWatcher.helperID).first(where: {
-            $0.bundleURL?.resolvingSymlinksInPath() == IPortalWatcher.helperURL.resolvingSymlinksInPath()
-        }) : nil
         do {
-            if removeRegistration { try service.unregister() }
-            afterExit(previous) { stopped in
-                guard stopped else {
-                    report(NSError(domain: "iPortalWatcher", code: 1, userInfo: [NSLocalizedDescriptionKey: "The previous watcher is still stopping."]))
-                    completion()
-                    return
-                }
-                do {
-                    let registering = enabled && (service.status == .notRegistered || service.status == .notFound)
-                    if registering { try service.register() }
-                    IPortalWatcher.preferences.set(enabled, forKey: "WatcherOpenAtLogin")
-                    if service.status == .enabled {
-                        IPortalWatcher.preferences.set(fingerprint, forKey: "WatcherRegisteredCode")
-                    }
-                    let legacy = SMAppService.mainApp.status
-                    if (legacy == .enabled || legacy == .requiresApproval) && (!enabled || service.status == .enabled) {
-                        try SMAppService.mainApp.unregister()
-                    }
-                    publishStatus()
-                    // register() itself launches the helper asynchronously.
-                    if registering { completion() }
-                    else { launch(showDevices: showDevicesAfterDisable, completion: completion) }
-                } catch { report(error); completion() }
+            // The async API completes only when the old service is safe to
+            // re-register. NSWorkspace termination notifications exclude
+            // LSUIElement/background apps, and cached isTerminated can lag.
+            if removeRegistration { try await service.unregister() }
+            let registering = enabled && (service.status == .notRegistered || service.status == .notFound)
+            if registering { try service.register() }
+            IPortalWatcher.preferences.set(enabled, forKey: "WatcherOpenAtLogin")
+            if service.status == .enabled {
+                IPortalWatcher.preferences.set(fingerprint, forKey: "WatcherRegisteredCode")
             }
-        } catch { report(error); completion() }
-    }
-
-    private static func afterExit(_ app: NSRunningApplication?, completion: @escaping (Bool) -> Void) {
-        guard let app, !app.isTerminated else { completion(true); return }
-        var observer: NSObjectProtocol?
-        var timeout: DispatchWorkItem?
-        var finished = false
-        let finish: (Bool) -> Void = { stopped in
-            guard !finished else { return }
-            finished = true
-            if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
-            observer = nil
-            timeout?.cancel(); timeout = nil
-            completion(stopped)
+            let legacy = SMAppService.mainApp.status
+            if (legacy == .enabled || legacy == .requiresApproval) && (!enabled || service.status == .enabled) {
+                try await SMAppService.mainApp.unregister()
+            }
+            publishStatus()
+            // register() itself launches the helper asynchronously.
+            if !registering {
+                await withCheckedContinuation { continuation in
+                    launch(showDevices: showDevicesAfterDisable) { continuation.resume() }
+                }
+            }
+        } catch {
+            publishStatus()
+            report(error)
         }
-        observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification,
-            object: nil, queue: .main) { note in
-                MainActor.assumeIsolated {
-                    if (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier == app.processIdentifier {
-                        finish(true)
-                    }
-                }
-            }
-        let work = DispatchWorkItem { finish(app.isTerminated) }
-        timeout = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
-        // Covers termination between unregister() and observer installation.
-        if app.isTerminated { finish(true) }
     }
 
     private static func publishStatus() {
