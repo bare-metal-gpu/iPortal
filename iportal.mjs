@@ -45,6 +45,7 @@ import { createHelperClient } from "./helper-client.ts";
 import { readHelperBuild } from "./helper-build.mjs";
 import { createHelperLifecycle } from "./helper-lifecycle.ts";
 import { startupTrace } from "./startup-trace.ts";
+import { observability } from "./observability.ts";
 
 const instanceId = randomUUID();
 startupTrace("server-entered");
@@ -303,6 +304,10 @@ const helperUp = async (signal) => {
       confirmedHelperInstallation = true;
     }
     if (!wasReady && state.automationReady && state.locked === false) startupTrace("helper-ready");
+    if (state.automationReady) {
+      helperStartup?.end();
+      helperStartup = null;
+    }
     if (state.phase === "blocked") {
       restartHelper();
       return false;
@@ -432,6 +437,8 @@ const inputGuards = (body) => ({
 let helperProcess = null;
 /** @type {AbortController | null} */
 let helperPreparation = null;
+/** @type {ReturnType<typeof observability.startSpan> | null} */
+let helperStartup = null;
 /** @type {string | null} */
 let helperProblem = null;
 let forceHelperInstall = false;
@@ -456,16 +463,23 @@ async function maybeStartHelper(udid, connectionID, address) {
   if (!fs.existsSync(deviceBuild)) return;
   const ticket = helperLifecycle.begin();
   if (!ticket) return;
+  helperStartup?.end("interrupted");
+  const startup = (helperStartup = observability.startSpan("helper.startup"));
   startupTrace("helper-prepare-start");
   const preparation = new AbortController();
   helperPreparation = preparation;
   let prepared;
   try {
-    prepared = await prepareHelperCommand(udid, {
-      signal: AbortSignal.any([preparation.signal, AbortSignal.timeout(9000)]),
-      forceInstall: forceHelperInstall,
-    });
+    prepared = await startup.run(() =>
+      observability.promise("helper.prepare", () =>
+        prepareHelperCommand(udid, {
+          signal: AbortSignal.any([preparation.signal, AbortSignal.timeout(9000)]),
+          forceInstall: forceHelperInstall,
+        }),
+      ),
+    );
   } catch (error) {
+    startup.end(preparation.signal.aborted ? "interrupted" : "failure");
     if (!preparation.signal.aborted && helperLifecycle.owns(ticket)) {
       helperLifecycle.failed(ticket, startupFailure(error instanceof Error ? error.message : ""));
       statusEvents.invalidate();
@@ -476,8 +490,12 @@ async function maybeStartHelper(udid, connectionID, address) {
   }
   // A route change or close while inventory was in flight must not launch an
   // obsolete runner. The new owner will prepare against its own endpoint.
-  if (preparation.signal.aborted || shuttingDown || !helperLifecycle.owns(ticket)) return;
+  if (preparation.signal.aborted || shuttingDown || !helperLifecycle.owns(ticket)) {
+    startup.end("interrupted");
+    return;
+  }
   if (startupLock.value({ udid, id: connectionID }) === true) {
+    startup.end("failure");
     helperLifecycle.failed(ticket, startupFailure("device is locked"));
     statusEvents.invalidate();
     return;
@@ -490,8 +508,7 @@ async function maybeStartHelper(udid, connectionID, address) {
     0o600,
   );
   fs.fchmodSync(log, 0o600);
-  console.log(`  starting iPortal helper (${prepared.mode})`);
-  startupTrace("helper-launch", { mode: prepared.mode });
+  startup.run(() => startupTrace("helper-launch", { mode: prepared.mode }));
   const [executable, ...args] = runtimeCommand("--owned-command", ...prepared.command);
   const child = spawn(executable, args, {
     env: {
@@ -539,6 +556,7 @@ async function maybeStartHelper(udid, connectionID, address) {
     tail = (tail + error.message).slice(-16384);
   });
   child.on("close", () => {
+    startup.end("failure");
     clearInterval(deadline);
     for (const redactor of redactors) {
       const text = redactor.end();
@@ -573,7 +591,7 @@ async function maybeStartHelper(udid, connectionID, address) {
       repairedHelperInstall = forceHelperInstall = true;
     }
     helperLifecycle.failed(ticket, failure);
-    console.log(`  helper launch ended (${failure.kind})`);
+    observability.event("helper-ended", { reason: failure.kind }, "Warning");
     statusEvents.invalidate();
   });
 }
@@ -596,7 +614,7 @@ function restartHelper() {
     helperProblem = "Reconnect your iPhone.";
     return;
   }
-  console.log("  restarting iPortal helper");
+  observability.event("helper-restarting");
   if (helperProcess) {
     const child = helperProcess;
     const shutdown = helper.command("shutdown", {}, { timeout: 750 });
@@ -624,6 +642,8 @@ async function automationAllowed() {
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  observability.event("server-stopping");
+  helperStartup?.end("interrupted");
   helperLifecycle.stop();
   helperPreparation?.abort();
   keepAwake.stop("mirror closed");
@@ -649,6 +669,7 @@ async function shutdown() {
       clearTimeout(timer);
     }
   }
+  await observability.close();
   process.exit();
 }
 process.on("SIGINT", () => void shutdown());

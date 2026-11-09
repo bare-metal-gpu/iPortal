@@ -26,6 +26,10 @@ Each device can have only one owning server. Queues, inspection observations,
 command receipts and keep-awake leases belong to that server's device. Detach
 cancels queued commands instead of replaying them after reconnection.
 
+`GET /api/diagnostics` returns bounded local logs, traces, metrics and active
+Effect fibers without querying the phone. See [local diagnostics](observability.md)
+for its schema, timing scope and log levels.
+
 ## Endpoints
 
 | Endpoint     | Body                                                                  | Result in `value`                                                         |

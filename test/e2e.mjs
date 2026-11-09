@@ -61,7 +61,7 @@ try {
   const page = await fetch(base);
   assert.equal(page.headers.get("x-frame-options"), "DENY");
   assert.match(page.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
-  for (const route of ["/", "/api/status", "/stream", "/api/events"]) {
+  for (const route of ["/", "/api/status", "/api/diagnostics", "/stream", "/api/events"]) {
     assert.equal(
       (await fetch(base + route, { headers: { origin: "https://foreign.example" } })).status,
       403,
@@ -102,6 +102,16 @@ try {
   });
   assert.ok(performance.now() - healthStarted < 500, "health must not wait for device I/O");
   assert.equal(fake.log.length, deviceCallsBeforeHealth, "health performs no helper calls");
+  const diagnosticsStarted = performance.now();
+  const diagnostics = await readJSON(await fetch(`${base}/api/diagnostics`));
+  assert.equal(diagnostics.version, 1);
+  assert.ok(diagnostics.fiberCount > 0, "packaged diagnostics track the running server");
+  assert.ok(diagnostics.metrics.length > 0, "native Effect metrics are populated");
+  assert.ok(diagnostics.spans.some((span) => span.name === "api.status"));
+  assert.ok(performance.now() - diagnosticsStarted < 500, "diagnostics do not wait for device I/O");
+  assert.equal(fake.log.length, deviceCallsBeforeHealth, "diagnostics perform no helper calls");
+  assert.ok(!JSON.stringify(diagnostics).includes(status.device.udid));
+  assert.ok(!JSON.stringify(diagnostics).includes(fake.helperToken));
   assert.equal(
     (await fetch(`${base}/api/health`, { headers: { origin: "https://foreign.example" } })).status,
     403,
