@@ -546,7 +546,7 @@ async function maybeStartHelper(udid, connectionID, address) {
       failure = startupFailure("", timedOut);
     if (
       prepared.mode === "installed" &&
-      failure.kind === "verification" &&
+      (failure.kind === "verification" || failure.kind === "artifacts") &&
       !repairedHelperInstall
     ) {
       // Same-version re-signing can leave an expired copy on the phone. Repair

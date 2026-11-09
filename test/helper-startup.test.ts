@@ -48,6 +48,9 @@ test("missing or upgraded helpers install; unreachable/malformed inventory canno
     matchesInstalledHelper({ result: { apps: [] } }, app.bundleIdentifier, app.bundleVersion),
   ).toBe(false);
   expect(() => matchesInstalledHelper({}, app.bundleIdentifier, app.bundleVersion)).toThrow();
+  expect(() =>
+    matchesInstalledHelper({ result: { apps: [null] } }, app.bundleIdentifier, app.bundleVersion),
+  ).toThrow();
 });
 test("generic Apple security wrappers never claim that user trust is missing", () => {
   const appleError =
@@ -135,4 +138,12 @@ test("a live launcher cannot hold Connecting forever after losing readiness; han
   lifecycle.unavailable();
   now += 10001;
   expect(lifecycle.timedOut(ticket)).toBe(true);
+});
+
+test("losing lock evidence removes the unlock instruction without cancelling backoff", () => {
+  const lifecycle = createHelperLifecycle("one");
+  lifecycle.failed(lifecycle.begin(), startupFailure("device is locked"));
+  lifecycle.lockObserved(null);
+  expect(lifecycle.problem).toBeNull();
+  expect(lifecycle.canLaunch).toBe(false);
 });

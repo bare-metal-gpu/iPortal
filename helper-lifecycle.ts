@@ -78,9 +78,9 @@ export function createHelperLifecycle(ownerId: string, now = Date.now) {
       return true;
     },
     lockObserved(locked: boolean | null) {
-      if (locked === false && problem?.kind === "locked") {
+      if (locked !== true && problem?.kind === "locked") {
         problem = null;
-        retryAt = 0;
+        if (locked === false) retryAt = 0;
       }
     },
     owns(ticket: Ticket | null) {

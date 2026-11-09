@@ -1,7 +1,16 @@
 // Apple test-launch failures contain nested errors. Classify the most specific
 // cause before the generic trust wrapper; that wrapper also means bad signing.
+import { Schema } from "effect";
+
+const InstalledApps = Schema.Struct({
+  result: Schema.Struct({
+    apps: Schema.Array(
+      Schema.Struct({ bundleIdentifier: Schema.String, bundleVersion: Schema.String }),
+    ),
+  }),
+});
 export type StartupFailure = {
-  kind: "locked" | "developer" | "setup" | "verification" | "transient" | "timeout";
+  kind: "locked" | "developer" | "setup" | "verification" | "artifacts" | "transient" | "timeout";
   message: string;
 };
 export function startupFailure(output: string, timeout = false): StartupFailure {
@@ -20,6 +29,12 @@ export function startupFailure(output: string, timeout = false): StartupFailure 
     return { kind: "setup", message: "Finish setting up iPortal on your Mac." };
   if (/not trusted|explicitly trusted|invalid code signature|inadequate entitlements/i.test(output))
     return { kind: "verification", message: "Your iPhone couldn’t verify iPortal. Retrying…" };
+  if (
+    /failed to load.*test bundle|test bundle.*(?:not found|does not exist)|application.*(?:is not installed|was not found)/i.test(
+      output,
+    )
+  )
+    return { kind: "artifacts", message: "Couldn’t start iPortal on your iPhone. Retrying…" };
   return {
     kind: timeout ? "timeout" : "transient",
     message: "Couldn’t start iPortal on your iPhone. Retrying…",
@@ -27,19 +42,9 @@ export function startupFailure(output: string, timeout = false): StartupFailure 
 }
 
 export function matchesInstalledHelper(value: unknown, bundle: string, version: string): boolean {
-  if (!value || typeof value !== "object" || !("result" in value))
-    throw new Error("Invalid app inventory");
-  const result = value.result;
-  if (!result || typeof result !== "object" || !("apps" in result) || !Array.isArray(result.apps))
-    throw new Error("Invalid app inventory");
+  const { result } = Schema.decodeUnknownSync(InstalledApps)(value);
   return result.apps.some(
-    (app: unknown) =>
-      !!app &&
-      typeof app === "object" &&
-      "bundleIdentifier" in app &&
-      app.bundleIdentifier === bundle &&
-      "bundleVersion" in app &&
-      app.bundleVersion === version,
+    (app) => app.bundleIdentifier === bundle && app.bundleVersion === version,
   );
 }
 

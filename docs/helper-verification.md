@@ -193,3 +193,31 @@ ScreenCaptureKit, observed indirect/raw input and authenticated Network.framewor
 transport. They are not linked into the app. Phone capture consent, continuous
 contact, quality-matched USB/Wi-Fi latency, audio routing, handover and sleep/wake
 checks remain deferred. The builds have not been installed for this follow-up.
+
+## Helper startup recovery
+
+The launcher checks the installed runner's bundle identity and version. Matching
+artifacts use Xcode's `UseDestinationArtifacts` mode, avoiding the reinstall that
+previously occurred on every Play and recovery. Missing/different versions still
+install normally; an authenticated full build/protocol mismatch also forces an
+update. A same-version signature or missing-test-bundle failure permits one repair
+installation per server lifetime. Unknown inventory never triggers installation.
+
+Startup preparation is independent of cancelled status reads. It has a nine-second
+budget; installed launches have a 20-second readiness budget and installation has
+60 seconds. Recovery retains ownership until the old supervisor exits. A lost
+helper also has a 20-second recovery window, cancelled by authenticated readiness.
+Repeated failures back off and retain their cause instead of clearing the message
+at every retry. These are recovery bounds, not claimed launch-time measurements.
+
+While the helper is unavailable, CoreDevice lock observations refresh at most once
+every three seconds, with one query in flight. Unknown results clear stale lock
+claims; helper events take over after launch. Apple's generic launch-security
+wrapper is not evidence of missing user trust: it also covers code signatures and
+entitlements, so it no longer unconditionally directs users to Trust in Settings.
+
+Regression coverage includes installed/missing/upgraded artifacts, malformed
+inventory, unchanged packaged test configurations, launch ownership, stale exits,
+readiness loss, bounded retries, retained errors, unlock and failed lock refreshes.
+Physical repeated-Play timing and the destination-artifact launch still require an
+unlocked connected phone; do not treat these policy tests as device acceptance.
