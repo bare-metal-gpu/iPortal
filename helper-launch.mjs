@@ -37,18 +37,21 @@ function hintPath(udid) {
 /** @param {string} udid */
 export function confirmHelperInstallation(udid) {
   try {
-    fs.writeFileSync(
+    const hint = JSON.stringify({
+      identity: artifactIdentity(deviceBuild),
+      confirmedAt: Date.now(),
+    });
+    const fd = fs.openSync(
       hintPath(udid),
-      JSON.stringify({ identity: artifactIdentity(deviceBuild), confirmedAt: Date.now() }),
-      {
-        mode: 0o600,
-        flag:
-          fs.constants.O_WRONLY |
-          fs.constants.O_CREAT |
-          fs.constants.O_TRUNC |
-          fs.constants.O_NOFOLLOW,
-      },
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW,
+      0o600,
     );
+    try {
+      fs.fchmodSync(fd, 0o600);
+      fs.writeFileSync(fd, hint);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     /* An optional performance hint never affects a healthy connection. */
   }
