@@ -1,5 +1,6 @@
 // One status probe for every viewer, with immediate invalidation on device /
 // helper events. Timers cover silent failures and helpers with no ready event.
+import { observability } from "./observability.ts";
 export function createStatusEvents<T extends { lifecycle: string }>({
   read,
   readyMs = 2000,
@@ -34,7 +35,10 @@ export function createStatusEvents<T extends { lifecycle: string }>({
         const generation = version;
         controller = new AbortController();
         try {
-          const value = await read(controller.signal);
+          const signal = controller.signal;
+          const value = await observability.detached(() =>
+            observability.promise("status.refresh", () => read(signal)),
+          );
           if (!stopped && generation === version) {
             publish(value);
             return current;

@@ -5,6 +5,7 @@ import { apiError, errorInfo } from "./errors.mjs";
 import { decodeRequest, RequestSchemas } from "./schemas.ts";
 import { validatePublicResponse } from "./responses.ts";
 import { interFont } from "./web-assets.mjs";
+import { observability } from "./observability.ts";
 
 /** @param {unknown} failure @returns {{status:number,body:{ok:false,error:string,code:string,details?:unknown,requestId?:string,outcome?:import("./public-contracts.ts").CommandOutcome,verified?:boolean}}} */
 export function errorResponse(failure) {
@@ -175,84 +176,134 @@ export function startServer({
   const checkedDispatch = async (name, body, signal) => {
     const result = await dispatch(name, body, signal);
     validatePublicResponse(name, result.body, body);
+    observability.annotate({
+      httpStatus: result.status,
+      ...(result.body &&
+      typeof result.body === "object" &&
+      "outcome" in result.body &&
+      typeof result.body.outcome === "string"
+        ? { outcome: result.body.outcome }
+        : {}),
+    });
     return result;
   };
   /** @param {import("effect/http/HttpServerRequest").HttpServerRequest} request */
   const handler = (request) =>
-    Effect.gen(function* () {
-      yield* Effect.try(() => checkRequest(request, boundPort, instanceId));
-      const url = new URL(request.url, `http://localhost:${boundPort}`);
-      if (request.method === "GET" && url.pathname === interFont.path) {
-        return HttpServerResponse.uint8Array(interFont.body, {
-          contentType: "font/ttf",
-          headers: { ...headers, "cache-control": "public, max-age=31536000, immutable" },
-        });
-      }
-      if (request.method === "GET" && url.pathname === "/") {
-        return HttpServerResponse.text(
-          html.replace("<head>", `<head><meta name="iportal-instance" content="${instanceId}">`),
-          { contentType: "text/html", headers },
-        );
-      }
-      if (request.method === "GET" && url.pathname === "/api/health") {
-        // Process liveness must not depend on USB, XCTest, lock state or a session.
-        return json({
-          status: 200,
-          body: { service: "iportal", apiVersion: 2, instanceId, ok: true, ...identity },
-        });
-      }
-      if (request.method === "GET" && url.pathname === "/api/events" && statusEvents) {
-        return HttpServerResponse.stream(
-          Stream.fromReadableStream({ evaluate: () => statusEvents.stream(), onError: (e) => e }),
-          {
-            headers: { ...headers, "content-type": "text/event-stream", "x-accel-buffering": "no" },
-          },
-        );
-      }
-      if (request.method === "GET" && url.pathname === "/stream") {
-        const video = yield* openVideoStream(mjpeg, {
-          unix: mjpegSocket,
-          authentication: helperAuth,
-        });
-        return HttpServerResponse.stream(video.stream, {
-          // WebKit's multipart response loader rejects fetch().body reads.
-          // Our canvas decoder needs the original framed bytes, without the
-          // browser interpreting them. Preserve multipart for direct clients.
-          headers: {
-            ...headers,
-            "content-type":
-              url.searchParams.get("raw") === "1" ? "application/octet-stream" : video.contentType,
-          },
-        });
-      }
-      const name = url.pathname.match(/^\/api\/([\w-]+)$/)?.[1];
-      const command = url.pathname.match(/^\/api\/commands\/([a-zA-Z0-9._:-]+)$/)?.[1];
-      if (request.method === "GET" && (name === "status" || name === "keep-awake" || command)) {
-        return json(
-          yield* Effect.tryPromise((signal) =>
-            checkedDispatch(
-              command ? "command-status" : (name ?? "status"),
-              command ? { requestId: command } : {},
-              signal,
+    observability.instrument(
+      Effect.gen(function* () {
+        yield* Effect.try(() => checkRequest(request, boundPort, instanceId));
+        const url = new URL(request.url, `http://localhost:${boundPort}`);
+        if (request.method === "GET" && url.pathname === interFont.path) {
+          return HttpServerResponse.uint8Array(interFont.body, {
+            contentType: "font/ttf",
+            headers: { ...headers, "cache-control": "public, max-age=31536000, immutable" },
+          });
+        }
+        if (request.method === "GET" && url.pathname === "/") {
+          return HttpServerResponse.text(
+            html.replace("<head>", `<head><meta name="iportal-instance" content="${instanceId}">`),
+            { contentType: "text/html", headers },
+          );
+        }
+        if (request.method === "GET" && url.pathname === "/api/health") {
+          // Process liveness must not depend on USB, XCTest, lock state or a session.
+          return json({
+            status: 200,
+            body: { service: "iportal", apiVersion: 2, instanceId, ok: true, ...identity },
+          });
+        }
+        if (request.method === "GET" && url.pathname === "/api/diagnostics") {
+          return json({ status: 200, body: observability.snapshot() });
+        }
+        if (request.method === "GET" && url.pathname === "/api/events" && statusEvents) {
+          const parent = yield* Effect.currentSpan;
+          return HttpServerResponse.stream(
+            Stream.fromReadableStream({
+              evaluate: () => statusEvents.stream(),
+              onError: (e) => e,
+            }).pipe(Stream.withSpan("status.events", { parent })),
+            {
+              headers: {
+                ...headers,
+                "content-type": "text/event-stream",
+                "x-accel-buffering": "no",
+              },
+            },
+          );
+        }
+        if (request.method === "GET" && url.pathname === "/stream") {
+          const video = yield* observability.instrument(
+            openVideoStream(mjpeg, {
+              unix: mjpegSocket,
+              authentication: helperAuth,
+            }),
+            "video.connect",
+          );
+          const parent = yield* Effect.currentSpan;
+          return HttpServerResponse.stream(
+            video.stream.pipe(Stream.withSpan("video.stream", { parent })),
+            {
+              // WebKit's multipart response loader rejects fetch().body reads.
+              // Our canvas decoder needs the original framed bytes, without the
+              // browser interpreting them. Preserve multipart for direct clients.
+              headers: {
+                ...headers,
+                "content-type":
+                  url.searchParams.get("raw") === "1"
+                    ? "application/octet-stream"
+                    : video.contentType,
+              },
+            },
+          );
+        }
+        const name = url.pathname.match(/^\/api\/([\w-]+)$/)?.[1];
+        const command = url.pathname.match(/^\/api\/commands\/([a-zA-Z0-9._:-]+)$/)?.[1];
+        if (request.method === "GET" && (name === "status" || name === "keep-awake" || command)) {
+          return json(
+            yield* observability.fromPromise(`api.${command ? "command-status" : name}`, (signal) =>
+              checkedDispatch(
+                command ? "command-status" : (name ?? "status"),
+                command ? { requestId: command } : {},
+                signal,
+              ),
             ),
+          );
+        }
+        if (request.method !== "POST" || !name || !Object.hasOwn(RequestSchemas, name))
+          return json({ status: 404, body: { ok: false, error: "Not found" } });
+        if (!(request.source instanceof Request)) throw apiError("Invalid request source", 500);
+        const source = request.source;
+        const raw = yield* Effect.tryPromise((signal) =>
+          readBody(source, signal, name === "clipboard-write" ? 6 * 1024 * 1024 : undefined),
+        );
+        const body = yield* decodeRequest(/** @type {keyof typeof RequestSchemas} */ (name), raw);
+        return json(
+          yield* observability.fromPromise(`api.${name}`, (signal) =>
+            checkedDispatch(name, body, signal),
           ),
         );
-      }
-      if (request.method !== "POST" || !name || !Object.hasOwn(RequestSchemas, name))
-        return json({ status: 404, body: { ok: false, error: "Not found" } });
-      if (!(request.source instanceof Request)) throw apiError("Invalid request source", 500);
-      const source = request.source;
-      const raw = yield* Effect.tryPromise((signal) =>
-        readBody(source, signal, name === "clipboard-write" ? 6 * 1024 * 1024 : undefined),
-      );
-      const body = yield* decodeRequest(/** @type {keyof typeof RequestSchemas} */ (name), raw);
-      return json(yield* Effect.tryPromise((signal) => checkedDispatch(name, body, signal)));
-    }).pipe(
-      Effect.catch((e) =>
-        Effect.succeed(
-          json(errorResponse(e.cause instanceof Error && e._tag === "UnknownError" ? e.cause : e)),
+      }).pipe(
+        Effect.catch((e) =>
+          Effect.succeed(
+            json(
+              errorResponse(
+                e &&
+                  typeof e === "object" &&
+                  "_tag" in e &&
+                  e._tag === "UnknownError" &&
+                  "cause" in e &&
+                  e.cause instanceof Error
+                  ? e.cause
+                  : e,
+              ),
+            ),
+          ),
         ),
+        Effect.tap((response) => Effect.annotateCurrentSpan("httpStatus", response.status)),
       ),
+      "server.request",
+      { method: request.method },
+      true,
     );
 
   const routes = HttpRouter.add("*", "/*", handler);
@@ -279,16 +330,18 @@ export function startServer({
     );
     return Layer.launch(live).pipe(
       Effect.catchCause((cause) =>
-        fallbackPort &&
-        listenPort !== 0 &&
-        /EADDRINUSE|(?:address|port \d+).*in use/i.test(Cause.pretty(cause))
-          ? launch(0)
-          : Effect.sync(() => {
-              console.error("Could not start mirror server:", Cause.pretty(cause));
-              process.exit(1);
-            }),
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : fallbackPort &&
+              listenPort !== 0 &&
+              /EADDRINUSE|(?:address|port \d+).*in use/i.test(Cause.pretty(cause))
+            ? launch(0)
+            : Effect.sync(() => {
+                observability.event("server-failed", {}, "Warning");
+                process.exit(1);
+              }),
       ),
     );
   };
-  return Effect.runFork(launch(port));
+  return observability.fork(observability.instrument(launch(port), "server.lifetime"));
 }

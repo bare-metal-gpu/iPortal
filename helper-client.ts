@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { Effect } from "effect";
 import { apiError } from "./errors.mjs";
 import { commandContext } from "./scheduler.ts";
+import { observability } from "./observability.ts";
 import {
   decodeHelper,
   decodeHelperResult,
@@ -132,28 +134,29 @@ export function createHelperClient({
       throw apiError("Invalid helper JSON", 502, "invalid response");
     }
   };
-  const status = async (signal?: AbortSignal, timeout = 1500) => {
-    signal?.throwIfAborted();
-    const requestEpoch = epoch;
-    const previous = current;
-    let next;
-    try {
-      next = decodeHelper(
-        HelperStatusSchema,
-        await request("/v1/status", undefined, timeout, signal),
-      );
-    } catch (error) {
-      // Status invalidation cancels obsolete probes. That cancellation is not
-      // evidence of a disconnected helper, nor can an older failure erase a
-      // newer authenticated heartbeat/status received while it was in flight.
-      if (requestEpoch === epoch && !signal?.aborted && current === previous) current = null;
-      if (error instanceof Error && error.name === "SchemaError")
-        throw apiError("Invalid helper status", 502, "invalid response");
-      throw error;
-    }
-    if (requestEpoch !== epoch) throw apiError("Helper route changed", 502, "stale generation");
-    return accept(next);
-  };
+  const status = (signal?: AbortSignal, timeout = 1500) =>
+    observability.promise("helper.status", async () => {
+      signal?.throwIfAborted();
+      const requestEpoch = epoch;
+      const previous = current;
+      let next;
+      try {
+        next = decodeHelper(
+          HelperStatusSchema,
+          await request("/v1/status", undefined, timeout, signal),
+        );
+      } catch (error) {
+        // Status invalidation cancels obsolete probes. That cancellation is not
+        // evidence of a disconnected helper, nor can an older failure erase a
+        // newer authenticated heartbeat/status received while it was in flight.
+        if (requestEpoch === epoch && !signal?.aborted && current === previous) current = null;
+        if (error instanceof Error && error.name === "SchemaError")
+          throw apiError("Invalid helper status", 502, "invalid response");
+        throw error;
+      }
+      if (requestEpoch !== epoch) throw apiError("Helper route changed", 502, "stale generation");
+      return accept(next);
+    });
   const ready = async (signal?: AbortSignal) => {
     if (current) return current;
     if (!handshake) {
@@ -249,12 +252,27 @@ export function createHelperClient({
           if (!stopped) await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       };
-      void run();
-      return () => {
+      const stop = () => {
         stopped = true;
         clearTimeout(timer);
         controller?.abort();
         resetEvents = () => {};
+      };
+      const fiber = observability.fork(
+        observability.instrument(
+          Effect.callback<void>((resume) => {
+            void run().then(
+              () => resume(Effect.void),
+              () => resume(Effect.void),
+            );
+            return Effect.sync(stop);
+          }),
+          "helper.events",
+        ),
+      );
+      return () => {
+        stop();
+        fiber.interruptUnsafe();
       };
     },
     command: async function command(
@@ -262,105 +280,110 @@ export function createHelperClient({
       rawArgs?: Record<string, unknown>,
       options: HelperCommandOptions = {},
     ): Promise<unknown> {
-      const args = rawArgs ?? {};
-      const contract = helperOperations[operation];
-      if (!contract) throw apiError("Unsupported helper operation", 400, "invalid argument");
-      let arguments_;
-      try {
-        arguments_ = decodeHelper(
-          contract.request,
-          Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined)),
-        );
-      } catch {
-        throw apiError("Invalid helper command arguments", 400, "invalid argument");
-      }
-      const context = commandContext.getStore();
-      const signal =
-        options.signal && context?.signal
-          ? AbortSignal.any([options.signal, context.signal])
-          : (options.signal ?? context?.signal);
-      signal?.throwIfAborted();
-      const deadline = Math.min(
-        options.deadline ?? Infinity,
-        context?.deadline ?? Infinity,
-        performance.now() + (options.timeout ?? context?.operationTimeoutMs ?? 8000),
-      );
-      const state = await ready(signal);
-      const budgetMs = Math.min(60000, Math.ceil(deadline - performance.now()));
-      if (budgetMs <= 0) throw apiError("Command deadline expired", 408, "timeout");
-      if (operation !== "shutdown" && (state.phase === "blocked" || state.phase === "stopping"))
-        throw apiError("Helper requires recovery", 503, "helper unavailable");
-      const id = randomUUID();
-      const commandEpoch = epoch;
-      if (contract.mutates) context?.onDispatch?.();
-      let reply;
-      try {
-        reply = decodeHelper(
-          HelperReplySchema,
-          await request(
-            "/v1/commands",
-            { id, generation: state.generation, budgetMs, operation, arguments: arguments_ },
-            budgetMs + 250,
-            signal,
-          ),
-        );
-      } catch (error) {
-        const failure =
-          error instanceof Error && error.name === "SchemaError"
-            ? apiError("Invalid helper reply", 502, "invalid response")
-            : error;
-        throw contract.mutates
-          ? Object.assign(failure instanceof Error ? failure : new Error("Helper request failed"), {
-              outcome: "unknown",
-            })
-          : failure;
-      }
-      if (
-        commandEpoch !== epoch ||
-        (current && current.generation !== state.generation) ||
-        reply.id !== id ||
-        reply.generation !== state.generation ||
-        Object.hasOwn(reply, "result") === Object.hasOwn(reply, "error")
-      ) {
-        throw Object.assign(apiError("Mismatched helper response", 502, "invalid response"), {
-          outcome: contract.mutates ? "unknown" : "notExecuted",
-        });
-      }
-      if (reply.error) {
-        if (reply.error.code === "stale generation") {
-          current = null;
-          if (!contract.mutates && !options.retried && reply.error.outcome === "notExecuted")
-            return command(operation, args, { ...options, deadline, retried: true });
+      return observability.promise(`helper.${operation}`, async () => {
+        const args = rawArgs ?? {};
+        const contract = helperOperations[operation];
+        if (!contract) throw apiError("Unsupported helper operation", 400, "invalid argument");
+        let arguments_;
+        try {
+          arguments_ = decodeHelper(
+            contract.request,
+            Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined)),
+          );
+        } catch {
+          throw apiError("Invalid helper command arguments", 400, "invalid argument");
         }
-        const statusCode =
-          {
-            "invalid argument": 400,
-            "invalid selector": 400,
-            "no such element": 404,
-            "stale element reference": 409,
-            "element not actionable": 409,
-            "invalid element state": 409,
-            "guard failed": 409,
-            "device locked": 409,
-            "app changed": 409,
-            "orientation changed": 409,
-            "queue full": 429,
-            timeout: 408,
-            "unsupported operation": 502,
-          }[reply.error.code] ?? 502;
-        throw Object.assign(apiError(reply.error.message, statusCode, reply.error.code), {
-          outcome: reply.error.outcome,
-        });
-      }
-      try {
-        const result = decodeHelperResult(operation, arguments_, reply.result);
-        if (contract.mutates) context?.onComplete?.();
-        return result;
-      } catch {
-        throw Object.assign(apiError("Invalid helper result", 502, "invalid response"), {
-          outcome: contract.mutates ? "unknown" : "notExecuted",
-        });
-      }
+        const context = commandContext.getStore();
+        const signal =
+          options.signal && context?.signal
+            ? AbortSignal.any([options.signal, context.signal])
+            : (options.signal ?? context?.signal);
+        signal?.throwIfAborted();
+        const deadline = Math.min(
+          options.deadline ?? Infinity,
+          context?.deadline ?? Infinity,
+          performance.now() + (options.timeout ?? context?.operationTimeoutMs ?? 8000),
+        );
+        const state = await ready(signal);
+        const budgetMs = Math.min(60000, Math.ceil(deadline - performance.now()));
+        if (budgetMs <= 0) throw apiError("Command deadline expired", 408, "timeout");
+        if (operation !== "shutdown" && (state.phase === "blocked" || state.phase === "stopping"))
+          throw apiError("Helper requires recovery", 503, "helper unavailable");
+        const id = randomUUID();
+        const commandEpoch = epoch;
+        if (contract.mutates) context?.onDispatch?.();
+        let reply;
+        try {
+          reply = decodeHelper(
+            HelperReplySchema,
+            await request(
+              "/v1/commands",
+              { id, generation: state.generation, budgetMs, operation, arguments: arguments_ },
+              budgetMs + 250,
+              signal,
+            ),
+          );
+        } catch (error) {
+          const failure =
+            error instanceof Error && error.name === "SchemaError"
+              ? apiError("Invalid helper reply", 502, "invalid response")
+              : error;
+          throw contract.mutates
+            ? Object.assign(
+                failure instanceof Error ? failure : new Error("Helper request failed"),
+                {
+                  outcome: "unknown",
+                },
+              )
+            : failure;
+        }
+        if (
+          commandEpoch !== epoch ||
+          (current && current.generation !== state.generation) ||
+          reply.id !== id ||
+          reply.generation !== state.generation ||
+          Object.hasOwn(reply, "result") === Object.hasOwn(reply, "error")
+        ) {
+          throw Object.assign(apiError("Mismatched helper response", 502, "invalid response"), {
+            outcome: contract.mutates ? "unknown" : "notExecuted",
+          });
+        }
+        if (reply.error) {
+          if (reply.error.code === "stale generation") {
+            current = null;
+            if (!contract.mutates && !options.retried && reply.error.outcome === "notExecuted")
+              return command(operation, args, { ...options, deadline, retried: true });
+          }
+          const statusCode =
+            {
+              "invalid argument": 400,
+              "invalid selector": 400,
+              "no such element": 404,
+              "stale element reference": 409,
+              "element not actionable": 409,
+              "invalid element state": 409,
+              "guard failed": 409,
+              "device locked": 409,
+              "app changed": 409,
+              "orientation changed": 409,
+              "queue full": 429,
+              timeout: 408,
+              "unsupported operation": 502,
+            }[reply.error.code] ?? 502;
+          throw Object.assign(apiError(reply.error.message, statusCode, reply.error.code), {
+            outcome: reply.error.outcome,
+          });
+        }
+        try {
+          const result = decodeHelperResult(operation, arguments_, reply.result);
+          if (contract.mutates) context?.onComplete?.();
+          return result;
+        } catch {
+          throw Object.assign(apiError("Invalid helper result", 502, "invalid response"), {
+            outcome: contract.mutates ? "unknown" : "notExecuted",
+          });
+        }
+      });
     } as HelperCommandCall,
   };
 }

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { apiError } from "./errors.mjs";
+import { observability } from "./observability.ts";
 
 export interface CommandContext {
   signal?: AbortSignal;
@@ -23,9 +24,14 @@ interface Pending {
   started: boolean;
   timer?: ReturnType<typeof setTimeout>;
   cleanup: () => void;
+  waiting: ReturnType<typeof observability.startSpan>;
 }
 export const commandContext = new AsyncLocalStorage<CommandContext>();
-export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}) {
+export function createScheduler({
+  maxQueued = 64,
+  defaultTimeoutMs = 8000,
+  telemetry = observability,
+} = {}) {
   let active = false;
   const pending: Pending[] = [];
   let completed = 0;
@@ -38,6 +44,8 @@ export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}
     if (item.cancelled) return drain();
     active = true;
     item.started = true;
+    item.waiting.end();
+    telemetry.queue(pending.length, active);
     void Promise.resolve()
       .then(() => {
         item.signal.throwIfAborted();
@@ -54,6 +62,7 @@ export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}
         item.cleanup();
         completed++;
         active = false;
+        telemetry.queue(pending.length, active);
         drain();
       });
   }
@@ -79,7 +88,8 @@ export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}
       : controller.signal;
     return new Promise<T>((resolve, reject) => {
       const item: Pending = {
-        fn,
+        fn: telemetry.bind(() => telemetry.promise("queue.execute", async () => fn())),
+        waiting: telemetry.startSpan("queue.wait"),
         context,
         signal,
         deadline,
@@ -98,6 +108,8 @@ export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}
           item.cleanup();
           const index = pending.indexOf(item);
           if (index >= 0) pending.splice(index, 1);
+          item.waiting.end("interrupted");
+          telemetry.queue(pending.length, active);
           reject(signal.reason);
           drain();
         }
@@ -111,6 +123,7 @@ export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}
       item.timer.unref();
       signal.addEventListener("abort", abort, { once: true });
       pending.push(item);
+      telemetry.queue(pending.length, active);
       if (signal.aborted) abort();
       else drain();
     });
@@ -118,6 +131,6 @@ export function createScheduler({ maxQueued = 64, defaultTimeoutMs = 8000 } = {}
   // Timers created during an input inherit its AsyncLocalStorage context. A lease
   // outlives that request: maintenance must get a new deadline and cancellation scope.
   const maintenance = <T>(fn: () => T | Promise<T>) =>
-    commandContext.run({}, () => enqueue(fn, { priority: 10 }));
+    telemetry.detached(() => commandContext.run({}, () => enqueue(fn, { priority: 10 })));
   return { enqueue, maintenance, stats: () => ({ active, queued: pending.length, completed }) };
 }
