@@ -227,6 +227,39 @@ These are helper startup timings, not first-visible-frame timings. Earlier check
 with the unchanged helper also verified that its installed container did not
 change between launches; a new helper build still installed once normally.
 
+Full-window tracing subsequently reproduced the reported slow launch: opening the
+app to input-ready took 10.994 seconds, although the first frame arrived at
+3.495 seconds. The helper launched at 3.542 seconds and authenticated readiness
+arrived at 10.850 seconds. A visible frame alone does not permit input.
+
+The app now starts its server before constructing the window. A private,
+device-specific installation hint skips the redundant inventory only after an
+authenticated helper has confirmed the exact locally signed artifacts. It expires
+after 24 hours and is invalidated by launch failures or changed artifacts; it
+never authorizes commands or bypasses the authenticated protocol/build check.
+Obsolete lock queries are cancelled, and production launches select only the
+helper's serving test. Preparation alone fell from 406 ms to 6–7 ms in three
+matching-artifact checks. Two normal full-window launches measured 8.806 and
+6.631 seconds to input-ready, with first frames at 3.631 and 3.442 seconds.
+These small samples are diagnostic, not a latency percentile guarantee.
+
+Isolated launches of the same packaged server/helper reached readiness in
+2.231–3.813 seconds, including tests through the app's lifetime supervisor. The
+remaining full-window delay is predominantly inside Apple's automation launch;
+the interaction with concurrent media startup is not isolated yet. Pausing an
+already-started video child and changing process background scheduling did not
+demonstrate an improvement. Neither experiment changes the shipped behavior.
+The phone disconnected before a media-before/control-before comparison could
+run, so the existing parallel video startup is retained. Cold launches still
+need further work; these results do not establish instant startup.
+
+The hosted iOS 26.5 simulator passed all 23 fixture checks, clipboard restoration
+and web navigation. Its slider regression was caused by XCTest rounding the
+observed normalized position; 5% decrement requests could select the same
+position again. Relative slider actions now use a 10% step and test both
+directions. Host verification additionally builds the full Mac app with the
+older supported SDK, including runtime availability of renderer recommendations.
+
 Live inspection exposed a second recovery trigger: a hierarchy read exceeded its
 15-second budget, and responses from the retiring helper could cancel its
 replacement. Explicit recovery now retires the old boot identity; a transport
