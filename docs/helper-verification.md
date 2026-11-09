@@ -219,5 +219,30 @@ entitlements, so it no longer unconditionally directs users to Trust in Settings
 Regression coverage includes installed/missing/upgraded artifacts, malformed
 inventory, unchanged packaged test configurations, launch ownership, stale exits,
 readiness loss, bounded retries, retained errors, unlock and failed lock refreshes.
-Physical repeated-Play timing and the destination-artifact launch still require an
-unlocked connected phone; do not treat these policy tests as device acceptance.
+
+Physical USB checks on iOS 27.3 verified three cold launches of the updated helper
+in 3.711, 2.335 and 2.171 seconds, measured from server spawn to authenticated
+readiness. Every launch reused the installed artifacts and accepted keep-awake.
+These are helper startup timings, not first-visible-frame timings. Earlier checks
+with the unchanged helper also verified that its installed container did not
+change between launches; a new helper build still installed once normally.
+
+Live inspection exposed a second recovery trigger: a hierarchy read exceeded its
+15-second budget, and responses from the retiring helper could cancel its
+replacement. Explicit recovery now retires the old boot identity; a transport
+handover alone does not. Inspection requests supported traits/focus metadata in
+bulk, avoids two redundant application queries, and temporarily bounds Apple's
+AX request timeout while restoring the previous value afterward. The changes
+preserve enriched attributes and targeted-element geometry.
+
+On the same phone/app screen, JSON source returned in 2.470 seconds after the
+update, versus the previous 15-second timeout. Three full observations returned
+successfully in 5.529, 5.002 and 4.966 seconds while readiness and keep-awake stayed
+active. This validates the combined fix, not the isolated contribution of each
+inspection change. Computer also read the fixture's mirrored accessibility tree
+through the installed Mac app; the phone snapshot retained button traits and the
+focused input. A subsequent 65-second observation of the installed app recorded
+32 Ready/unlocked samples, four additional keep-awake pulses and no server
+replacement. Remote fixture assertions also cover retained button traits and
+keyboard focus. No heavy builds or simulator tests ran on the local Mac; artifacts
+came from CI and were signed locally.
