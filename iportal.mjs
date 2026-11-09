@@ -535,7 +535,7 @@ async function maybeStartHelper(udid, connectionID, address) {
     helperProcess = null;
     if (!helperLifecycle.owns(ticket)) return;
     helperAuth.reset();
-    helper.reset();
+    helper.retire();
     if (helperLifecycle.state.phase === "recovering") {
       helperLifecycle.exit(ticket);
       statusEvents.invalidate();
@@ -578,14 +578,13 @@ function restartHelper() {
     return;
   }
   console.log("  restarting iPortal helper");
-  helper.reset();
   if (helperProcess) {
     const child = helperProcess;
-    void helper
-      .command("shutdown", {}, { timeout: 750 })
-      .catch(() => {})
-      .finally(() => child.kill());
+    const shutdown = helper.command("shutdown", {}, { timeout: 750 });
+    helper.retire();
+    void shutdown.catch(() => {}).finally(() => child.kill());
   } else {
+    helper.retire();
     void pickDevice()
       .then((device) => {
         if (device) startHelper(device);

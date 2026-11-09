@@ -259,6 +259,14 @@ for (const format of ["json", "xml", "description"]) {
   if (format === "json") {
     assert.equal(source.type, "Application");
     assert.equal(typeof source.isEnabled, "string");
+    const stack = [source];
+    let tap;
+    while (stack.length) {
+      const node = stack.pop()!;
+      if (node.name === "fixture.tap") tap = node;
+      stack.push(...node.children);
+    }
+    assert(tap?.traits.split(", ").includes("Button"), "bulk source must preserve button traits");
   } else {
     assert.equal(typeof source, "string");
     assert(source.length > 100);
@@ -410,6 +418,11 @@ const keyboardTrace = async (step: string, hardwareKey = false) => {
   };
   visit((await api("source", { format: "json" })).value);
   const lifecycle = nodes.find((node) => node.name === "fixture.title")?.value;
+  assert.equal(
+    nodes.find((node) => node.name === "fixture.input")?.isFocused,
+    "1",
+    `${step}: bulk source lost keyboard focus`,
+  );
   assert.equal(typeof lifecycle, "string", `${step}: fixture status missing`);
   const keyboards = nodes.filter((node) => node.type === "Keyboard").length;
   console.log(`Keyboard ${step}:`, {

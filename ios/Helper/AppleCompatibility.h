@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable id)protect:(id _Nullable (^)(void))block error:(NSError **)error;
 + (nullable XCUIApplication *)foreground:(NSError **)error;
 + (NSDictionary *)applicationInfo:(XCUIApplication *)app;
++ (NSDictionary *)applicationIdentity:(XCUIApplication *)app;
 + (NSString *)bundleIdentifier:(XCUIApplication *)app;
 + (BOOL)activate:(XCUIApplication *)app error:(NSError **)error;
 + (CGSize)screenSize:(NSError **)error;
@@ -33,6 +34,8 @@ NS_ASSUME_NONNULL_BEGIN
       completion:(void (^)(NSError *_Nullable))completion;
 + (nullable id<XCUIElementSnapshot>)snapshotAttributes:(id<XCUIElementSnapshot>)snapshot
                                                  error:(NSError **)error;
++ (nullable id<XCUIElementSnapshot>)snapshotElement:(XCUIElement *)element
+                                           flags:(BOOL)flags error:(NSError **)error;
 + (nullable NSString *)snapshotIdentity:(id<XCUIElementSnapshot>)snapshot error:(NSError **)error;
 + (nullable XCUIElement *)elementForSnapshot:(id<XCUIElementSnapshot>)snapshot
     application:(XCUIApplication *)app error:(NSError **)error;

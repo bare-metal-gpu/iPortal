@@ -68,6 +68,7 @@ export function createHelperClient({
   /** @type {Promise<import("effect").Schema.Schema.Type<typeof HelperStatusSchema>> | null} */
   let handshake: Promise<HelperStatus> | null = null;
   let epoch = 0;
+  let lastGeneration: string | null = null;
   let resetEvents = () => {};
   const retired = new Set<string>();
   const accept = (next: HelperStatus) => {
@@ -81,6 +82,7 @@ export function createHelperClient({
       onGeneration(next.generation);
     }
     current = next;
+    lastGeneration = next.generation;
     return next;
   };
   const request = async (
@@ -174,6 +176,14 @@ export function createHelperClient({
       handshake = null;
       authentication.reset();
       resetEvents();
+    },
+    retire() {
+      // A terminated XCTest launcher can leave its runner serving briefly.
+      // Its cached Blocked/Ready events must not restart or authorize the next
+      // launch. Route resets deliberately do not retire the healthy boot.
+      if (lastGeneration) retired.add(lastGeneration);
+      while (retired.size > 16) retired.delete(retired.values().next().value!);
+      this.reset();
     },
     watch(changed: () => void) {
       let stopped = false;

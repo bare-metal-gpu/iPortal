@@ -288,3 +288,41 @@ test("stable attribute waits ignore fresh native handles for the same observed v
     await s.stop();
   }
 });
+
+test("retired helper boot cannot drive recovery or readiness in its replacement", async () => {
+  let next: Record<string, unknown> = { ...state, phase: "blocked", automationReady: false };
+  const s = setup(() => reply(next));
+  try {
+    await s.client.status();
+    s.client.retire();
+    await assert.rejects(s.client.status(), { code: "stale generation" });
+    next = { ...state };
+    await assert.rejects(s.client.status(), { code: "stale generation" });
+    next = { ...state, generation: "00000000-0000-4000-8000-000000000002" };
+    assert.equal((await s.client.status()).automationReady, true);
+    s.client.reset();
+    assert.equal(
+      (await s.client.status()).generation,
+      next.generation,
+      "handover keeps a healthy boot",
+    );
+  } finally {
+    await s.stop();
+  }
+});
+
+test("retirement remembers the last authenticated boot after an unreachable status", async () => {
+  let fail = false;
+  const s = setup(() => (fail ? new Response(null, { status: 503 }) : reply(state)));
+  try {
+    await s.client.status();
+    fail = true;
+    await assert.rejects(s.client.status());
+    assert.equal(s.client.cached, null);
+    s.client.retire();
+    fail = false;
+    await assert.rejects(s.client.status(), { code: "stale generation" });
+  } finally {
+    await s.stop();
+  }
+});

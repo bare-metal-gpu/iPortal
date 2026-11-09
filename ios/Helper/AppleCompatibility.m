@@ -5,6 +5,7 @@
 #import <libxml/xpath.h>
 #import <notify.h>
 #import <stdatomic.h>
+#import <math.h>
 
 // Minimal ABI declarations for selectors checked immediately before use.
 @protocol IPAppleRuntime <NSObject>
@@ -18,6 +19,8 @@
                      attributes:(NSArray *)attributes
                      parameters:(NSDictionary *)parameters
                           error:(NSError **)error;
+- (double)AXTimeout;
+- (BOOL)_setAXTimeout:(double)timeout error:(NSError **)error;
 - (NSArray *)activeApplications;
 - (int)processIdentifier;
 - (unsigned long long)elementID;
@@ -234,11 +237,15 @@ static id IPStream(void (^actions)(id<IPAppleRuntime>)) {
           error:error];
 }
 + (NSDictionary *)applicationInfo:(XCUIApplication *)app {
+    NSMutableDictionary *info = [[self applicationIdentity:app] mutableCopy];
+    @try { info[@"name"] = app.label ?: @""; } @catch (NSException *e) { info[@"name"] = @""; }
+    return info;
+}
++ (NSDictionary *)applicationIdentity:(XCUIApplication *)app {
     @try {
         return @{
             @"bundleId" : [app valueForKey:@"bundleID"] ?: @"",
-            @"pid" : [app valueForKey:@"processID"] ?: @0,
-            @"name" : app.label ?: @""
+            @"pid" : [app valueForKey:@"processID"] ?: @0
         };
     } @catch (NSException *e) {
         return @{};
@@ -660,9 +667,16 @@ static NSNumber *IPSnapshotAttribute(NSString *name) {
           id cls = NSClassFromString(@"XCElementSnapshot");
           IPRequire(XCUIElement.class, @selector(standardAttributeNames));
           IPRequire(cls, @selector(axAttributesForElementSnapshotKeyPaths:isMacOS:));
-          id standard = [cls
-              axAttributesForElementSnapshotKeyPaths:[(id)XCUIElement.class standardAttributeNames]
-                                             isMacOS:NO];
+          NSMutableArray *keys = [[(id)XCUIElement.class standardAttributeNames] mutableCopy];
+          // snapshotExtras reads these on every node. XCTest lazily faults
+          // missing snapshot properties back into the phone; a large hierarchy
+          // can otherwise perform hundreds of synchronous AX round trips.
+          // Request the supported properties in the existing bulk snapshot.
+          for (NSString *key in @[ @"traits", @"hasKeyboardFocus", @"hasFocus", @"customActions" ]) {
+              if ([cls instancesRespondToSelector:NSSelectorFromString(key)] && ![keys containsObject:key])
+                  [keys addObject:key];
+          }
+          id standard = [cls axAttributesForElementSnapshotKeyPaths:keys isMacOS:NO];
           NSMutableArray *attributes = [NSMutableArray new];
           for (id attribute in standard)
               [attributes addObject:attribute];
@@ -707,6 +721,40 @@ static NSNumber *IPSnapshotAttribute(NSString *name) {
           return result;
         }
           error:error];
+}
++ (id<XCUIElementSnapshot>)snapshotElement:(XCUIElement *)element
+                                   flags:(BOOL)flags error:(NSError **)error {
+    return [self protect:^id {
+        id client = IPClient();
+        // XCTest's synchronous AX wrapper can outlive our command budget by
+        // tens of seconds. Bound the underlying request, not just its HTTP
+        // waiter, so a slow app's hierarchy cannot hold input/keep-awake until
+        // the executor has to retire the entire helper. Preserve all attributes.
+        BOOL adjustable = [client respondsToSelector:@selector(AXTimeout)] &&
+            [client respondsToSelector:@selector(_setAXTimeout:error:)];
+        double previous = adjustable ? [client AXTimeout] : 0;
+        BOOL changed = adjustable && isfinite(previous) && previous > 5;
+        @try {
+            if (changed) {
+                NSError *failure = nil;
+                if (![client _setAXTimeout:5 error:&failure]) {
+                    if (error) *error = failure ?: IPFailure(@"Snapshot timeout unavailable");
+                    return nil;
+                }
+            }
+            NSError *failure = nil;
+            id<XCUIElementSnapshot> basic = [element snapshotWithError:&failure];
+            if (!basic) {
+                if (error) *error = failure ?: IPFailure(@"Snapshot unavailable");
+                return nil;
+            }
+            return flags ? [self snapshotAttributes:basic error:error] : basic;
+        } @finally {
+            // The executor serializes inspection. Never leave a shorter AX
+            // timeout behind for keyboard input or a later command.
+            if (changed) [client _setAXTimeout:previous error:nil];
+        }
+    } error:error];
 }
 + (NSNumber *)snapshotFlag:(id)snapshot name:(NSString *)name {
     if (![@[ @"isVisible", @"isAccessibilityElement" ] containsObject:name])

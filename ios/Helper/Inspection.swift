@@ -66,14 +66,15 @@ import XCTest
     try withApple { try self.acquire(app, flags: flags) }
   }
   private func acquire(_ app: XCUIApplication, flags: Bool) throws -> Node {
-    let basic = try app.snapshot()
-    let root = flags ? try IPApple.snapshotAttributes(basic) : basic
+    let root = try IPApple.snapshotElement(app, flags: flags)
     return try normalize(root, app: app)
   }
   private func normalize(_ root: any XCUIElementSnapshot, app: XCUIApplication) throws -> Node {
     var count = 0
     var textBytes = 0
-    let screen = app.frame
+    // A full tree already contains the application's frame. Targeted element
+    // snapshots still need the app frame for off-screen visibility fallback.
+    let screen = root.elementType == .application ? root.frame : app.frame
     func node(_ snapshot: any XCUIElementSnapshot, path: [Int], depth: Int) throws -> Node {
       count += 1
       guard depth <= 50, count <= 10000 else {
@@ -146,7 +147,7 @@ import XCTest
         xmlAttributes["placeholderValue"] = .string(placeholder)
       }
       if snapshot.elementType == .application {
-        let info = IPApple.applicationInfo(app)
+        let info = IPApple.applicationIdentity(app)
         xmlAttributes["bundleId"] = (info["bundleId"] as? String).map(JSONValue.string)
         xmlAttributes["processId"] = (info["pid"] as? NSNumber).map {
           .number($0.doubleValue)
@@ -268,8 +269,7 @@ import XCTest
     guard element.exists else {
       throw HelperFailure("stale element reference", "Element no longer exists")
     }
-    let basic = try element.snapshot()
-    let native = flags ? try IPApple.snapshotAttributes(basic) : basic
+    let native = try IPApple.snapshotElement(element, flags: flags)
     let node = try normalize(native, app: app)
     guard node.identity == handle.identity, node.bindingKey == handle.key else {
       throw HelperFailure("stale element reference", "Element changed")
