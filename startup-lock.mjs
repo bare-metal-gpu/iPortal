@@ -34,16 +34,22 @@ async function readStartupLock(udid, connection) {
   }
 }
 
-// One bounded query per USB attachment, only while the helper is unavailable.
-// Never delay status publication or reuse a result from an old connection.
-export function createStartupLock({ read = readStartupLock, changed = () => {} } = {}) {
+// Bounded fallback only while the helper is unavailable. A one-shot query can
+// leave an unlocked phone labelled Locked for the entire failed launch.
+// Never delay publication or accept a result from an obsolete connection.
+export function createStartupLock({
+  read = readStartupLock,
+  changed = () => {},
+  now = Date.now,
+  refreshMs = 3000,
+} = {}) {
   /** @type {string | null} */
   let key = null;
   /** @type {boolean | null} */
   let value = null;
   let generation = 0,
     pending = false,
-    queried = false;
+    queriedAt = -Infinity;
   /** @typedef {{udid:string, id:number|string, connection?:string} | null} Device */
   /** @param {Device} device */
   const identity = (device) => (device ? `${device.udid}:${device.id}` : null);
@@ -55,20 +61,27 @@ export function createStartupLock({ read = readStartupLock, changed = () => {} }
         generation++;
         key = next;
         value = null;
-        queried = false;
+        queriedAt = -Infinity;
         pending = false;
       }
-      if (!device || pending || queried) return;
-      queried = pending = true;
+      if (!device || pending || now() - queriedAt < refreshMs) return;
+      pending = true;
+      queriedAt = now();
       const request = generation;
       Promise.resolve()
         .then(() => read(device.udid, device.connection ?? "Unknown"))
         .then((result) => {
           if (generation !== request) return;
+          const previous = value;
           value = typeof result === "boolean" ? result : null;
-          if (value !== null) changed();
+          if (value !== previous) changed();
         })
-        .catch(() => {})
+        .catch(() => {
+          if (generation !== request) return;
+          const previous = value;
+          value = null;
+          if (previous !== null) changed();
+        })
         .finally(() => {
           if (generation === request) pending = false;
         });
@@ -81,7 +94,8 @@ export function createStartupLock({ read = readStartupLock, changed = () => {} }
       generation++;
       key = null;
       value = null;
-      queried = pending = false;
+      queriedAt = -Infinity;
+      pending = false;
     },
   };
 }

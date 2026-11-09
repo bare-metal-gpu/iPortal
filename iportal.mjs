@@ -34,7 +34,8 @@ import { createStatusEvents } from "./status-events.ts";
 import { createStartupLock } from "./startup-lock.mjs";
 import { claimDevice, canonicalUDID } from "./device-runtime.mjs";
 import { deviceBuild, runtimeCommand, statePath } from "./runtime-paths.mjs";
-import { helperCommand } from "./helper-launch.mjs";
+import { prepareHelperCommand } from "./helper-launch.mjs";
+import { startupFailure } from "./helper-startup.ts";
 import { createHelperAuthentication } from "./helper-auth.mjs";
 import { createHelperClient } from "./helper-client.ts";
 import { readHelperBuild } from "./helper-build.mjs";
@@ -297,6 +298,7 @@ const helperUp = async (signal) => {
   } catch (error) {
     if (errorInfo(error).code === "incompatible helper" && !MANUAL && !replacedIncompatibleHelper) {
       replacedIncompatibleHelper = true;
+      forceHelperInstall = true;
       restartHelper();
     }
     return false;
@@ -412,70 +414,64 @@ const inputGuards = (body) => ({
 
 // ---------- Auto-start the helper on macOS ----------
 
-// Launch failures that need the user to do something on the phone or Mac. Every launch reinstalls the helper, which
-// also hides the trust entry in Settings for a moment, so these back off instead of retrying right away.
-/** @type {[RegExp, string][]} */
-const HELPER_PROBLEMS = [
-  [
-    /not trusted|explicitly trusted/,
-    "On your iPhone: Settings → General → VPN & Device Management → your Apple ID → Trust.",
-  ],
-  [
-    /cannot be installed on this device|doesn't include the currently selected device/,
-    "Finish setting up iPortal on your Mac.",
-  ],
-  [
-    /Developer Mode is (disabled|not enabled)|enable Developer Mode/i,
-    "On your iPhone, turn on Developer Mode in Settings → Privacy & Security.",
-  ],
-  [/device is locked|DeviceLocked/i, "Unlock your iPhone."],
-];
-
 /** @type {import("node:child_process").ChildProcessWithoutNullStreams | null} */
 let helperProcess = null;
+/** @type {AbortController | null} */
+let helperPreparation = null;
 /** @type {string | null} */
 let helperProblem = null;
-let helperRetryAt = 0;
-/** @type {string | null} */
-let launchLockedDevice = null;
+let forceHelperInstall = false;
+let repairedHelperInstall = false;
 let shuttingDown = false;
 const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
 /** @param {string} udid @param {string | number} connectionID @param {string} [address] */
-function maybeStartHelper(udid, connectionID, address) {
-  // Select the migratable endpoint before binding a helper to legacy loopback.
-  // Only the first snapshot is awaited; unsupported hosts proceed immediately.
+async function maybeStartHelper(udid, connectionID, address) {
   if (awaitInitialPairedDiscovery(pairedMonitor?.health(), Date.now() - pairedDiscoveryStartedAt))
     return;
   if (
     shuttingDown ||
     helperProcess ||
-    Date.now() < helperRetryAt ||
+    helperPreparation ||
+    !helperLifecycle.canLaunch ||
     opts["no-autostart"] ||
     MANUAL ||
-    process.platform !== "darwin"
+    process.platform !== "darwin" ||
+    startupLock.value({ udid, id: connectionID }) === true
   )
     return;
   if (!fs.existsSync(deviceBuild)) return;
-  let command;
+  const ticket = helperLifecycle.begin();
+  if (!ticket) return;
+  const preparation = new AbortController();
+  helperPreparation = preparation;
+  let prepared;
   try {
-    command = helperCommand(udid);
-  } catch {
-    helperProblem = "Finish setting up iPortal on your Mac.";
-    helperRetryAt = Date.now() + 30000;
+    prepared = await prepareHelperCommand(udid, {
+      signal: AbortSignal.any([preparation.signal, AbortSignal.timeout(9000)]),
+      forceInstall: forceHelperInstall,
+    });
+  } catch (error) {
+    if (!preparation.signal.aborted && helperLifecycle.owns(ticket)) {
+      helperLifecycle.failed(ticket, startupFailure(error instanceof Error ? error.message : ""));
+      statusEvents.invalidate();
+    }
     return;
+  } finally {
+    if (helperPreparation === preparation) helperPreparation = null;
   }
+  // A route change or close while inventory was in flight must not launch an
+  // obsolete runner. The new owner will prepare against its own endpoint.
+  if (preparation.signal.aborted || shuttingDown || !helperLifecycle.owns(ticket)) return;
+  forceHelperInstall = false;
   const logPath = statePath(`helper-${udid}.log`);
-  const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   const log = fs.openSync(
     logPath,
     fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW,
     0o600,
   );
   fs.fchmodSync(log, 0o600);
-  console.log(`  starting iPortal helper on ${udid}`);
-  const [executable, ...args] = runtimeCommand("--owned-command", ...command);
-  helperProblem = null;
-  const ticket = helperLifecycle.begin();
+  console.log(`  starting iPortal helper (${prepared.mode})`);
+  const [executable, ...args] = runtimeCommand("--owned-command", ...prepared.command);
   const child = spawn(executable, args, {
     env: {
       ...process.env,
@@ -488,40 +484,78 @@ function maybeStartHelper(udid, connectionID, address) {
     stdio: ["pipe", "pipe", "pipe"],
   });
   helperProcess = child;
+  helperLifecycle.launched(ticket, prepared.mode === "install");
   child.stdin.on("error", () => {});
   let tail = "";
+  let timedOut = false;
+  let stopping = false;
+  const deadline = setInterval(() => {
+    if (stopping || helperProcess !== child || !helperLifecycle.timedOut(ticket)) return;
+    stopping = timedOut = true;
+    // Keep ownership until the supervisor has reaped its launcher. Never
+    // overlap a replacement with a launch that merely exceeded our deadline.
+    child.stdin.end();
+    child.kill();
+  }, 500);
   const redactors = [helperAuth.redactor(), helperAuth.redactor()];
   /** @param {ReturnType<typeof helperAuth.redactor>} redactor @returns {(chunk:Buffer|string)=>void} */
   const output = (redactor) => (chunk) => {
     const text = redactor.write(chunk);
     fs.writeSync(log, text);
-    tail = (tail + text).slice(-4096);
+    tail = (tail + text).slice(-16384);
     if (
       helperProcess === child &&
       helperLifecycle.owns(ticket) &&
-      /device is locked|DeviceLocked/i.test(tail)
+      /device is locked|DeviceLocked/i.test(text)
     ) {
-      launchLockedDevice = `${udid}:${connectionID}`;
-      helperProblem = "Unlock your iPhone.";
+      startupLock.reset();
       statusEvents.invalidate();
-      tail = "";
     }
   };
   child.stdout.on("data", output(redactors[0]));
   child.stderr.on("data", output(redactors[1]));
-  child.on("close", () => {
-    for (const redactor of redactors) fs.writeSync(log, redactor.end());
-    fs.closeSync(log);
+  child.on("error", (error) => {
+    tail = (tail + error.message).slice(-16384);
   });
-  child.on("exit", () => {
-    if (helperProcess !== child || !helperLifecycle.exit(ticket)) return;
+  child.on("close", () => {
+    clearInterval(deadline);
+    for (const redactor of redactors) {
+      const text = redactor.end();
+      fs.writeSync(log, text);
+      tail = (tail + text).slice(-16384);
+    }
+    fs.closeSync(log);
+    if (helperProcess !== child) return;
     helperProcess = null;
+    if (!helperLifecycle.owns(ticket)) return;
     helperAuth.reset();
     helper.reset();
-    const output = fs.readFileSync(logPath).subarray(from).toString();
-    helperProblem = HELPER_PROBLEMS.find(([re]) => re.test(output))?.[1] ?? null;
-    helperRetryAt = Date.now() + (helperProblem ? 30000 : 3000);
-    if (helperProblem) console.log(`  ${helperProblem} (retrying in 30 s)`);
+    if (helperLifecycle.state.phase === "recovering") {
+      helperLifecycle.exit(ticket);
+      statusEvents.invalidate();
+      return;
+    }
+    let failure = startupFailure(tail, timedOut);
+    if (failure.kind === "locked" && startupLock.value({ udid, id: connectionID }) === false)
+      failure = startupFailure("", timedOut);
+    if (
+      prepared.mode === "installed" &&
+      failure.kind === "verification" &&
+      !repairedHelperInstall
+    ) {
+      // Same-version re-signing can leave an expired copy on the phone. Repair
+      // once, never repeatedly reinstall an already trusted build.
+      repairedHelperInstall = forceHelperInstall = true;
+    }
+    helperLifecycle.failed(ticket, failure);
+    console.log(`  helper launch ended (${failure.kind})`);
+    statusEvents.invalidate();
+  });
+}
+/** @param {{udid:string, id:string|number, address?:string}} device */
+function startHelper(device) {
+  void maybeStartHelper(device.udid, device.id, device.address).catch(() => {
+    helperProblem = "Finish setting up iPortal on your Mac.";
     statusEvents.invalidate();
   });
 }
@@ -546,10 +580,9 @@ function restartHelper() {
       .catch(() => {})
       .finally(() => child.kill());
   } else {
-    helperRetryAt = 0;
     void pickDevice()
       .then((device) => {
-        if (device) maybeStartHelper(device.udid, device.id, device.address);
+        if (device) startHelper(device);
       })
       .catch(() => {});
   }
@@ -568,6 +601,7 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   helperLifecycle.stop();
+  helperPreparation?.abort();
   keepAwake.stop("mirror closed");
   portalStatus.stop();
   stopHelperEvents();
@@ -626,12 +660,8 @@ async function status(signal) {
       queueMicrotask(reconcileConnection);
   }
   if (!MANUAL && process.platform === "darwin" && !up) startupLock.observe(device);
-  let locked =
-    !MANUAL && device
-      ? launchLockedDevice === `${device.udid}:${device.id}`
-        ? true
-        : startupLock.value(device)
-      : null;
+  let locked = !MANUAL && device ? startupLock.value(device) : null;
+  helperLifecycle.lockObserved(locked);
   if (up) {
     try {
       const value = helper.cached?.locked;
@@ -645,7 +675,6 @@ async function status(signal) {
   signal?.throwIfAborted();
   if (up) {
     helperProblem = null;
-    launchLockedDevice = null;
     startupLock.reset();
   }
   /** @type {import('./helper-protocol.ts').HelperResult<'orientation'> | null} */
@@ -667,9 +696,10 @@ async function status(signal) {
     }
   }
   if (device && !up) {
-    maybeStartHelper(device.udid, device.id, device.address);
-    error = helperProblem
-      ? helperProblem
+    startHelper(device);
+    const problem = helperProblem ?? helperLifecycle.problem?.message;
+    error = problem
+      ? problem
       : helperProcess || (fs.existsSync(deviceBuild) && !opts["no-autostart"])
         ? null
         : "Finish setting up iPortal on your Mac.";
@@ -1014,7 +1044,6 @@ if (!MANUAL) {
     if (!device) {
       keepAwake.stop("disconnected");
       startupLock.reset();
-      launchLockedDevice = null;
     }
     if (observedDeviceID === (device?.id ?? null)) {
       selectedDevice = device;
@@ -1022,6 +1051,7 @@ if (!MANUAL) {
       return;
     }
     if (observedDeviceID !== undefined) {
+      helperPreparation?.abort();
       helperLifecycle.routeChanged();
       transport.abort(apiError("Device connection changed", 409, "device changed"));
       transport = new AbortController();

@@ -1,5 +1,6 @@
 // Owner lifetime, helper boot, and route generations are independent. In
 // particular, observing a different route never grants automation readiness.
+import type { StartupFailure } from "./helper-startup.ts";
 type Ticket = { ownerId: string; launch: number };
 type Status = import("effect").Schema.Schema.Type<
   typeof import("./helper-protocol.ts").HelperStatusSchema
@@ -24,12 +25,23 @@ export function createHelperLifecycle(ownerId: string, now = Date.now) {
     authorized: null,
   };
   let recoveries: number[] = [];
+  let launchDeadline = Infinity;
+  let retryAt = 0;
+  let failures = 0;
+  let problem: StartupFailure | null = null;
   return {
+    get problem() {
+      return problem;
+    },
+    get canLaunch() {
+      return state.phase !== "stopping" && now() >= retryAt;
+    },
     get state() {
       return { ...state };
     },
     begin() {
-      if (state.phase === "stopping") return null;
+      if (state.phase === "stopping" || now() < retryAt) return null;
+      launchDeadline = now() + 10000; // Includes the bounded installation probe.
       state = {
         ...state,
         launch: state.launch + 1,
@@ -38,6 +50,32 @@ export function createHelperLifecycle(ownerId: string, now = Date.now) {
         authorized: null,
       };
       return { ownerId, launch: state.launch };
+    },
+    launched(ticket: Ticket | null, installing: boolean) {
+      if (this.owns(ticket)) launchDeadline = now() + (installing ? 60000 : 20000);
+    },
+    timedOut(ticket: Ticket | null) {
+      return this.owns(ticket) && now() >= launchDeadline;
+    },
+    failed(ticket: Ticket | null, failure: StartupFailure) {
+      if (!this.exit(ticket)) return false;
+      problem = failure;
+      const delay =
+        failure.kind === "locked"
+          ? 3000
+          : failure.kind === "setup" || failure.kind === "developer"
+            ? 30000
+            : ++failures >= 3
+              ? 30000
+              : 1000;
+      retryAt = now() + delay;
+      return true;
+    },
+    lockObserved(locked: boolean | null) {
+      if (locked === false && problem?.kind === "locked") {
+        problem = null;
+        retryAt = 0;
+      }
     },
     owns(ticket: Ticket | null) {
       return (
@@ -63,6 +101,12 @@ export function createHelperLifecycle(ownerId: string, now = Date.now) {
                 ? "ready"
                 : "authenticating",
       };
+      if (state.phase === "ready" || state.phase === "locked") {
+        launchDeadline = Infinity;
+        problem = null;
+        retryAt = 0;
+        failures = 0;
+      }
       if (state.phase === "ready") recoveries = recoveries.filter((at) => now() - at < 60000);
     },
     recover() {
@@ -78,6 +122,7 @@ export function createHelperLifecycle(ownerId: string, now = Date.now) {
     },
     exit(ticket: Ticket | null) {
       if (!this.owns(ticket)) return false;
+      launchDeadline = Infinity;
       state = { ...state, boot: null, locked: null, authorized: null, phase: "stopped" };
       return true;
     },
