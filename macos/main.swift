@@ -1104,6 +1104,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         guard mirroringActive else { return }
         CapturePermissions.shared.refresh()
         let backend = preferredCaptureBackend
+        // A new paired media service competes with XCTest's device launch.
+        // Establish control first; existing streams survive route handovers.
+        if backend == .paired, deviceLifecycle != "ready" { return }
         if backend == .screenshots { fallbackToStream(); return }
         let now = ProcessInfo.processInfo.systemUptime
         guard captureBudget.beginAttempt(at: now) else {

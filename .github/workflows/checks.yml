@@ -41,12 +41,20 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun audit
       - run: bun run verify
-      - name: Build the menu-bar app
+      - name: Build the Mac apps
         run: |
-          xcodebuild -project macos/iPortal.xcodeproj -target iPortalWatcher -configuration Release \
+          xcodebuild -project macos/iPortal.xcodeproj -target iPortal -configuration Release \
             SYMROOT="$RUNNER_TEMP/watcher-products" OBJROOT="$RUNNER_TEMP/watcher-objects" \
             ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
           ditto -c -k --keepParent "$RUNNER_TEMP/watcher-products/Release/iPortal Watcher.app" "$RUNNER_TEMP/iPortal-Watcher.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/watcher-products/Release/iPortal.app" "$RUNNER_TEMP/iPortal-Mac.zip"
+      - name: Retain the Mac app for local signing
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: iPortal-Mac
+          path: ${{ runner.temp }}/iPortal-Mac.zip
+          retention-days: 3
       - name: Retain the menu-bar app for local signing
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
