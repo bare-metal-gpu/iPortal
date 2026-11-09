@@ -34,7 +34,11 @@ import { createStatusEvents } from "./status-events.ts";
 import { createStartupLock } from "./startup-lock.mjs";
 import { claimDevice, canonicalUDID } from "./device-runtime.mjs";
 import { deviceBuild, runtimeCommand, statePath } from "./runtime-paths.mjs";
-import { prepareHelperCommand } from "./helper-launch.mjs";
+import {
+  prepareHelperCommand,
+  confirmHelperInstallation,
+  forgetHelperInstallation,
+} from "./helper-launch.mjs";
 import { startupFailure } from "./helper-startup.ts";
 import { createHelperAuthentication } from "./helper-auth.mjs";
 import { createHelperClient } from "./helper-client.ts";
@@ -287,12 +291,17 @@ const helper = createHelperClient({
   onGeneration: () => inspection.invalidateObservations(),
 });
 let replacedIncompatibleHelper = false;
+let confirmedHelperInstallation = false;
 /** @param {AbortSignal} [signal] */
 const helperUp = async (signal) => {
   try {
     const wasReady = helperLifecycle.state.phase === "ready";
     const state = await helper.status(signal);
     helperLifecycle.observe(state);
+    if (state.automationReady && !confirmedHelperInstallation && pinnedUdid && !MANUAL) {
+      confirmHelperInstallation(pinnedUdid);
+      confirmedHelperInstallation = true;
+    }
     if (!wasReady && state.automationReady && state.locked === false) startupTrace("helper-ready");
     if (state.phase === "blocked") {
       restartHelper();
@@ -548,6 +557,10 @@ async function maybeStartHelper(udid, connectionID, address) {
       return;
     }
     let failure = startupFailure(tail, timedOut);
+    if (!["locked", "developer"].includes(failure.kind)) {
+      forgetHelperInstallation(udid);
+      confirmedHelperInstallation = false;
+    }
     if (failure.kind === "locked" && startupLock.value({ udid, id: connectionID }) === false)
       failure = startupFailure("", timedOut);
     if (

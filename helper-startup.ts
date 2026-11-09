@@ -9,6 +9,21 @@ const InstalledApps = Schema.Struct({
     ),
   }),
 });
+const InstallationHint = Schema.Struct({
+  identity: Schema.String,
+  confirmedAt: Schema.Number,
+});
+// A hint only selects Xcode's no-install path. It never grants authentication
+// or readiness; deletion/re-signing still gets one bounded repair on failure.
+export function matchesInstallationHint(value: unknown, identity: string, now = Date.now()) {
+  try {
+    const hint = Schema.decodeUnknownSync(InstallationHint)(value);
+    const age = now - hint.confirmedAt;
+    return hint.identity === identity && Number.isFinite(age) && age >= 0 && age < 86_400_000;
+  } catch {
+    return false;
+  }
+}
 export type StartupFailure = {
   kind: "locked" | "developer" | "setup" | "verification" | "artifacts" | "transient" | "timeout";
   message: string;

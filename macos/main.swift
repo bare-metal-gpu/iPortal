@@ -618,6 +618,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         nextConnectionPollAt = 0
         nextNativeAttemptAt = 0
         NSApp.setActivationPolicy(.regular)
+        // Launch device work while SwiftUI/WebKit construct the window. Process
+        // callbacks return on the main queue, after buildWindow has completed.
+        ensureServer()
         buildWindow()
         CapturePermissions.shared.refresh()
         permissionSnapshot = CapturePermissions.shared.snapshot
@@ -627,7 +630,6 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             }
         installScrollMonitor()
         updateLoadingBorder()
-        ensureServer()
         lifecycleTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkVideoLifecycle() }
         }

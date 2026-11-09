@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
-/** @param {string} udid @param {string} connection */
-async function readStartupLock(udid, connection) {
+/** @param {string} udid @param {string} connection @param {AbortSignal} signal */
+async function readStartupLock(udid, connection, signal) {
   const seconds = connection === "Paired" ? 12 : 5;
   const directory = await mkdtemp(join(tmpdir(), "iportal-lock-"));
   try {
@@ -25,7 +25,7 @@ async function readStartupLock(udid, connection) {
         "--json-output",
         output,
       ],
-      { timeout: seconds * 1000 + 1500, maxBuffer: 64 * 1024 },
+      { signal, timeout: seconds * 1000 + 1500, maxBuffer: 64 * 1024 },
     );
     const value = JSON.parse(await readFile(output, "utf8"))?.result?.passcodeRequired;
     return typeof value === "boolean" ? value : null;
@@ -50,6 +50,8 @@ export function createStartupLock({
   let generation = 0,
     pending = false,
     queriedAt = -Infinity;
+  /** @type {AbortController | undefined} */
+  let controller;
   /** @typedef {{udid:string, id:number|string, connection?:string} | null} Device */
   /** @param {Device} device */
   const identity = (device) => (device ? `${device.udid}:${device.id}` : null);
@@ -58,6 +60,7 @@ export function createStartupLock({
     observe(device) {
       const next = identity(device);
       if (next !== key) {
+        controller?.abort();
         generation++;
         key = next;
         value = null;
@@ -68,8 +71,10 @@ export function createStartupLock({
       pending = true;
       queriedAt = now();
       const request = generation;
+      const query = new AbortController();
+      controller = query;
       Promise.resolve()
-        .then(() => read(device.udid, device.connection ?? "Unknown"))
+        .then(() => read(device.udid, device.connection ?? "Unknown", query.signal))
         .then((result) => {
           if (generation !== request) return;
           const previous = value;
@@ -91,6 +96,8 @@ export function createStartupLock({
       return identity(device) === key ? value : null;
     },
     reset() {
+      controller?.abort();
+      controller = undefined;
       generation++;
       key = null;
       value = null;

@@ -45,6 +45,27 @@ test("a late result cannot label a replacement connection locked", async () => {
   assert.equal(probe.value(second), null);
 });
 
+test("route replacement and helper readiness cancel obsolete CoreDevice lock queries", async () => {
+  const signals = [];
+  const probe = createStartupLock({
+    read: (_udid, _connection, signal) => {
+      signals.push(signal);
+      return new Promise((resolve) =>
+        signal.addEventListener("abort", () => resolve(null), { once: true }),
+      );
+    },
+  });
+  probe.observe({ udid: "phone", id: "usb" });
+  await setImmediate();
+  probe.observe({ udid: "phone", id: "paired" });
+  await setImmediate();
+  assert.equal(signals.length, 2);
+  assert.equal(signals[0].aborted, true);
+  assert.equal(signals[1].aborted, false);
+  probe.reset();
+  assert.equal(signals[1].aborted, true);
+});
+
 test("probe errors stay unknown, never assume the phone is locked", async () => {
   const probe = createStartupLock({
     read: async () => {

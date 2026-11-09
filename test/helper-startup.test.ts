@@ -1,5 +1,10 @@
 import { test, expect } from "bun:test";
-import { installedTestRun, matchesInstalledHelper, startupFailure } from "../helper-startup.ts";
+import {
+  installedTestRun,
+  matchesInstalledHelper,
+  matchesInstallationHint,
+  startupFailure,
+} from "../helper-startup.ts";
 import { createHelperLifecycle } from "../helper-lifecycle.ts";
 
 const config = {
@@ -13,6 +18,21 @@ const config = {
     TestingEnvironmentVariables: { XCODE_SCHEME_NAME: "iPortalHelper" },
   },
 };
+test("installation hints are scoped to exact signed artifacts and expire without authorizing readiness", () => {
+  const hint = { identity: "signed-build-a", confirmedAt: 1000 };
+  expect(matchesInstallationHint(hint, "signed-build-a", 2000)).toBe(true);
+  expect(matchesInstallationHint(hint, "resigned-build-a", 2000)).toBe(false);
+  expect(matchesInstallationHint(hint, "signed-build-a", 86_401_000)).toBe(false);
+  expect(matchesInstallationHint(hint, "signed-build-a", 999)).toBe(false);
+  for (const invalid of [
+    null,
+    {},
+    { ...hint, confirmedAt: NaN },
+    { ...hint, confirmedAt: "1000" },
+  ]) {
+    expect(matchesInstallationHint(invalid, hint.identity, 2000)).toBe(false);
+  }
+});
 test("matching installed helper uses Apple's no-install configuration without changing packaged artifacts", () => {
   const rewritten = installedTestRun(config) as typeof config & {
     iPortalRunner: Record<string, unknown>;

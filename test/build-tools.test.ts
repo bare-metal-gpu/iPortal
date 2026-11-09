@@ -129,6 +129,7 @@ test("phone launcher requires one test bundle and keeps device/path arguments di
     const command = helperCommand("TESTDEVICE01", directory, directory);
     expect(command[0]).toBe("/usr/bin/xcodebuild");
     expect(command[command.indexOf("-xctestrun") + 1]).toBe(run);
+    expect(command).toContain("-only-testing:iPortalRunner/iPortalRunner/testServe");
     expect(command[command.indexOf("-destination") + 1]).toBe("id=TESTDEVICE01");
     await Bun.write(path.join(products, "second-iphoneos.xctestrun"), "fixture");
     expect(() => helperCommand("TESTDEVICE01", directory, directory)).toThrow();
