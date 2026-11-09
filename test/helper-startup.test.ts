@@ -112,3 +112,27 @@ test("an observed unlock releases a lock failure without granting input readines
   expect(lifecycle.problem).toBeNull();
   expect(lifecycle.state.phase).toBe("stopped");
 });
+
+test("a live launcher cannot hold Connecting forever after losing readiness; handover cancels recovery", () => {
+  let now = 0;
+  const lifecycle = createHelperLifecycle("one", () => now);
+  const ticket = lifecycle.begin();
+  const ready = {
+    generation: "boot",
+    phase: "ready" as const,
+    automationReady: true,
+    locked: false,
+  };
+  lifecycle.observe(ready);
+  lifecycle.unavailable();
+  now = 7000;
+  expect(lifecycle.timedOut(ticket)).toBe(false);
+  lifecycle.observe(ready);
+  now = 25000;
+  expect(lifecycle.timedOut(ticket)).toBe(false);
+  lifecycle.unavailable();
+  now += 10000;
+  lifecycle.unavailable();
+  now += 10001;
+  expect(lifecycle.timedOut(ticket)).toBe(true);
+});

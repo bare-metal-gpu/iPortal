@@ -296,6 +296,7 @@ const helperUp = async (signal) => {
     }
     return state.automationReady === true || state.locked === true;
   } catch (error) {
+    if (!signal?.aborted) helperLifecycle.unavailable();
     if (errorInfo(error).code === "incompatible helper" && !MANUAL && !replacedIncompatibleHelper) {
       replacedIncompatibleHelper = true;
       forceHelperInstall = true;
@@ -462,6 +463,11 @@ async function maybeStartHelper(udid, connectionID, address) {
   // A route change or close while inventory was in flight must not launch an
   // obsolete runner. The new owner will prepare against its own endpoint.
   if (preparation.signal.aborted || shuttingDown || !helperLifecycle.owns(ticket)) return;
+  if (startupLock.value({ udid, id: connectionID }) === true) {
+    helperLifecycle.failed(ticket, startupFailure("device is locked"));
+    statusEvents.invalidate();
+    return;
+  }
   forceHelperInstall = false;
   const logPath = statePath(`helper-${udid}.log`);
   const log = fs.openSync(
@@ -648,6 +654,13 @@ async function status(signal) {
     }
   }
   signal?.throwIfAborted();
+  // Launch preparation is owner-scoped, not tied to a cancellable status read.
+  // A missing helper's event reconnects can invalidate probes faster than their
+  // timeout; waiting for a failed probe first could starve startup entirely.
+  if (!MANUAL && device && !helper.cached && process.platform === "darwin") {
+    startupLock.observe(device);
+    startHelper(device);
+  }
   const up = (MANUAL || device) && (await helperUp(signal));
   if (up) lastControlSuccess = Date.now();
   else {

@@ -57,6 +57,12 @@ export function createHelperLifecycle(ownerId: string, now = Date.now) {
     timedOut(ticket: Ticket | null) {
       return this.owns(ticket) && now() >= launchDeadline;
     },
+    unavailable() {
+      // Losing readiness after a successful launch must not leave a live but
+      // unreachable launcher holding Play forever. Normal handovers fit inside
+      // this recovery window; a later authenticated status cancels it.
+      if (launchDeadline === Infinity && state.phase !== "stopping") launchDeadline = now() + 20000;
+    },
     failed(ticket: Ticket | null, failure: StartupFailure) {
       if (!this.exit(ticket)) return false;
       problem = failure;
@@ -106,6 +112,8 @@ export function createHelperLifecycle(ownerId: string, now = Date.now) {
         problem = null;
         retryAt = 0;
         failures = 0;
+      } else {
+        this.unavailable();
       }
       if (state.phase === "ready") recoveries = recoveries.filter((at) => now() - at < 60000);
     },
