@@ -1,4 +1,16 @@
 import Foundation
+
+enum SliderAdjustment {
+  static func relativePosition(_ position: Double, increment: Bool) throws -> Double {
+    guard position.isFinite, (0...1).contains(position) else {
+      throw HelperFailure("element not actionable", "Slider position is unavailable")
+    }
+    // XCTest's normalized readback can round 0.75 to 0.8. A half-step then
+    // requests 0.75 again and reports success without moving the control.
+    // Use one full tenth in either direction; never replay an adjustment.
+    return min(1, max(0, position + (increment ? 0.1 : -0.1)))
+  }
+}
 import Network
 
 // This file is shared by the runner and host-side native contract tests.

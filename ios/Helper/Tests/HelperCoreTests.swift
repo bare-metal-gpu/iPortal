@@ -3,6 +3,15 @@ import XCTest
 @testable import HelperCore
 
 final class HelperCoreTests: XCTestCase {
+  func testRelativeSliderAdjustmentExceedsRoundedReadbackAndClampsEndpoints() throws {
+    XCTAssertEqual(try SliderAdjustment.relativePosition(0.8, increment: false), 0.7, accuracy: 0.0001)
+    XCTAssertEqual(try SliderAdjustment.relativePosition(0.7, increment: true), 0.8, accuracy: 0.0001)
+    XCTAssertEqual(try SliderAdjustment.relativePosition(0, increment: false), 0)
+    XCTAssertEqual(try SliderAdjustment.relativePosition(1, increment: true), 1)
+    for invalid in [Double.nan, .infinity, -0.1, 1.1] {
+      XCTAssertThrowsError(try SliderAdjustment.relativePosition(invalid, increment: true))
+    }
+  }
   func testElementActionsRejectMalformedPayloadsBeforeDispatch() throws {
     XCTAssertTrue(Operation.elementAction.mutates)
     XCTAssertTrue(Operation.elementAction.guarded)

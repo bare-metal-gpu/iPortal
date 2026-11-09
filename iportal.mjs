@@ -40,8 +40,10 @@ import { createHelperAuthentication } from "./helper-auth.mjs";
 import { createHelperClient } from "./helper-client.ts";
 import { readHelperBuild } from "./helper-build.mjs";
 import { createHelperLifecycle } from "./helper-lifecycle.ts";
+import { startupTrace } from "./startup-trace.ts";
 
 const instanceId = randomUUID();
+startupTrace("server-entered");
 const helperLifecycle = createHelperLifecycle(instanceId);
 const helperAuth = createHelperAuthentication();
 const { values: opts, positionals } = parseArgs({
@@ -288,8 +290,10 @@ let replacedIncompatibleHelper = false;
 /** @param {AbortSignal} [signal] */
 const helperUp = async (signal) => {
   try {
+    const wasReady = helperLifecycle.state.phase === "ready";
     const state = await helper.status(signal);
     helperLifecycle.observe(state);
+    if (!wasReady && state.automationReady && state.locked === false) startupTrace("helper-ready");
     if (state.phase === "blocked") {
       restartHelper();
       return false;
@@ -443,6 +447,7 @@ async function maybeStartHelper(udid, connectionID, address) {
   if (!fs.existsSync(deviceBuild)) return;
   const ticket = helperLifecycle.begin();
   if (!ticket) return;
+  startupTrace("helper-prepare-start");
   const preparation = new AbortController();
   helperPreparation = preparation;
   let prepared;
@@ -477,6 +482,7 @@ async function maybeStartHelper(udid, connectionID, address) {
   );
   fs.fchmodSync(log, 0o600);
   console.log(`  starting iPortal helper (${prepared.mode})`);
+  startupTrace("helper-launch", { mode: prepared.mode });
   const [executable, ...args] = runtimeCommand("--owned-command", ...prepared.command);
   const child = spawn(executable, args, {
     env: {
@@ -1029,6 +1035,7 @@ startServer({
   identity: opts.owner ? { owner: opts.owner, pinnedUdid } : {},
   fallbackPort: opts.managed,
   onListening: (port) => {
+    startupTrace("server-listening");
     const url = `http://localhost:${port}`;
     if (opts.managed)
       console.log(
@@ -1052,6 +1059,11 @@ if (!MANUAL) {
       ...new Set(devices.filter((d) => d.connection === "USB").map((d) => d.udid)),
     ];
     const device = chooseDevice(devices);
+    if (observedDeviceID !== (device?.id ?? null))
+      startupTrace("server-device-selected", {
+        connection: device?.connection ?? "unavailable",
+        pairedHealth: pairedMonitor?.health() ?? "starting",
+      });
     if (!pinnedUdid) pinnedUdid = device?.udid ?? null;
     if (!device) {
       keepAwake.stop("disconnected");

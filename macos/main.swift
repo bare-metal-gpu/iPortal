@@ -582,6 +582,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func startMirroring() {
+        trace("mirror-requested")
         if mirroringActive {
             window.deminiaturize(nil)
             window.makeKeyAndOrderFront(nil)
@@ -1215,6 +1216,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        trace("web-loaded")
         guard mirroringActive, webView === web else { return }
         webHealthySince = ProcessInfo.processInfo.systemUptime
         if let latestServerStatus { deliverServerStatus(latestServerStatus) }
@@ -1376,6 +1378,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
                           ready["udid"] as? String == self.requestedDeviceUDID,
                           let port = ready["port"] as? Int, (1...65535).contains(port) else { continue }
                     self.port = port
+                    self.trace("server-announced")
                     self.ensureServer()
                 }
                 if self.serverOutput.count > 65536 { self.serverOutput.removeAll() }
@@ -1403,6 +1406,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         }
         do {
             try p.run()
+            trace("server-spawned")
             server = p
             serverStartedAt = ProcessInfo.processInfo.systemUptime
         } catch {
@@ -1560,6 +1564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        iportalTrace("app-launched")
         // Launch Services may retain the previous icon after an in-place update.
         // Read the bundled artwork directly so the running Dock tile stays current.
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),

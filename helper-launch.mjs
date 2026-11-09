@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { readHelperBuild } from "./helper-build.mjs";
 import { deviceBuild } from "./runtime-paths.mjs";
 import { installedTestRun, matchesInstalledHelper } from "./helper-startup.ts";
+import { startupTrace } from "./startup-trace.ts";
 
 const execute = promisify(execFile);
 /** @param {string | undefined} udid */
@@ -72,6 +73,7 @@ export async function prepareHelperCommand(
       throw new Error("Invalid helper bundle");
     if (forceInstall) return { command, mode: /** @type {const} */ ("install") };
     const output = path.join(results, "installed.json");
+    startupTrace("helper-inventory-start");
     // --filter works on the older Xcode releases supported by our USB path.
     // A failed inventory is unknown, not evidence that reinstalling is needed.
     await execute(
@@ -93,6 +95,7 @@ export async function prepareHelperCommand(
       { signal, timeout: 6500, maxBuffer: 64 * 1024 },
     );
     const installed = JSON.parse(fs.readFileSync(output, "utf8"));
+    startupTrace("helper-inventory-finished");
     fs.rmSync(output);
     if (!matchesInstalledHelper(installed, bundle.CFBundleIdentifier, bundle.CFBundleVersion))
       return { command, mode: /** @type {const} */ ("install") };

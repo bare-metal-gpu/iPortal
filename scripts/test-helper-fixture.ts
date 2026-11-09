@@ -125,8 +125,10 @@ const percent = async () => parseFloat((await element("fixture.slider")).value);
 const adjusted = await percent();
 assert(Math.abs(adjusted - 75) < 10, `Slider adjustment: ${adjusted}`);
 await api("element-action", { ...target("fixture.slider"), action: "decrement" });
-assert((await percent()) < adjusted, "Native decrement did not lower slider");
+const decreased = await percent();
+assert(decreased < adjusted, `Native decrement did not lower slider: ${adjusted} -> ${decreased}`);
 await api("element-action", { ...target("fixture.slider"), action: "increment" });
+assert((await percent()) > decreased, "Native increment did not raise slider");
 const wrongType = await api(
   "element-action",
   { ...target("fixture.delayed"), action: "replaceText", text: "must-not-type" },

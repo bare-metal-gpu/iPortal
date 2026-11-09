@@ -355,7 +355,8 @@ import XCTest
           }
         case "adjust", "increment", "decrement":
           let value = action == "adjust" ? a["value"].number!
-            : Double(try withApple { element.normalizedSliderPosition }) + (action == "increment" ? 0.05 : -0.05)
+            : try SliderAdjustment.relativePosition(
+              Double(try withApple { element.normalizedSliderPosition }), increment: action == "increment")
           dispatched = true
           try withApple { element.adjust(toNormalizedSliderPosition: CGFloat(min(1, max(0, value)))) }
         case "doubleTap":
