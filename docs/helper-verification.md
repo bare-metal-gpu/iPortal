@@ -244,14 +244,29 @@ matching-artifact checks. Two normal full-window launches measured 8.806 and
 These small samples are diagnostic, not a latency percentile guarantee.
 
 Isolated launches of the same packaged server/helper reached readiness in
-2.231–3.813 seconds, including tests through the app's lifetime supervisor. The
-remaining full-window delay is predominantly inside Apple's automation launch;
-the interaction with concurrent media startup is not isolated yet. Pausing an
-already-started video child and changing process background scheduling did not
-demonstrate an improvement. Neither experiment changes the shipped behavior.
-The phone disconnected before a media-before/control-before comparison could
-run, so the existing parallel video startup is retained. Cold launches still
-need further work; these results do not establish instant startup.
+2.231–3.813 seconds, including tests through the app's lifetime supervisor.
+Pausing an already-started video child and changing process background scheduling
+did not demonstrate an improvement. Neither experiment changes shipped behavior.
+
+After the phone reconnected, an ordering comparison used the same Mac compiler,
+server, installed helper and fixture with USB attached. Three normal cold app
+launches starting control before paired video became input-ready in 4.357, 4.382
+and 4.501 seconds. Parallel startup measured 4.646, 5.788 and 5.359 seconds:
+median 5.359 versus 4.382 seconds, an 18% improvement in this small comparison.
+The first launch after installing each Mac build is reported separately: 7.316
+seconds for control-first and 6.883 seconds for parallel startup. These results
+do not establish a percentile guarantee or instant startup after an upgrade.
+Switching back to the control-first build for a final recheck took 5.017 seconds.
+The installed build then accepted keep-awake and a targeted fixture tap; an
+independent element read confirmed the counter increased to one.
+
+Only a new paired video session now waits for authenticated control readiness.
+Existing streams and transport handovers retain their previous ordering, and
+legacy USB capture still starts in parallel. The remaining repeat-launch time
+is dominated by Apple's automation runner: about 3.4 seconds between launching
+Xcode and authenticated helper readiness in the control-first repeats. The
+first frame follows readiness by about 0.4 seconds. Further reductions require
+work on that launch path, not shorter polling intervals or premature Ready UI.
 
 The hosted iOS 26.5 simulator passed all 23 fixture checks, clipboard restoration
 and web navigation. Its slider regression was caused by XCTest rounding the
