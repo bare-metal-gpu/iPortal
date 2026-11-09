@@ -395,9 +395,13 @@ final class PhoneCapture {
         allowSingleDeviceFallback = singleUsbDevice
         if paired, NativeMediaReceiver.available {
             startupTimeoutAt = ProcessInfo.processInfo.systemUptime + timeout
-            let attributes: [String: Any]
-            if #available(macOS 26.0, *) { attributes = layer.sampleBufferRenderer.__recommendedPixelBufferAttributes }
-            else { attributes = [:] }
+            // Resolve this public macOS 26 getter at runtime so builds using
+            // older SDKs retain the renderer's recommendations on newer Macs.
+            let renderer = layer.sampleBufferRenderer
+            let recommendation = NSSelectorFromString("recommendedPixelBufferAttributes")
+            let attributes = renderer.responds(to: recommendation)
+                ? renderer.perform(recommendation)?.takeUnretainedValue() as? [String: Any] ?? [:]
+                : [:]
             let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames, pixelBufferAttributes: attributes, capabilities: { [weak self] capabilities in
                 DispatchQueue.main.async { guard let self, !self.stopped else { return }; self.onMediaCapabilities?(capabilities) }
             }, unchanged: { [weak self] time in
