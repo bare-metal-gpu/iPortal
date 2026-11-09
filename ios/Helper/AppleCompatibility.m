@@ -5,7 +5,6 @@
 #import <libxml/xpath.h>
 #import <notify.h>
 #import <stdatomic.h>
-#import <math.h>
 
 // Minimal ABI declarations for selectors checked immediately before use.
 @protocol IPAppleRuntime <NSObject>
@@ -19,8 +18,6 @@
                      attributes:(NSArray *)attributes
                      parameters:(NSDictionary *)parameters
                           error:(NSError **)error;
-- (double)AXTimeout;
-- (BOOL)_setAXTimeout:(double)timeout error:(NSError **)error;
 - (NSArray *)activeApplications;
 - (int)processIdentifier;
 - (unsigned long long)elementID;
@@ -725,35 +722,16 @@ static NSNumber *IPSnapshotAttribute(NSString *name) {
 + (id<XCUIElementSnapshot>)snapshotElement:(XCUIElement *)element
                                    flags:(BOOL)flags error:(NSError **)error {
     return [self protect:^id {
-        id client = IPClient();
-        // XCTest's synchronous AX wrapper can outlive our command budget by
-        // tens of seconds. Bound the underlying request, not just its HTTP
-        // waiter, so a slow app's hierarchy cannot hold input/keep-awake until
-        // the executor has to retire the entire helper. Preserve all attributes.
-        BOOL adjustable = [client respondsToSelector:@selector(AXTimeout)] &&
-            [client respondsToSelector:@selector(_setAXTimeout:error:)];
-        double previous = adjustable ? [client AXTimeout] : 0;
-        BOOL changed = adjustable && isfinite(previous) && previous > 5;
-        @try {
-            if (changed) {
-                NSError *failure = nil;
-                if (![client _setAXTimeout:5 error:&failure]) {
-                    if (error) *error = failure ?: IPFailure(@"Snapshot timeout unavailable");
-                    return nil;
-                }
-            }
-            NSError *failure = nil;
-            id<XCUIElementSnapshot> basic = [element snapshotWithError:&failure];
-            if (!basic) {
-                if (error) *error = failure ?: IPFailure(@"Snapshot unavailable");
-                return nil;
-            }
-            return flags ? [self snapshotAttributes:basic error:error] : basic;
-        } @finally {
-            // The executor serializes inspection. Never leave a shorter AX
-            // timeout behind for keyboard input or a later command.
-            if (changed) [client _setAXTimeout:previous error:nil];
+        // The executor owns the caller's deadline and bounded stall recovery.
+        // Do not impose a second, global AX timeout: it overrides longer caller
+        // budgets and can reject a healthy snapshot during app transitions.
+        NSError *failure = nil;
+        id<XCUIElementSnapshot> basic = [element snapshotWithError:&failure];
+        if (!basic) {
+            if (error) *error = failure ?: IPFailure(@"Snapshot unavailable");
+            return nil;
         }
+        return flags ? [self snapshotAttributes:basic error:error] : basic;
     } error:error];
 }
 + (NSNumber *)snapshotFlag:(id)snapshot name:(NSString *)name {

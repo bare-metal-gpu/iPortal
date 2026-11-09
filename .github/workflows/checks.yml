@@ -93,6 +93,10 @@ jobs:
         run: |
           xcodebuild -version
           xcrun swift --version
+      - name: Keep indexing off the disposable simulator host
+        # Mounting a fresh runtime and writing DerivedData otherwise competes
+        # with XCTest on this 7 GB runner. This never runs on the user's Mac.
+        run: sudo mdutil -a -i off
       - run: bun install --frozen-lockfile
       - name: Install the functional-test runtime
         run: xcodebuild -downloadPlatform iOS -buildVersion "$IPORTAL_SIMULATOR_RUNTIME" -architectureVariant arm64

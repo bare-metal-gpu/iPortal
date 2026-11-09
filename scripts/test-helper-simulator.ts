@@ -78,7 +78,19 @@ async function reportHostHealth() {
   // Resource evidence belongs to the hosted runner, not the user's Mac. Do not
   // include process arguments: the runner environment contains credentials.
   const child = Bun.spawn(
-    ["/usr/bin/top", "-l", "1", "-n", "8", "-o", "mem", "-stats", "pid,command,cpu,mem"],
+    [
+      "/usr/bin/top",
+      "-l",
+      "2",
+      "-s",
+      "1",
+      "-n",
+      "12",
+      "-o",
+      "cpu",
+      "-stats",
+      "pid,command,cpu,mem",
+    ],
     { stdout: "pipe", stderr: "ignore" },
   );
   const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);

@@ -231,12 +231,15 @@ Live inspection exposed a second recovery trigger: a hierarchy read exceeded its
 15-second budget, and responses from the retiring helper could cancel its
 replacement. Explicit recovery now retires the old boot identity; a transport
 handover alone does not. Inspection requests supported traits/focus metadata in
-bulk, avoids two redundant application queries, and temporarily bounds Apple's
-AX request timeout while restoring the previous value afterward. The changes
-preserve enriched attributes and targeted-element geometry.
+bulk and avoids two redundant application queries. The changes preserve enriched
+attributes and targeted-element geometry. An initial five-second global AX limit
+was removed after hosted tests exposed failures before dispatch: the executor
+already enforces caller deadlines, preserves ownership of an unfinished native
+operation, and bounds stall recovery. A separate shorter timeout must not reject
+an operation whose caller explicitly allows more time.
 
-On the same phone/app screen, JSON source returned in 2.470 seconds after the
-update, versus the previous 15-second timeout. Three full observations returned
+On the same phone/app screen, JSON source returned in 2.470 seconds with the
+initial update, versus the previous 15-second timeout. Three full observations returned
 successfully in 5.529, 5.002 and 4.966 seconds while readiness and keep-awake stayed
 active. This validates the combined fix, not the isolated contribution of each
 inspection change. Computer also read the fixture's mirrored accessibility tree
