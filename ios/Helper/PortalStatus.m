@@ -70,7 +70,7 @@ static NSString *IPPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
                 if (!detached)
                     status.receivedAt = NSProcessInfo.processInfo.systemUptime;
                 [status.usbEvents addObject:@{
-                    @"attached" : @(!detached),
+                    @"attached" : @((BOOL)!detached),
                     @"uptime" : @(NSProcessInfo.processInfo.systemUptime)
                 }];
                 if (status.usbEvents.count > 8)
@@ -142,11 +142,11 @@ static NSString *IPPortalPhase(NSTimeInterval receivedAt, NSTimeInterval now, BO
         @"message" : message,
         @"detail" : detail,
         @"keepAwakeRemainingMs" : @((long long)ceil(remaining * 1000)),
-        @"screenInstalled" : @(root != nil),
+        @"screenInstalled" : @((BOOL)(root != nil)),
         @"width" : @(root.bounds.size.width),
         @"height" : @(root.bounds.size.height),
-        @"foreground" :
-            @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive),
+        @"foreground" : @((BOOL)(UIApplication.sharedApplication.applicationState ==
+                                 UIApplicationStateActive)),
         @"usbEvents" : self.usbEvents ?: @[],
         @"phaseEvents" : self.phaseEvents ?: @[]
     };
