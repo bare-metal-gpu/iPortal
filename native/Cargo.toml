@@ -22,3 +22,7 @@ uuid = { version = "1.29", features = ["v4"] }
 [profile.release]
 opt-level = 3
 lto = "thin"
+# Rust's bundled objcopy can leave a procedural macro's string table at an
+# offset the macOS loader rejects, so a clean build fails with "can't find
+# crate". Nothing here carries debug info, so skipping the strip changes nothing.
+strip = "none"
