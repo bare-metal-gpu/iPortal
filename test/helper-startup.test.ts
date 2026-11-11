@@ -80,6 +80,12 @@ test("generic Apple security wrappers never claim that user trust is missing", (
   expect(startupFailure(appleError + " device is locked").kind).toBe("locked");
   expect(startupFailure("Developer Mode is disabled").kind).toBe("developer");
   expect(startupFailure("provisioning profile has expired").kind).toBe("setup");
+  expect(startupFailure("The code signature is invalid").kind).toBe("setup");
+  // Xcode's real output repeats the phrase on one line after a helper is
+  // re-signed. It is still a trust failure, which a reinstall repairs.
+  const repeated =
+    'Failed to install or launch the test runner. (Underlying Error: The application could not be launched because the Developer App Certificate is not trusted. (Underlying Error: The request was denied by service delegate (SBMainWorkspace) for reason: Security ("invalid code signature, inadequate entitlements or its profile has not been explicitly trusted by the user"). (Underlying Error: The operation couldn’t be completed. Unable to launch com.example.iportal.mobile.xctrunner because it has an invalid code signature, inadequate entitlements or its profile has not been explicitly trusted by the user.';
+  expect(startupFailure(repeated).kind).toBe("verification");
   expect(startupFailure("", true).kind).toBe("timeout");
 });
 test("startup has bounded preparation and launch deadlines; authenticated ready cancels deadline", () => {

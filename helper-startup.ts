@@ -36,8 +36,12 @@ export function startupFailure(output: string, timeout = false): StartupFailure 
       kind: "developer",
       message: "On your iPhone, turn on Developer Mode in Settings → Privacy & Security.",
     };
+  // "code signature … invalid" must stay within one phrase. Xcode repeats
+  // "invalid code signature, …" along a single line when a re-signed helper's
+  // installed copy has expired; spanning two of those would report a setup
+  // problem and skip the reinstall that repairs it.
   if (
-    /cannot be installed on this device|doesn't include the currently selected device|provisioning profile.+expired|code signature.+invalid/i.test(
+    /cannot be installed on this device|doesn't include the currently selected device|provisioning profile.+expired|code signature[^,.\n]{0,40}invalid/i.test(
       output,
     )
   )
