@@ -27,6 +27,8 @@ export const AwakeSchema = Schema.Struct({
 export const StatusSchema = Schema.Struct({
   service: Schema.Literal("iportal"),
   apiVersion: Schema.Literal(2),
+  // Absent means an iPhone or iPad.
+  platform: optional(Schema.Literals(["ios", "android"])),
   instanceId: text,
   observedAt: integer,
   eventSequence: optional(integer),

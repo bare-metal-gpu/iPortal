@@ -76,11 +76,14 @@ const events = new Set([
   "helper-launch",
   "helper-ended",
   "helper-restarting",
+  "helper-unreachable",
+  "android-devices",
+  "android-adb-lost",
   "operation-completed",
 ]);
 const values: Record<string, ReadonlySet<string>> = {
   mode: new Set(["installed", "install"]),
-  connection: new Set(["USB", "Paired", "Unknown", "unavailable"]),
+  connection: new Set(["USB", "Paired", "Network", "Unknown", "unavailable"]),
   pairedHealth: new Set(["starting", "ready", "recovering", "unavailable"]),
   method: new Set(["GET", "POST", "HEAD", "OPTIONS", "PUT", "DELETE", "PATCH"]),
   outcome: new Set(["verified", "executed", "not executed", "unknown", "completed", "failed"]),

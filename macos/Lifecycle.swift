@@ -73,8 +73,9 @@ enum IPortalWatcherRequest: Equatable {
         }
     }
 
+    // Apple identifiers are hexadecimal; Android serials use the whole alphabet.
     private static func validSerial(_ serial: String) -> Bool {
-        (8...64).contains(serial.count) && serial.allSatisfy { $0.isASCII && ($0.isHexDigit || $0 == "-") }
+        (8...64).contains(serial.count) && serial.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 
     var url: URL {
@@ -131,15 +132,46 @@ struct PendingMirrorStarts {
 
 enum IPortalDeviceKind: String, Codable {
     case iPhone, iPad
+    // Android devices are found through adb, never by USB product name.
+    case android = "Android"
     init?(product: String) {
         if product.hasPrefix("iPhone") { self = .iPhone }
         else if product.hasPrefix("iPad") { self = .iPad }
         else { return nil }
     }
-    var symbol: String { self == .iPad ? "ipad" : "iphone" }
-    var initialRatio: CGFloat { self == .iPad ? 3 / 4 : 390 / 844 }
+    /// How the device is named in sentences, such as "Unlock your iPhone".
+    var label: String { self == .android ? "Android device" : rawValue }
+    var symbol: String { self == .iPad ? "ipad" : self == .android ? "smartphone" : "iphone" }
+    var initialRatio: CGFloat { self == .iPad ? 3 / 4 : self == .android ? 9 / 20 : 390 / 844 }
     func radius(width: CGFloat, height: CGFloat) -> CGFloat {
-        min(width, height) * (self == .iPad ? 0.035 : 0.14)
+        min(width, height) * (self == .iPad ? 0.035 : self == .android ? 0.09 : 0.14)
+    }
+}
+
+// One line of the Android inventory that `iportal-server devices --platform
+// android --watch` prints. A phone reachable over both USB and Wi-Fi is one row.
+struct AndroidDeviceDescriptor: Codable, Equatable {
+    var serial: String
+    var name: String
+    var transport: String
+    var usb: Bool
+}
+struct AndroidInventory: Codable {
+    var version = 1
+    var devices: [AndroidDeviceDescriptor]
+    static func decode(_ data: Data) throws -> Self {
+        guard data.count <= 65536 else { throw CocoaError(.coderReadCorrupt) }
+        let value = try JSONDecoder().decode(Self.self, from: data)
+        guard value.version == 1, value.devices.count <= 64 else { throw CocoaError(.coderReadCorrupt) }
+        var keys = Set<String>()
+        for device in value.devices {
+            guard device.serial.range(of: "^[A-Za-z0-9._-]{1,64}\\z", options: .regularExpression) != nil,
+                  !device.name.isEmpty, device.name.utf16.count <= 256,
+                  ["usb", "wifi"].contains(device.transport),
+                  !deviceKey(device.serial).isEmpty, keys.insert(deviceKey(device.serial)).inserted
+            else { throw CocoaError(.coderReadCorrupt) }
+        }
+        return value
     }
 }
 

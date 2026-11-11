@@ -24,10 +24,11 @@ import { createInspection } from "./inspection.ts";
 import { createKeepAwake } from "./keep-awake.mjs";
 import { createIPortalStatus } from "./iportal-status.mjs";
 import { randomUUID } from "node:crypto";
-import { commandContext, createScheduler } from "./scheduler.ts";
+import { createScheduler } from "./scheduler.ts";
 import { createCommands } from "./commands.ts";
 import { parseNamedRequest, executeAction } from "./schemas.ts";
-import { errorResponse, startServer } from "./server.mjs";
+import { startServer } from "./server.mjs";
+import { createDispatch } from "./command-dispatch.mjs";
 import { pinchPaths } from "./pinch.mjs";
 import { createUSBMonitor } from "./usb-events.ts";
 import { createStatusEvents } from "./status-events.ts";
@@ -64,8 +65,16 @@ const { values: opts, positionals } = parseArgs({
     managed: { type: "boolean", default: false },
     owner: { type: "string" },
     "device-kind": { type: "string", default: "iPhone" },
+    platform: { type: "string", default: "ios" },
+    watch: { type: "boolean", default: false },
   },
 });
+if (opts.platform === "android") {
+  // Android has its own device layer and helper; it shares everything above
+  // them. This call serves until the process exits, so nothing below runs.
+  const { runAndroid } = await import("./android/server.mjs");
+  await runAndroid(opts, positionals);
+} else if (opts.platform !== "ios") throw new Error("Unknown platform");
 
 const HELPER_PORT = Number(opts["helper-port"]);
 if (!Number.isInteger(HELPER_PORT) || HELPER_PORT < 1 || HELPER_PORT > 65535)
@@ -327,8 +336,6 @@ const scheduler = createScheduler();
 const enqueue = scheduler.enqueue;
 /** @param {import("./helper-protocol.ts").HelperArguments<"touch">["points"]} points @param {number} end @param {{expectedBundleId?:string,expectedOrientation?:import("./helper-protocol.ts").HelperResult<"orientation">}} [guards] */
 const gesture = (points, end, guards = {}) => helper.command("touch", { points, end, ...guards });
-const supportsGuardedTouch = async () => (await helper.ready()).capabilities.touch;
-const supportsMultiTouch = async () => (await helper.ready()).capabilities.multiTouch;
 /** @param {import("./schemas.ts").RequestBody<"pinch">} body */
 async function pinch(body) {
   if (body.scale === 1) return;
@@ -832,218 +839,28 @@ const commandLedger = () =>
       ),
   }));
 
-/** @param {string} rawName @param {unknown} rawBody @param {AbortSignal} [signal] */
-async function dispatch(rawName, rawBody, signal) {
-  // A command submitted before detach must never execute after reattachment.
-  signal = signal ? AbortSignal.any([signal, transport.signal]) : transport.signal;
-  const started = performance.now();
-  if (rawName === "status") return { status: 200, body: await statusEvents.refresh() };
-  if (rawName === "command-status") {
-    if (
-      !rawBody ||
-      typeof rawBody !== "object" ||
-      !("requestId" in rawBody) ||
-      typeof rawBody.requestId !== "string"
-    )
-      throw apiError("Missing request ID");
-    const value = commandLedger().get(rawBody.requestId);
-    return {
-      status: value ? 200 : 404,
-      body: value
-        ? { ok: true, value }
-        : { ok: false, code: "not found", error: "Unknown request ID" },
-    };
-  }
-  const { name, body } = parseNamedRequest(rawName, rawBody);
-  if (name === "presence") {
-    portalStatus.receive(body);
-    return { status: 200, body: { ok: true } };
-  }
-  if (name === "keep-awake")
-    return { status: 200, body: { ok: true, value: await keepAwake.configure(body) } };
-  if (name === "clipboard-read" || name === "clipboard-write") {
-    // Clipboard contents never enter the command receipt cache or disk ledger.
-    const value = await commandContext.run(
-      { signal, deadline: performance.now() + 25000, operationTimeoutMs: 25000, priority: 5 },
-      () =>
-        enqueue(async () => {
-          inspection.invalidateObservations();
-          const value = await clipboard.transfer(
-            name === "clipboard-write" ? { operation: "write", ...body } : { operation: "read" },
-          );
-          keepAwake.activity();
-          return value;
-        }),
-    );
-    return { status: 200, body: { ok: true, value, meta: { instanceId } } };
-  }
-  const timeoutMs =
-    ("timeoutMs" in body ? body.timeoutMs : undefined) ?? (name === "wait" ? 10000 : 15000);
-  const deadline = performance.now() + timeoutMs;
-  if (
-    name === "state" ||
-    name === "elements" ||
-    name === "element" ||
-    name === "source" ||
-    name === "screenshot" ||
-    name === "observe" ||
-    name === "wait"
-  ) {
-    const value = await commandContext.run(
-      { signal, deadline, operationTimeoutMs: timeoutMs },
-      () => {
-        switch (name) {
-          case "state":
-            return inspection.state(body, signal);
-          case "elements":
-            return inspection.elements(body, signal);
-          case "element":
-            return inspection.element(body, signal);
-          case "source":
-            return inspection.source(body, signal);
-          case "screenshot":
-            return inspection.screenshot(body, signal);
-          case "observe":
-            return inspection.observe(body, signal);
-          case "wait":
-            return inspection.wait(body, signal);
-        }
-      },
-    );
-    return {
-      status: 200,
-      body: { ok: true, value, meta: { instanceId, observedAt: new Date().toISOString() } },
-    };
-  }
-  const requestId = body.requestId ?? randomUUID();
-  return commandLedger().execute(requestId, { name, body }, async (mark) => {
-    if (name === "lock") keepAwake.stop("lock requested");
-    let dispatched = false,
-      executed = false;
-    let nativeStarted = 0,
-      nativeCompleted = 0;
-    /** @type {{queueMs?:number,preflightMs?:number,actionMs?:number,totalMs?:number,native?:unknown}} */
-    const timing = {};
-    let clipboardChanged;
-    const onDispatch = () => {
-      nativeStarted++;
-      if (!dispatched) {
-        dispatched = true;
-        mark("running");
-        inspection.invalidateObservations();
-      }
-    };
-    try {
-      await commandContext.run(
-        {
-          signal,
-          deadline,
-          onDispatch,
-          onComplete: () => {
-            nativeCompleted++;
-          },
-          priority: 5,
-          operationTimeoutMs:
-            ("timeoutMs" in body ? body.timeoutMs : undefined) ??
-            Math.max(8000, (("end" in body ? body.end : undefined) ?? 0) + 2000),
-        },
-        async () => {
-          await enqueue(async () => {
-            timing.queueMs = Math.round(performance.now() - started);
-            const nativeGuards =
-              ["type", "key", "tap", "element-action", "home", "button", "launch", "siri"].includes(
-                name,
-              ) ||
-              (name === "pinch"
-                ? await supportsMultiTouch()
-                : ["gesture", "shortcut"].includes(name) && (await supportsGuardedTouch()));
-            if (!nativeGuards && !["unlock", "lock", "ensure", "quality"].includes(name)) {
-              if ((await helper.status()).locked)
-                throw apiError("Unlock your iPhone", 409, "device locked");
-            }
-            if (!nativeGuards && body.expectedApp) {
-              const active = await helper.command("app");
-              if (active.bundleId !== body.expectedApp)
-                throw apiError("Foreground app changed", 409, "app changed");
-            }
-            if (
-              !nativeGuards &&
-              body.expectedOrientation &&
-              (await helper.command("orientation")) !== body.expectedOrientation
-            )
-              throw apiError("Screen orientation changed", 409, "orientation changed");
-            if (body.observationId) await inspection.verifyObservation(body.observationId, signal);
-            signal?.throwIfAborted();
-            const actionStarted = performance.now();
-            timing.preflightMs = Math.round(actionStarted - started - (timing.queueMs ?? 0));
-            const result = await executeAction(actions, name, body);
-            timing.actionMs = Math.round(performance.now() - actionStarted);
-            if (result && "timing" in result) timing.native = result.timing;
-            if (
-              result &&
-              "clipboardChanged" in result &&
-              typeof result.clipboardChanged === "boolean"
-            )
-              clipboardChanged = result.clipboardChanged;
-            executed = true;
-            if (
-              [
-                "gesture",
-                "pinch",
-                "shortcut",
-                "tap",
-                "element-action",
-                "type",
-                "key",
-                "home",
-                "button",
-              ].includes(name)
-            )
-              keepAwake.activity();
-          });
-          if (body.waitFor) await inspection.wait(body.waitFor, signal);
-        },
-      );
-      timing.totalMs = Math.round(performance.now() - started);
-      return {
-        status: 200,
-        body: {
-          ok: true,
-          requestId,
-          outcome: body.waitFor ? "verified" : "executed",
-          verified: Boolean(body.waitFor),
-          timing,
-          ...(clipboardChanged !== undefined ? { clipboardChanged } : {}),
-        },
-      };
-    } catch (e) {
-      const failure = errorInfo(e);
-      const result = errorResponse(e);
-      result.body = {
-        ...result.body,
-        requestId,
-        outcome:
-          executed ||
-          (nativeCompleted > 0 &&
-            (nativeStarted === nativeCompleted || failure.outcome === "notExecuted"))
-            ? "executed"
-            : failure.outcome === "notExecuted" || !dispatched
-              ? "not executed"
-              : "unknown",
-        verified: false,
-      };
-      if (failure.code === "automation denied" || NOT_AUTHORIZED.test(failure.message)) {
-        keepAwake.stop("automation unavailable");
-        restartHelper();
-      }
-      return result;
-    } finally {
-      // Include uncertain outcomes: pixels may have changed even when the
-      // response was lost. The event never replays the input.
-      if (dispatched) contentChanged();
+const dispatch = createDispatch({
+  instanceId,
+  transportSignal: () => transport.signal,
+  statusEvents,
+  commandLedger,
+  parse: parseNamedRequest,
+  execute: (name, body) => executeAction(actions, name, body),
+  portalStatus,
+  keepAwake,
+  enqueue,
+  inspection,
+  clipboard,
+  helper,
+  lockedMessage: "Unlock your iPhone",
+  onFailure(failure) {
+    if (failure.code === "automation denied" || NOT_AUTHORIZED.test(failure.message)) {
+      keepAwake.stop("automation unavailable");
+      restartHelper();
     }
-  });
-}
+  },
+  contentChanged,
+});
 
 if (!MANUAL) {
   if (pinnedUdid) {

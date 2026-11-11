@@ -22,17 +22,31 @@ final class PhoneUSBMonitor {
     private var pairedInput: Pipe?
     private var pairedOutput: Pipe?
     private var pairedBuffer = Data()
+    // Android devices come from adb through the bundled server, the way paired
+    // iPhones come from the native transport. Both are optional.
+    private var android: [String: AndroidDeviceDescriptor] = [:]
+    private var androidProcess: Process?
+    private var androidInput: Pipe?
+    private var androidOutput: Pipe?
+    private var androidBuffer = Data()
+    private var androidFailures = 0
+    private var androidRetry: DispatchWorkItem?
+    // The first inventory from a watcher lists what was already attached. Like
+    // the initial USB scan, it is not a new cable connection.
+    private var androidPrimed = false
     private var stopped = false
     private let changed: (String, Bool) -> Void
     private let usbChanged: (String, Bool) -> Void
     private let metadataChanged: () -> Void
-    var usbSerials: Set<String> { Set(serials.values) }
+    var usbSerials: Set<String> { Set(serials.values).union(android.values.filter(\.usb).map(\.serial)) }
     var connectedSerials: Set<String> { Set(connectedDevices.map(\.serial)) }
     private func key(_ value: String) -> String { value.lowercased().filter { $0.isLetter || $0.isNumber } }
     func isPaired(_ serial: String) -> Bool { paired[key(serial)]?.capabilities.control != .unavailable && paired[key(serial)] != nil }
     func descriptor(for serial: String) -> PairedDeviceDescriptor? { paired[key(serial)] }
     var usbDevices: [IPortalUSBDevice] { connectedDevices.filter { isUSBConnected($0.serial) } }
-    func isUSBConnected(_ serial: String) -> Bool { serials.values.contains { key($0) == key(serial) } }
+    func isUSBConnected(_ serial: String) -> Bool {
+        serials.values.contains { key($0) == key(serial) } || android[key(serial)]?.usb == true
+    }
     func transport(for serial: String) -> IPortalConnectionTransport? {
         connectedDevices.first { key($0.serial) == key(serial) }?.transport
     }
@@ -43,6 +57,10 @@ final class PhoneUSBMonitor {
         }
         for serial in Set(serials.values) where devices[key(serial)] == nil {
             devices[key(serial)] = IPortalUSBDevice(serial: serial, name: names[serial] ?? "iPhone", kind: kinds[serial] ?? .iPhone)
+        }
+        for (id, device) in android where devices[id] == nil {
+            devices[id] = IPortalUSBDevice(serial: device.serial, name: device.name, kind: .android,
+                transport: IPortalConnectionTransport(rawValue: device.transport)!)
         }
         return devices.values.sorted { $0.serial < $1.serial }
     }
@@ -55,7 +73,7 @@ final class PhoneUSBMonitor {
         self.metadataChanged = metadataChanged
         guard observeDevices else { return }
         // Start on the next turn, after the owner has retained this monitor.
-        DispatchQueue.main.async { [weak self] in self?.watchPairedDevices() }
+        DispatchQueue.main.async { [weak self] in self?.watchPairedDevices(); self?.watchAndroidDevices() }
         guard let port = IONotificationPortCreate(kIOMainPortDefault) else { return }
         self.port = port
         CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .commonModes)
@@ -116,6 +134,11 @@ final class PhoneUSBMonitor {
         try? pairedInput?.fileHandleForWriting.close()
         if let pairedProcess, pairedProcess.isRunning { pairedProcess.terminate() }
         pairedProcess = nil; pairedInput = nil; pairedOutput = nil; paired.removeAll()
+        androidRetry?.cancel()
+        androidOutput?.fileHandleForReading.readabilityHandler = nil
+        try? androidInput?.fileHandleForWriting.close()
+        if let androidProcess, androidProcess.isRunning { androidProcess.terminate() }
+        androidProcess = nil; androidInput = nil; androidOutput = nil; android.removeAll()
         if added != 0 { IOObjectRelease(added); added = 0 }
         if removed != 0 { IOObjectRelease(removed); removed = 0 }
         if let port { IONotificationPortDestroy(port); self.port = nil }
@@ -206,5 +229,87 @@ final class PhoneUSBMonitor {
         for (id, device) in before where after[id] == nil { changed(device.serial, false) }
         for (id, device) in after where before[id] == nil { changed(device.serial, true) }
         if before != after || capabilitiesChanged { metadataChanged() }
+    }
+
+    // MARK: Android
+
+    private func androidObserverFailed() {
+        guard !stopped else { return }
+        androidFailures += 1
+        let previous = androidProcess
+        androidProcess = nil
+        androidOutput?.fileHandleForReading.readabilityHandler = nil
+        try? androidInput?.fileHandleForWriting.close()
+        if previous?.isRunning == true { previous?.terminate() }
+        // Without the inventory nothing is known to be reachable.
+        replaceAndroid([:])
+        androidRetry?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.watchAndroidDevices() }
+        androidRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + min(60, pow(2, Double(min(androidFailures, 6)))), execute: work)
+    }
+    private func watchAndroidDevices() {
+        guard !stopped, androidProcess == nil else { return }
+        let executable = IPortalWatcher.appURL.appendingPathComponent("Contents/MacOS/iportal-server")
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else { return }
+        let task = Process(), input = Pipe(), output = Pipe()
+        task.executableURL = executable
+        // The lifetime supervisor ends the watcher when this process goes away.
+        task.arguments = ["--owned-command", executable.path, "devices", "--platform", "android", "--watch"]
+        task.standardInput = input; task.standardOutput = output; task.standardError = FileHandle.nullDevice
+        androidProcess = task; androidInput = input; androidOutput = output; androidBuffer = Data()
+        androidPrimed = false
+        output.fileHandleForReading.readabilityHandler = { [weak self, weak task] handle in
+            let data = handle.availableData
+            if data.isEmpty { handle.readabilityHandler = nil; return }
+            DispatchQueue.main.async {
+                guard let self, !self.stopped, let task, self.androidProcess === task else { return }
+                self.androidBuffer.append(data)
+                while let newline = self.androidBuffer.firstIndex(of: 10) {
+                    let line = Data(self.androidBuffer[..<newline])
+                    self.androidBuffer = Data(self.androidBuffer[(newline + 1)...])
+                    // Other output, such as a log line, is not inventory.
+                    if line.first == UInt8(ascii: "{"), line.range(of: Data("\"devices\"".utf8)) != nil {
+                        guard self.receiveAndroid(line) else { self.androidObserverFailed(); return }
+                    }
+                }
+                if self.androidBuffer.count > 65536 { self.androidObserverFailed() }
+            }
+        }
+        task.terminationHandler = { [weak self] task in
+            DispatchQueue.main.async {
+                guard let self, !self.stopped, self.androidProcess === task else { return }
+                self.androidObserverFailed()
+            }
+        }
+        do { try task.run() } catch { androidObserverFailed() }
+    }
+
+    @discardableResult func receiveAndroid(_ data: Data) -> Bool {
+        guard !stopped else { return false }
+        guard let inventory = try? AndroidInventory.decode(data) else { return false }
+        androidFailures = 0
+        replaceAndroid(Dictionary(uniqueKeysWithValues: inventory.devices.map { (key($0.serial), $0) }),
+                       initial: !androidPrimed)
+        androidPrimed = true
+        return true
+    }
+    private func replaceAndroid(_ next: [String: AndroidDeviceDescriptor], initial: Bool = false) {
+        guard android != next else { return }
+        let before = Dictionary(uniqueKeysWithValues: connectedDevices.map { (key($0.serial), $0) })
+        let cables = Set(usbSerials.map(key))
+        android = next
+        let after = Dictionary(uniqueKeysWithValues: connectedDevices.map { (key($0.serial), $0) })
+        // Cable presence first, as for iPhones: it can invite mirroring even
+        // when the phone was already reachable over Wi-Fi.
+        if !initial {
+            for (id, device) in next where device.usb && !cables.contains(id) { usbChanged(device.serial, true) }
+            for id in cables where next[id]?.usb != true && before[id]?.kind == .android {
+                usbChanged(before[id]!.serial, false)
+            }
+        }
+        for (id, device) in before where after[id] == nil { changed(device.serial, false) }
+        for (id, device) in after where before[id] == nil { changed(device.serial, true) }
+        metadataChanged()
     }
 }

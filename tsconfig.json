@@ -22,6 +22,8 @@
     "*.ts",
     "*.mts",
     "ios/**/*.ts",
+    "android/**/*.mjs",
+    "android/**/*.ts",
     "scripts/**/*.mjs",
     "scripts/**/*.ts",
     "type-tests/**/*.ts"

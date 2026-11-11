@@ -5,7 +5,8 @@ import { commandContext } from "./scheduler.ts";
 import { observability } from "./observability.ts";
 import {
   decodeHelper,
-  decodeHelperResult,
+  iosHelperProtocol,
+  type HelperProtocol,
   type HelperOperation,
   type AttributeSchemas,
   type SourceNode,
@@ -13,8 +14,6 @@ import {
   type HelperResult,
   HelperReplySchema,
   HelperStatusSchema,
-  helperBuild,
-  helperOperations,
 } from "./helper-protocol.ts";
 
 // Boot generation belongs to the helper, not to a USB/Wi-Fi connection. Route
@@ -56,12 +55,15 @@ export function createHelperClient({
   url,
   socket,
   authentication,
-  expectedBuild = helperBuild,
+  protocol = iosHelperProtocol,
+  expectedBuild = protocol.build,
   onGeneration = (_generation) => {},
 }: {
   url: string;
   socket: () => string | null | undefined;
   authentication: ReturnType<typeof import("./helper-auth.mjs").createHelperAuthentication>;
+  /** The platform's operation table. Defaults to the iPhone helper's. */
+  protocol?: HelperProtocol;
   expectedBuild?: string;
   onGeneration?: (generation: string) => void;
 }) {
@@ -142,9 +144,9 @@ export function createHelperClient({
       let next;
       try {
         next = decodeHelper(
-          HelperStatusSchema,
+          protocol.status,
           await request("/v1/status", undefined, timeout, signal),
-        );
+        ) as HelperStatus;
       } catch (error) {
         // Status invalidation cancels obsolete probes. That cancellation is not
         // evidence of a disconnected helper, nor can an older failure erase a
@@ -230,7 +232,7 @@ export function createHelperClient({
                     .find((line) => line.startsWith("data: "))
                     ?.slice(6);
                   if (!data || watchEpoch !== epoch) continue;
-                  const next = decodeHelper(HelperStatusSchema, JSON.parse(data));
+                  const next = decodeHelper(protocol.status, JSON.parse(data)) as HelperStatus;
                   const key = (s: HelperStatus | null) =>
                     JSON.stringify([s?.generation, s?.phase, s?.locked, s?.automationReady]);
                   const before = key(current);
@@ -276,13 +278,15 @@ export function createHelperClient({
       };
     },
     command: async function command(
-      operation: HelperOperation,
+      operation: string,
       rawArgs?: Record<string, unknown>,
       options: HelperCommandOptions = {},
     ): Promise<unknown> {
       return observability.promise(`helper.${operation}`, async () => {
         const args = rawArgs ?? {};
-        const contract = helperOperations[operation];
+        const contract = Object.hasOwn(protocol.operations, operation)
+          ? protocol.operations[operation]
+          : undefined;
         if (!contract) throw apiError("Unsupported helper operation", 400, "invalid argument");
         let arguments_;
         try {
@@ -375,7 +379,7 @@ export function createHelperClient({
           });
         }
         try {
-          const result = decodeHelperResult(operation, arguments_, reply.result);
+          const result = protocol.decodeResult(operation, arguments_, reply.result);
           if (contract.mutates) context?.onComplete?.();
           return result;
         } catch {

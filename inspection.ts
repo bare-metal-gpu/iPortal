@@ -46,11 +46,14 @@ const DEFAULT_ATTRIBUTES: Attribute[] = [
 const missing = (e: unknown) =>
   ["no such element", "stale element reference"].includes(errorInfo(e).code ?? "");
 
-function selector(value: HelperArguments<"elements"> | undefined): HelperArguments<"elements"> {
+function selector(
+  value: HelperArguments<"elements"> | undefined,
+  strategies: ReadonlySet<string>,
+): HelperArguments<"elements"> {
   if (
     !value ||
     typeof value !== "object" ||
-    !STRATEGIES.has(value.using) ||
+    !strategies.has(value.using) ||
     typeof value.value !== "string" ||
     !value.value.length
   ) {
@@ -77,20 +80,23 @@ function integer(
   return n;
 }
 
-function target(body: Target): Target {
+function target(body: Target, strategies: ReadonlySet<string>): Target {
   if (body.id !== undefined) {
     if (typeof body.id !== "string" || !body.id || body.selector !== undefined)
       throw apiError("Provide either id or selector");
     return { id: body.id };
   }
-  return { selector: selector(body.selector) };
+  return { selector: selector(body.selector, strategies) };
 }
 
 export function createInspection({
   helper,
   enqueue,
+  strategies = STRATEGIES,
 }: {
   helper: { command: HelperCommandCall };
+  /** Selector strategies the platform's helper understands. Defaults to the iPhone's. */
+  strategies?: ReadonlySet<string>;
   enqueue: ReturnType<typeof createScheduler>["enqueue"];
 }) {
   const observations = new Map<
@@ -139,7 +145,7 @@ export function createInspection({
     t: Target,
   ): Promise<{ id: string; attributes: Partial<Attributes> }> => {
     if (t.id) return { id: t.id, attributes: {} };
-    const elements = await find(call, selector(t.selector), true);
+    const elements = await find(call, selector(t.selector, strategies), true);
     if (!elements.length) throw apiError("No matching element", 404, "no such element");
     if (elements.length !== 1)
       throw apiError(
@@ -156,7 +162,7 @@ export function createInspection({
   const api = {
     elementAction: (body: RequestBody<"element-action">, signal?: AbortSignal) =>
       run(async (call) => {
-        const id = await resolve(call, target(body));
+        const id = await resolve(call, target(body, strategies));
         await call("elementAction", {
           id,
           action: body.action,
@@ -169,7 +175,7 @@ export function createInspection({
       }, signal),
     tap: (body: RequestBody<"tap">, signal?: AbortSignal) =>
       run(async (call) => {
-        const id = await resolve(call, target(body));
+        const id = await resolve(call, target(body, strategies));
         if (!(await read(call, id, "enabled")) || !(await read(call, id, "hittable")))
           throw apiError("Element is not currently actionable", 409, "element not actionable");
         await call("tapElement", {
@@ -181,7 +187,7 @@ export function createInspection({
       }, signal),
     type: (body: RequestBody<"type">, signal?: AbortSignal) =>
       run(async (call) => {
-        const id = await resolve(call, target(body));
+        const id = await resolve(call, target(body, strategies));
         if (!(await read(call, id, "enabled")) || !(await read(call, id, "hittable")))
           throw apiError("Element is not currently actionable", 409, "element not actionable");
         await call("typeElement", {
@@ -195,11 +201,11 @@ export function createInspection({
     state: (_body: RequestBody<"state">, signal?: AbortSignal) =>
       run((call) => call("state"), signal),
     elements: (body: RequestBody<"elements">, signal?: AbortSignal) => {
-      const query = selector(body.selector);
+      const query = selector(body.selector, strategies);
       return run((call) => find(call, query), signal);
     },
     element: (body: RequestBody<"element">, signal?: AbortSignal) => {
-      const t = target(body);
+      const t = target(body, strategies);
       const names = body.attributes ?? DEFAULT_ATTRIBUTES;
       if (!names.length || names.length > ATTRIBUTES.size)
         throw apiError("attributes must be a non-empty supported attribute array");
@@ -222,7 +228,8 @@ export function createInspection({
       return run((call) => call("source", { format }), signal);
     },
     screenshot: (body: RequestBody<"screenshot">, signal?: AbortSignal) => {
-      const t = body.id !== undefined || body.selector !== undefined ? target(body) : null;
+      const t =
+        body.id !== undefined || body.selector !== undefined ? target(body, strategies) : null;
       return run(async (call) => {
         const data = await call("screenshot", t ? { id: await resolve(call, t) } : {});
         if (typeof data !== "string")
@@ -343,7 +350,7 @@ export function createInspection({
       }, signal),
     invalidateObservations: () => observations.clear(),
     wait: async (body: RequestBody<"wait">, signal?: AbortSignal) => {
-      const query = selector(body.selector);
+      const query = selector(body.selector, strategies);
       const condition = body.condition ?? "exists";
       if (!["exists", "absent", "attribute"].includes(condition))
         throw apiError("condition must be exists, absent, or attribute");

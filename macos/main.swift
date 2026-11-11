@@ -294,8 +294,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         loadingBorderState.phase = phase
         loadingBorderState.showMessage = phase != "live"
         loadingBorderState.active = phase == "connecting" || phase == "reconnecting" || (phase == "live" && pageLoading)
-        if phase == "locked" { loadingBorderState.detail = "Unlock your \(kind.rawValue) to continue" }
-        if phase == "disconnected" { loadingBorderState.detail = "Connect your \(kind.rawValue)" }
+        if phase == "locked" { loadingBorderState.detail = "Unlock your \(kind.label) to continue" }
+        if phase == "disconnected" { loadingBorderState.detail = "Connect your \(kind.label)" }
         if phase == "reconnecting" { loadingBorderState.detail = "" }
         capture?.layer.isHidden = phase != "live"
         updateAccessibilityTarget()
@@ -507,7 +507,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     func bind(_ device: IPortalUSBDevice) {
         guard requestedDeviceUDID == nil else { return }
-        requestedDeviceUDID = phoneUDID(fromUSBSerial: device.serial)
+        // Android serials are used exactly as adb reports them.
+        requestedDeviceUDID = device.kind == .android ? device.serial : phoneUDID(fromUSBSerial: device.serial)
         kind = device.kind
         deviceName = device.name
         ratio = kind.initialRatio
@@ -1091,6 +1092,9 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     var preferredCaptureBackend: CaptureBackend {
         guard let udid = requestedDeviceUDID else { return .screenshots }
+        // Android has no Mac capture device or paired media service yet; its
+        // helper supplies the picture.
+        if kind == .android { return .screenshots }
         let monitor = owner?.usbMonitor
         let descriptor = NativeMediaReceiver.available ? monitor?.descriptor(for: udid) : nil
         return mediaPolicy.select(descriptor, usb: monitor?.isUSBConnected(udid) == true,
@@ -1344,6 +1348,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         p.arguments = ["--owned-command", serverURL.path, "--no-open", "--managed", "--owner", serverOwner,
                        "--port", "\(preferredPort)",
                        "--udid", target, "--device-kind", kind.rawValue]
+            + (kind == .android ? ["--platform", "android"] : [])
         let lifetime = Pipe()
         serverLifetimePipe = lifetime
         p.standardInput = lifetime
@@ -1761,7 +1766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func toggleAudio(_ item: NSMenuItem) { activeSession?.toggleAudio(item) }
     @objc func toggleOnTop(_ item: NSMenuItem) { activeSession?.toggleOnTop(item) }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        let kind = activeSession?.kind.rawValue ?? "iPhone"
+        let kind = activeSession?.kind.label ?? "iPhone"
         if item.action == #selector(copyClipboardFromPhone) { item.title = "Copy Clipboard from \(kind)" }
         if item.action == #selector(sendClipboardToPhone) { item.title = "Send Clipboard to \(kind)" }
         if item.action == #selector(copyClipboardFromPhone) || item.action == #selector(sendClipboardToPhone) {
@@ -1770,8 +1775,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if [#selector(selectAllOnPhone), #selector(copyOnPhone), #selector(cutOnPhone), #selector(undoOnPhone), #selector(redoOnPhone), #selector(pasteToPhone)].contains(item.action) {
             return activeSession?.clipboardTarget != nil && activeSession?.settingsBlocksInput == false && activeSession?.clipboard.busy == false
         }
+        // The same commands go by Android's names in an Android window.
+        let android = activeSession?.kind == .android
+        if item.action == #selector(appSwitcher) { item.title = android ? "Recents" : "App Switcher" }
+        if item.action == #selector(spotlight) { item.title = android ? "Search" : "Spotlight" }
+        if item.action == #selector(notifications) { item.title = android ? "Notifications" : "Notification Center" }
+        if item.action == #selector(controlCenter) { item.title = android ? "Quick Settings" : "Control Center" }
         if item.action == #selector(toggleAudio(_:)) { item.title = "Play \(kind) Audio" }
         if item.action == #selector(toggleAudio(_:)) { item.state = activeSession?.audioVolume ?? 0 > 0 ? .on : .off }
+        // Android has no audio path yet; do not offer a switch that does nothing.
+        if item.action == #selector(toggleAudio(_:)), activeSession?.kind == .android { item.state = .off; return false }
         if item.action == #selector(toggleOnTop(_:)) { item.state = activeSession?.window?.level == .floating ? .on : .off }
         return activeSession != nil
     }

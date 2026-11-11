@@ -8,10 +8,10 @@ const text = (max = 10000) => Schema.String.check(Schema.isMaxLength(max));
 const number = Schema.Finite;
 const integer = (min: number, max: number) =>
   number.check(Schema.isInt(), Schema.isBetween({ minimum: min, maximum: max }));
-const nil = Schema.Null;
+export const nil = Schema.Null;
 const nullable = <S extends Schema.Constraint>(schema: S) => Schema.Union([schema, nil]);
 const empty = Schema.Struct({}).check(Schema.isMaxProperties(0));
-const id = text(256).check(Schema.isMinLength(1));
+export const id = text(256).check(Schema.isMinLength(1));
 const duration = number.check(Schema.isBetween({ minimum: 0, maximum: 10000 }));
 const unit = number.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
 const point = Schema.Tuple([unit, unit, duration]);
@@ -45,46 +45,15 @@ const orientation = Schema.Literals([
   "UIA_DEVICE_ORIENTATION_LANDSCAPERIGHT",
   "UIA_DEVICE_ORIENTATION_PORTRAIT_UPSIDEDOWN",
 ]);
-const inputGuards = { expectedBundleId: optional(id), expectedOrientation: optional(orientation) };
+export const inputGuards = {
+  expectedBundleId: optional(id),
+  expectedOrientation: optional(orientation),
+};
 const guardedEmpty = Schema.Struct(inputGuards);
 const app = Schema.Struct({ pid: integer(1, 2147483647), bundleId: id, name: text() });
 const geometry = Schema.Struct({
   width: number.check(Schema.isGreaterThan(0)),
   height: number.check(Schema.isGreaterThan(0)),
-});
-const selector = Schema.Struct({
-  using: Schema.Literals([
-    "accessibility id",
-    "id",
-    "name",
-    "class name",
-    "predicate string",
-    "class chain",
-    "xpath",
-  ]),
-  value: text(8192).check(Schema.isMinLength(1)),
-});
-export const AttributeSchemas = {
-  type: Schema.String.check(Schema.isPattern(/^XCUIElementType[A-Za-z0-9]+$/)),
-  name: nullable(Schema.String),
-  label: Schema.String,
-  value: Schema.Json,
-  enabled: Schema.Boolean,
-  visible: Schema.Boolean,
-  selected: Schema.Boolean,
-  hittable: Schema.Boolean,
-  accessible: Schema.Boolean,
-  rect,
-};
-const attributes = Schema.Struct({
-  ...AttributeSchemas,
-  hittable: optional(Schema.Boolean),
-  identifier: Schema.String,
-  x: number,
-  y: number,
-  width: nonnegative,
-  height: nonnegative,
-  index: integer(0, 10000),
 });
 export interface SourceNode {
   type: string;
@@ -105,24 +74,83 @@ export interface SourceNode {
   children: readonly SourceNode[];
 }
 const flag = Schema.Literals(["0", "1"]);
-export const SourceSchema: Schema.Codec<SourceNode> = Schema.Struct({
-  type: Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]*$/)),
-  label: nullable(Schema.String),
-  value: Schema.Json,
-  name: nullable(Schema.String),
-  rawIdentifier: nullable(Schema.String),
-  frame: Schema.String,
-  nativeFrame: Schema.String,
-  rect,
-  isEnabled: flag,
-  isVisible: flag,
-  isAccessible: flag,
-  isNativeAccessibilityElement: flag,
-  isFocused: flag,
-  traits: Schema.String,
-  customActions: Schema.Json,
-  children: Schema.Array(Schema.suspend(() => SourceSchema)),
+/**
+ * The part of the contract that names a platform's UI concepts: how elements
+ * are selected and what their types are called. Everything else in the helper
+ * contract is shared. Each platform keeps its own vocabulary; neither is
+ * translated into the other's.
+ */
+export function inspectionVocabulary<const S extends readonly [string, ...string[]]>({
+  strategies,
+  elementType,
+  sourceType,
+}: {
+  strategies: S;
+  elementType: RegExp;
+  sourceType: RegExp;
+}) {
+  const selector = Schema.Struct({
+    using: Schema.Literals(strategies),
+    value: text(8192).check(Schema.isMinLength(1)),
+  });
+  const AttributeSchemas = {
+    type: Schema.String.check(Schema.isPattern(elementType)),
+    name: nullable(Schema.String),
+    label: Schema.String,
+    value: Schema.Json,
+    enabled: Schema.Boolean,
+    visible: Schema.Boolean,
+    selected: Schema.Boolean,
+    hittable: Schema.Boolean,
+    accessible: Schema.Boolean,
+    rect,
+  };
+  const attributes = Schema.Struct({
+    ...AttributeSchemas,
+    hittable: optional(Schema.Boolean),
+    identifier: Schema.String,
+    x: number,
+    y: number,
+    width: nonnegative,
+    height: nonnegative,
+    index: integer(0, 10000),
+  });
+  const SourceSchema: Schema.Codec<SourceNode> = Schema.Struct({
+    type: Schema.String.check(Schema.isPattern(sourceType)),
+    label: nullable(Schema.String),
+    value: Schema.Json,
+    name: nullable(Schema.String),
+    rawIdentifier: nullable(Schema.String),
+    frame: Schema.String,
+    nativeFrame: Schema.String,
+    rect,
+    isEnabled: flag,
+    isVisible: flag,
+    isAccessible: flag,
+    isNativeAccessibilityElement: flag,
+    isFocused: flag,
+    traits: Schema.String,
+    customActions: Schema.Json,
+    children: Schema.Array(Schema.suspend((): Schema.Codec<SourceNode> => SourceSchema)),
+  });
+  return { selector, AttributeSchemas, attributes, SourceSchema };
+}
+const ios = inspectionVocabulary({
+  strategies: [
+    "accessibility id",
+    "id",
+    "name",
+    "class name",
+    "predicate string",
+    "class chain",
+    "xpath",
+  ],
+  elementType: /^XCUIElementType[A-Za-z0-9]+$/,
+  sourceType: /^[A-Za-z][A-Za-z0-9]*$/,
 });
+const { selector, attributes } = ios;
+export const AttributeSchemas = ios.AttributeSchemas;
+export const SourceSchema = ios.SourceSchema;
 export const ScreenshotSchema = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(64 * 1024 * 1024),
@@ -166,7 +194,7 @@ const portal = Schema.Struct({
     }),
   ).check(Schema.isMaxLength(24)),
 });
-const contract = <
+export const contract = <
   R extends Schema.ConstraintDecoder<unknown>,
   S extends Schema.ConstraintDecoder<unknown>,
 >(
@@ -411,3 +439,25 @@ export function decodeHelperResult<K extends HelperOperation>(
   }
   return decodeHelper(helperOperations[operation].result, value);
 }
+
+/** What a helper client needs to know about one platform's helper. */
+export interface HelperProtocol {
+  build: string;
+  status: Schema.ConstraintDecoder<unknown>;
+  operations: Record<
+    string,
+    {
+      request: Schema.ConstraintDecoder<unknown>;
+      result: Schema.ConstraintDecoder<unknown>;
+      mutates: boolean;
+    }
+  >;
+  decodeResult(operation: string, args: unknown, value: unknown): unknown;
+}
+export const iosHelperProtocol: HelperProtocol = {
+  build: helperBuild,
+  status: HelperStatusSchema,
+  operations: helperOperations,
+  decodeResult: (operation, args, value) =>
+    decodeHelperResult(operation as HelperOperation, args as never, value),
+};

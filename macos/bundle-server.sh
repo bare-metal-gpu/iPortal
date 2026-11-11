@@ -22,3 +22,10 @@ if [ -d "$PRODUCTS" ]; then
   ditto "$PRODUCTS" "$DEVICE/Build/Products"
   cp "$ROOT/vendor/iportal-device-build/helper-manifest.json" "$DEVICE/helper-manifest.json"
 fi
+# The Android helper is one small unsigned file that the server pushes to a phone.
+ANDROID="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Android"
+rm -rf "$ANDROID"
+if [ -f "$ROOT/vendor/android/iportal-agent.jar" ]; then
+  mkdir -p "$ANDROID"
+  cp "$ROOT/vendor/android/iportal-agent.jar" "$ANDROID/iportal-agent.jar"
+fi

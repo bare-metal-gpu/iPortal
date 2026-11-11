@@ -24,6 +24,15 @@ if [ "$(uname -m)" = arm64 ] && [ "${XCODE_MAJOR:-0}" -ge 27 ] && [ -d /Library/
   echo "→ Building paired-device transport"
   "$ROOT/native/build.sh"
 fi
+# Optional, like the paired transport: Android support needs a JDK and an
+# Android SDK to build its helper. Without them the app is built without it.
+ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}}"
+rm -f "$ROOT/vendor/android/iportal-agent.jar" "$ROOT/vendor/android/iportal-agent.sha256"
+if command -v javac >/dev/null 2>&1 && ls -d "$ANDROID_SDK"/platforms/android-* >/dev/null 2>&1 &&
+   ls -d "$ANDROID_SDK"/build-tools/* >/dev/null 2>&1; then
+  echo "→ Building Android helper"
+  "$ROOT/android/build-agent.sh" >/dev/null
+fi
 if ! xcodebuild -project "$ROOT/macos/iPortal.xcodeproj" -scheme iPortal \
   -configuration Release -destination 'platform=macOS' -derivedDataPath "$BUILD" \
   IPORTAL_BUN_PATH="$BUN" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$SIGN_IDENTITY" DEVELOPMENT_TEAM="$SIGN_TEAM" build >"$ROOT/vendor/mac-build.log" 2>&1; then

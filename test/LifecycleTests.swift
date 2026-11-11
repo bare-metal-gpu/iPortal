@@ -91,6 +91,11 @@ struct LifecycleTests {
         assert(IPortalDeviceKind(product: "iPhone 16 Pro") == .iPhone)
         assert(IPortalDeviceKind(product: "Apple Watch") == nil)
         assert(IPortalDeviceKind.iPad.initialRatio == 0.75)
+        assert(IPortalDeviceKind(rawValue: "Android") == .android && IPortalDeviceKind.android.label == "Android device")
+        assert(IPortalDeviceKind.iPhone.label == "iPhone" && IPortalDeviceKind.iPad.label == "iPad")
+        assert(IPortalDeviceKind(product: "Pixel 6a") == nil, "Android devices are never recognized by USB product name")
+        let androidSerial = "25271JEGR16740"
+        assert(IPortalWatcherRequest(url: IPortalWatcherRequest.mirror(androidSerial).url) == .mirror(androidSerial))
         assert(abs(IPortalDeviceKind.iPad.radius(width: 800, height: 600) - 21) < 0.001)
         var policy = MediaCapabilityPolicy()
         var descriptor = PairedDeviceDescriptor(udid: "phone", identifier: "fixture", name: "Phone", kind: "iPhone",

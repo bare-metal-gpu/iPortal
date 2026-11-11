@@ -152,8 +152,46 @@ function reportLoading() {
   });
 }
 const params = new URLSearchParams(location.search);
-const deviceKind = params.get("kind") === "iPad" ? "iPad" : "iPhone";
-if (deviceKind === "iPad") {
+// The Android server marks its page. Without the mark this is an iPhone or iPad.
+const platform =
+  /** @type {HTMLMetaElement | null} */ (document.querySelector('meta[name="iportal-platform"]'))
+    ?.content === "android"
+    ? "android"
+    : "ios";
+const deviceKind =
+  platform === "android" ? "Android device" : params.get("kind") === "iPad" ? "iPad" : "iPhone";
+// Controls that exist on one platform only carry data-platform.
+for (const element of /** @type {NodeListOf<HTMLElement>} */ (
+  document.querySelectorAll("[data-platform]")
+))
+  if (element.dataset?.platform) element.hidden = element.dataset.platform !== platform;
+if (platform === "android") {
+  for (const [selector, label] of [
+    ['[data-shortcut="control"]', "Quick Settings"],
+    ['[data-shortcut="switcher"]', "Recents"],
+  ]) {
+    const node = document.querySelector(selector)?.firstChild;
+    if (node) node.textContent = `${label} `;
+  }
+  // Application IDs differ by manufacturer; these are Google's. "Another app" takes any.
+  const apps = [
+    ["com.android.chrome", "Chrome"],
+    ["com.google.android.apps.messaging", "Messages"],
+    ["com.google.android.dialer", "Phone"],
+    ["com.google.android.GoogleCamera", "Camera"],
+    ["com.google.android.apps.photos", "Photos"],
+    ["com.android.settings", "Settings"],
+    ["com.google.android.apps.maps", "Maps"],
+    ["com.android.vending", "Play Store"],
+    ["custom", "Another app…"],
+  ];
+  $("app").replaceChildren(
+    ...apps.map(([value, label]) =>
+      Object.assign(document.createElement("option"), { value, label, textContent: label }),
+    ),
+  );
+}
+if (deviceKind !== "iPhone") {
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     if (!["SCRIPT", "STYLE"].includes(walker.currentNode.parentElement?.tagName ?? ""))
@@ -162,7 +200,7 @@ if (deviceKind === "iPad") {
         deviceKind,
       );
   }
-  $("screen").setAttribute("aria-label", "iPad screen");
+  $("screen").setAttribute("aria-label", `${deviceKind} screen`);
 }
 if (params.has("app")) document.body.classList.add("app");
 if (params.has("app") && window.webkit?.messageHandlers?.native)
@@ -1080,7 +1118,10 @@ $("siriBtn").addEventListener("click", () => {
 $("launchBtn").addEventListener("click", () => {
   /** @type {string | null} */
   let bundleId = $("app").value;
-  if (bundleId === "custom") bundleId = prompt("App identifier (for example, com.apple.Maps):");
+  if (bundleId === "custom")
+    bundleId = prompt(
+      `App identifier (for example, ${platform === "android" ? "com.android.settings" : "com.apple.Maps"}):`,
+    );
   if (bundleId) void api("launch", { bundleId });
 });
 

@@ -1,8 +1,8 @@
-import { Cause, Effect, Layer, Stream } from "effect";
+import { Cause, Effect, Layer, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { BunHttpServer } from "@effect/platform-bun";
 import { apiError, errorInfo } from "./errors.mjs";
-import { decodeRequest, RequestSchemas } from "./schemas.ts";
+import { RequestSchemas } from "./schemas.ts";
 import { validatePublicResponse } from "./responses.ts";
 import { interFont } from "./web-assets.mjs";
 import { observability } from "./observability.ts";
@@ -145,7 +145,7 @@ export function openVideoStream(
   });
 }
 
-/** @param {{port:number,instanceId:string,html:string,mjpeg:string,mjpegSocket?:string,helperAuth?:ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>,dispatch:(name:string,body:unknown,signal:AbortSignal)=>Promise<{status:number,body:unknown}>,statusEvents?:{stream:()=>ReadableStream<Uint8Array>},onListening?:(port:number)=>void,identity?:{owner?:string,pinnedUdid?:string|null},fallbackPort?:boolean}} options */
+/** @param {{port:number,instanceId:string,html:string,mjpeg:string,mjpegSocket?:string,helperAuth?:ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>,dispatch:(name:string,body:unknown,signal:AbortSignal)=>Promise<{status:number,body:unknown}>,statusEvents?:{stream:()=>ReadableStream<Uint8Array>},onListening?:(port:number)=>void,identity?:{owner?:string,pinnedUdid?:string|null,platform?:'android'},fallbackPort?:boolean,requests?:Record<string,import('effect').Schema.ConstraintDecoder<unknown>>,validateResponse?:(name:string,raw:unknown,request?:unknown)=>void}} options */
 export function startServer({
   port,
   instanceId,
@@ -158,6 +158,8 @@ export function startServer({
   onListening,
   identity = {},
   fallbackPort = false,
+  requests = RequestSchemas,
+  validateResponse = validatePublicResponse,
 }) {
   let boundPort = port;
   const headers = {
@@ -175,7 +177,7 @@ export function startServer({
   /** @param {string} name @param {unknown} body @param {AbortSignal} signal */
   const checkedDispatch = async (name, body, signal) => {
     const result = await dispatch(name, body, signal);
-    validatePublicResponse(name, result.body, body);
+    validateResponse(name, result.body, body);
     observability.annotate({
       httpStatus: result.status,
       ...(result.body &&
@@ -269,14 +271,16 @@ export function startServer({
             ),
           );
         }
-        if (request.method !== "POST" || !name || !Object.hasOwn(RequestSchemas, name))
+        if (request.method !== "POST" || !name || !Object.hasOwn(requests, name))
           return json({ status: 404, body: { ok: false, error: "Not found" } });
         if (!(request.source instanceof Request)) throw apiError("Invalid request source", 500);
         const source = request.source;
         const raw = yield* Effect.tryPromise((signal) =>
           readBody(source, signal, name === "clipboard-write" ? 6 * 1024 * 1024 : undefined),
         );
-        const body = yield* decodeRequest(/** @type {keyof typeof RequestSchemas} */ (name), raw);
+        const body = yield* Schema.decodeUnknownEffect(requests[name], {
+          onExcessProperty: "error",
+        })(raw);
         return json(
           yield* observability.fromPromise(`api.${name}`, (signal) =>
             checkedDispatch(name, body, signal),

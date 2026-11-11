@@ -20,5 +20,12 @@
     "scripts/test-apple-bridge.ts",
     "scripts/test-peer-transport.ts",
   ],
-  "project": ["*.{mjs,ts}!", "scripts/*.{mjs,ts}", "test/*.{mjs,ts}", "ios/*.ts", "public/*.js!"],
+  "project": [
+    "*.{mjs,ts}!",
+    "android/*.{mjs,ts}!",
+    "scripts/*.{mjs,ts}",
+    "test/*.{mjs,ts}",
+    "ios/*.ts",
+    "public/*.js!",
+  ],
 }

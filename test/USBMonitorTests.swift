@@ -62,6 +62,47 @@ struct USBMonitorTests {
             let accepted = (try? PairedInventory.decode(data)) != nil
             assert(accepted == fixture["valid"] as! Bool, fixture["name"] as! String)
         }
+        // Android devices arrive as an inventory, one row per phone.
+        var androidCable: [Bool] = [], androidReach: [Bool] = []
+        let androids = PhoneUSBMonitor(observeDevices: false, usbChanged: { _, attached in androidCable.append(attached) },
+                                       changed: { _, attached in androidReach.append(attached) })
+        func inventory(_ rows: [[String: Any]]) -> Data {
+            try! JSONSerialization.data(withJSONObject: ["version": 1, "adb": true, "devices": rows])
+        }
+        let pixel = "25271JEGR16740"
+        // A phone already plugged in when the watcher starts is not a new cable.
+        var startupCable: [Bool] = []
+        let startup = PhoneUSBMonitor(observeDevices: false, usbChanged: { _, attached in startupCable.append(attached) },
+                                      changed: { _, _ in })
+        assert(startup.receiveAndroid(inventory([["serial": pixel, "name": "Pixel 6a", "transport": "usb", "usb": true]])))
+        assert(startupCable.isEmpty && startup.isUSBConnected(pixel), "startup inventory cannot invite mirroring")
+        assert(startup.receiveAndroid(inventory([])) && startupCable == [false])
+        assert(startup.receiveAndroid(inventory([["serial": pixel, "name": "Pixel 6a", "transport": "usb", "usb": true]])))
+        assert(startupCable == [false, true], "a later connection does invite")
+        startup.stop()
+        assert(androids.receiveAndroid(inventory([["serial": pixel, "name": "Pixel 6a", "transport": "wifi", "usb": false]])))
+        assert(androidReach == [true] && androidCable.isEmpty)
+        assert(androids.connectedDevices.first?.kind == .android && androids.connectedDevices.first?.serial == pixel,
+               "Android serials keep their case")
+        assert(androids.transport(for: pixel) == .wifi && !androids.isUSBConnected(pixel))
+        assert(androids.receiveAndroid(inventory([["serial": pixel, "name": "Pixel 6a", "transport": "usb", "usb": true]])))
+        assert(androidCable == [true] && androidReach == [true], "plugging in changes the route, not reachability")
+        assert(androids.isUSBConnected(pixel) && androids.usbDevices.count == 1 && androids.transport(for: pixel) == .usb)
+        assert(androids.receiveAndroid(inventory([["serial": pixel, "name": "Pixel 6a", "transport": "wifi", "usb": false]])))
+        assert(androidCable == [true, false] && androidReach == [true], "Wi-Fi survives a cable pull")
+        assert(androids.receiveAndroid(inventory([])))
+        assert(androidReach == [true, false] && androids.connectedDevices.isEmpty)
+        for malformed in [["serial": "bad serial", "name": "x", "transport": "usb", "usb": true],
+                          ["serial": pixel, "name": "", "transport": "usb", "usb": true],
+                          ["serial": pixel, "name": "x", "transport": "bluetooth", "usb": false]] as [[String: Any]] {
+            assert(!androids.receiveAndroid(inventory([malformed])))
+        }
+        assert(!androids.receiveAndroid(inventory([["serial": pixel, "name": "a", "transport": "usb", "usb": true],
+                                                   ["serial": pixel.lowercased(), "name": "b", "transport": "usb", "usb": true]])),
+               "one phone cannot appear twice")
+        androids.stop()
+        assert(!androids.receiveAndroid(inventory([])))
+        print("Android inventory: reachability, cable changes, identity and malformed rows passed.")
         print("Shared inventory fixtures, mixed wireless/USB capture and stopped callbacks passed.")
         print("USB invitations survive paired discovery; duplicate services and route changes preserve session reachability.")
     }
