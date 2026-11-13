@@ -235,7 +235,31 @@ static id IPStream(void (^actions)(id<IPAppleRuntime>)) {
 }
 + (NSDictionary *)applicationInfo:(XCUIApplication *)app {
     NSMutableDictionary *info = [[self applicationIdentity:app] mutableCopy];
-    @try { info[@"name"] = app.label ?: @""; } @catch (NSException *e) { info[@"name"] = @""; }
+    // The name must not come from `app.label`: that takes an accessibility
+    // snapshot of the foreground app, which can hang for many seconds while the
+    // app plays video or animates. A hung query times out, the helper reports
+    // itself blocked, and the mirror drops to Connecting. The system's record of
+    // the app's display name needs no snapshot.
+    NSString *name = @"";
+    @try {
+        NSString *bundle = info[@"bundleId"];
+        Class proxies = NSClassFromString(@"LSApplicationProxy");
+        SEL lookup = NSSelectorFromString(@"applicationProxyForIdentifier:");
+        if (bundle.length && [proxies respondsToSelector:lookup]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id proxy = [proxies performSelector:lookup withObject:bundle];
+#pragma clang diagnostic pop
+            id localized = [proxy respondsToSelector:NSSelectorFromString(@"localizedName")]
+                               ? [proxy valueForKey:@"localizedName"]
+                               : nil;
+            if ([localized isKindOfClass:NSString.class])
+                name = localized;
+        }
+    } @catch (NSException *e) {
+        name = @"";
+    }
+    info[@"name"] = name;
     return info;
 }
 + (NSDictionary *)applicationIdentity:(XCUIApplication *)app {
