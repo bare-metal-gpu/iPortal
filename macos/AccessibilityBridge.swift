@@ -720,12 +720,18 @@ final class MirrorAccessibilityBridge {
         guard wantsVisualEvents else { visualHash = nil; return }
         guard CVPixelBufferLockBaseAddress(pixel, .readOnly) == kCVReturnSuccess else { return }
         defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
-        let planar = CVPixelBufferIsPlanar(pixel)
-        guard planar || CVPixelBufferGetPixelFormatType(pixel) == kCVPixelFormatType_32BGRA else { return }
+        // Only layouts whose bytes can be indexed directly. A hardware decoder
+        // may hand back a compressed or 10-bit surface that reports the picture's
+        // width and height but holds far fewer addressable bytes; sampling one
+        // by row and column reads outside the buffer and crashes the app.
+        let format = CVPixelBufferGetPixelFormatType(pixel)
+        let planar = format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            || format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        guard planar || format == kCVPixelFormatType_32BGRA else { return }
         let width = planar ? CVPixelBufferGetWidthOfPlane(pixel, 0) : CVPixelBufferGetWidth(pixel)
         let height = planar ? CVPixelBufferGetHeightOfPlane(pixel, 0) : CVPixelBufferGetHeight(pixel)
         let stride = planar ? CVPixelBufferGetBytesPerRowOfPlane(pixel, 0) : CVPixelBufferGetBytesPerRow(pixel)
-        guard width > 0, height > 0,
+        guard width > 0, height > 0, stride >= width * (planar ? 1 : 4),
               let base = planar ? CVPixelBufferGetBaseAddressOfPlane(pixel, 0) : CVPixelBufferGetBaseAddress(pixel) else { return }
         let bytes = base.assumingMemoryBound(to: UInt8.self)
         var hash = UInt64(width) &* 1099511628211 ^ UInt64(height)

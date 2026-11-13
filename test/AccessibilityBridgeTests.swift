@@ -227,6 +227,15 @@ private final class Store { var value: [String: Any] = [:] }
         await eventually { frameBridge.observation != nil && frameNetwork.pending.isEmpty }
         for _ in 0..<100 { frameBridge.presented(black) }
         precondition(frameNetwork.requests.count == 3, "Identical frames cannot trigger another inspection")
+        // A decoder may deliver a layout that cannot be indexed by row and column
+        // (10-bit or compressed surfaces). Such frames are ignored, never sampled.
+        var tenBit: CVPixelBuffer?
+        precondition(CVPixelBufferCreate(kCFAllocatorDefault, 48, 64, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                                         nil, &tenBit) == kCVReturnSuccess)
+        frameBridge.presented(tenBit!)
+        frameBridge.presented(black)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        precondition(frameNetwork.requests.count == 3, "An unindexable frame is not a content change")
         let previous = frameBridge.elements[0]
         now += 13
         frameBridge.contentDidChange("idle")
