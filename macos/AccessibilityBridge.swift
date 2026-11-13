@@ -276,6 +276,21 @@ final class MirrorAccessibilityBridge {
     private var demandUntil = -Double.infinity
     private var demandReportedAt = -Double.infinity
     private var retryAt = -Double.infinity
+    // Frame-driven refreshes wait until this time; commands and reads do not.
+    private var frameHoldUntil = -Double.infinity
+    private var failures = 0
+    private var urgent = false
+    private var scheduledIsHold = false
+    // A snapshot that stalls takes the device helper down with it. Some apps
+    // (a video timeline, for one) stall every time, so after a stall nothing is
+    // retried for a long while unless another app comes to the front.
+    private var stalls = 0
+    private var stallUntil = -Double.infinity
+    private var stallDevice: String?
+    private var requestBegan = -Double.infinity
+    private var stalledApp: String?
+    private var appCheck: Task<Void, Never>?
+    private var appCheckedAt = -Double.infinity
     private var readID = UUID()
     private var changeVersion = 0
     private var scheduled: Task<Void, Never>?
@@ -292,9 +307,21 @@ final class MirrorAccessibilityBridge {
         self.clock = clock; self.send = send
     }
 
+    private func registerStall(device: String) {
+        stalls += 1
+        stallDevice = device
+        stallUntil = clock() + min(600, 60 * pow(2, Double(stalls - 1)))
+        retryAt = stallUntil; frameHoldUntil = stallUntil
+        diagnostic("stalled", ["count": stalls])
+    }
+
     func update(target next: MirrorAXTarget?) {
         guard target != next else { return }
         diagnostic("target", ["available": next != nil, "epoch": next?.epoch ?? -1])
+        // A stalled snapshot blocks the device helper, which is then restarted;
+        // that arrives here as a lost target while the request is still pending.
+        // Remember it, or the snapshot would be repeated after every restart.
+        if task != nil, let previous = target, clock() - requestBegan >= 5 { registerStall(device: previous.device) }
         target = next
         task?.cancel(); task = nil
         actionID = UUID()
@@ -303,6 +330,10 @@ final class MirrorAccessibilityBridge {
         scheduled?.cancel(); scheduled = nil
         demandUntil = -Double.infinity; demandReportedAt = -Double.infinity
         retryAt = -Double.infinity; visualHash = nil; contentRevision = nil
+        frameHoldUntil = -Double.infinity; failures = 0; urgent = false
+        appCheck?.cancel(); appCheck = nil; appCheckedAt = -Double.infinity
+        if let next, next.device != stallDevice { stalls = 0; stallUntil = -Double.infinity; stallDevice = nil; stalledApp = nil }
+        if stalls > 0, clock() < stallUntil { retryAt = stallUntil; frameHoldUntil = stallUntil }
         demandChanged(false)
         help = next == nil ? "Device content unavailable." : "Read the device’s accessible content."
     }
@@ -318,8 +349,13 @@ final class MirrorAccessibilityBridge {
 
     // AX getters are cache-only. Interest is leased by real reads, so a video
     // or animation never starts tree inspection during ordinary mirroring.
+    // Diagnostic switch: `defaults write com.baremetalgpu.iportal
+    // AccessibilityBridgeDisabled -bool YES` stops all tree inspection, to tell
+    // whether a problem comes from snapshots or from the connection itself.
+    static let disabled = UserDefaults.standard.bool(forKey: "AccessibilityBridgeDisabled")
+
     func refreshIfNeeded() {
-        guard target != nil else { return }
+        guard target != nil, !Self.disabled else { return }
         demandUntil = clock() + 12
         if clock() - demandReportedAt >= 4 {
             demandReportedAt = clock(); demandChanged(true)
@@ -327,11 +363,41 @@ final class MirrorAccessibilityBridge {
         // On-read safety net for missed events and invisible/off-screen changes.
         // Healthy reads do not have a two-second polling/refresh gate.
         if observation == nil || clock() - sampledAt >= 10 { dirty = true }
+        if stalls > 0, clock() < retryAt { checkStalledApp() }
         startRefresh()
+    }
+
+    // While waiting out a stall, a cheap foreground-app query (no snapshot)
+    // tells whether the app that stalled is still in front.
+    private func checkStalledApp() {
+        guard let target, appCheck == nil, clock() - appCheckedAt >= 3 else { return }
+        appCheckedAt = clock()
+        appCheck = Task { [weak self] in
+            guard let self else { return }
+            defer { self.appCheck = nil }
+            guard let value = try? await self.request("state", body: [:], target: target) as? [String: Any],
+                  let app = (value["app"] as? [String: Any])?["bundleId"] as? String,
+                  !Task.isCancelled, self.target == target, self.stalls > 0 else { return }
+            guard let stalled = self.stalledApp else { self.stalledApp = app; return }
+            guard app != stalled else { return }
+            self.diagnostic("stall-cleared", [:])
+            self.stalls = 0; self.failures = 0; self.stalledApp = nil
+            self.stallUntil = -Double.infinity; self.stallDevice = nil
+            self.retryAt = -Double.infinity; self.frameHoldUntil = -Double.infinity
+            self.dirty = true
+            self.startRefresh()
+        }
     }
 
     func contentDidChange(_ reason: String = "content") {
         dirty = true; changeVersion &+= 1
+        // A command or an explicit change wants the tree promptly. Moving
+        // pictures do not: see frameHoldUntil.
+        if reason != "frame" {
+            urgent = true
+            // Do not leave an urgent change waiting behind a frame hold.
+            if scheduledIsHold { scheduled?.cancel(); scheduled = nil; scheduledIsHold = false }
+        }
         guard wantsVisualEvents else { return }
         diagnostic("changed", ["reason": reason])
         scheduleRefresh()
@@ -346,20 +412,27 @@ final class MirrorAccessibilityBridge {
 
     private func scheduleRefresh() {
         guard scheduled == nil, task == nil, actionTask == nil, wantsVisualEvents else { return }
-        let wait = max(0.12, retryAt - clock())
+        let wait = max(0.12, retryAt - clock(), urgent ? 0 : frameHoldUntil - clock())
+        scheduledIsHold = wait > 0.12 && !urgent
         scheduled = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(min(wait, 5) * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(min(wait, 10) * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
-            self.scheduled = nil
+            self.scheduled = nil; self.scheduledIsHold = false
             if self.wantsVisualEvents { self.startRefresh() }
         }
     }
 
     private func startRefresh() {
         guard dirty, let target, task == nil, actionTask == nil, clock() >= retryAt else { return }
-        scheduled?.cancel(); scheduled = nil
-        let token = UUID(), version = changeVersion
-        readID = token; dirty = false
+        // Within a frame hold the cached tree is at most a few seconds old; a
+        // read is served from it. Commands and a missing tree are not held.
+        if !urgent, observation != nil, clock() < frameHoldUntil {
+            scheduleRefresh()
+            return
+        }
+        scheduled?.cancel(); scheduled = nil; scheduledIsHold = false
+        let token = UUID(), version = changeVersion, began = clock()
+        readID = token; dirty = false; urgent = false; requestBegan = began
         diagnostic("request", [:])
         task = Task { [weak self] in
             guard let self else { return }
@@ -379,12 +452,29 @@ final class MirrorAccessibilityBridge {
                     if changed { NSAccessibility.post(element: host, notification: .layoutChanged) }
                 }
                 self.retryAt = -Double.infinity
+                self.failures = 0; self.stalls = 0; self.stalledApp = nil
+                self.stallUntil = -Double.infinity; self.stallDevice = nil
+                // A snapshot owns the device helper while it runs, and input
+                // waits behind it. Video and animation change every frame, so
+                // refreshing on each change would chain slow snapshots back to
+                // back. After a slow one, frame changes wait three times as long
+                // as it took, which keeps the helper mostly free for input.
+                let took = self.clock() - began
+                self.frameHoldUntil = took > 0.5 ? self.clock() + min(10, 3 * took) : -Double.infinity
                 self.dirty = self.changeVersion != version || !observed.stable
             } catch {
                 diagnostic("failure", ["kind": String(reflecting: type(of: error)), "cancelled": Task.isCancelled])
                 guard !Task.isCancelled, self.target == target, self.readID == token else { return }
                 self.invalidate()
-                self.retryAt = clock() + 1
+                // Back off: a failing snapshot must not be retried every second
+                // against a helper that is already struggling.
+                self.failures += 1
+                if self.clock() - began >= 5 {
+                    self.registerStall(device: target.device)
+                } else {
+                    self.retryAt = clock() + min(8, pow(2, Double(self.failures - 1)))
+                }
+                self.frameHoldUntil = self.retryAt
                 self.help = "Device content unavailable. Read again to retry."
             }
             guard self.target == target, self.readID == token || self.task == nil else { return }

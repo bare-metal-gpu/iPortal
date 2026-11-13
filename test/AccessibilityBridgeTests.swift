@@ -28,9 +28,9 @@ import CoreVideo
     static func observation(_ source: [String: Any], stable: Bool = true, id: String = "observation-a") -> [String: Any] {
         ["id": id, "app": ["bundleId": "com.example.fixture"], "orientation": "PORTRAIT", "stable": stable, "source": source]
     }
-    @MainActor static func eventually(_ condition: () -> Bool) async {
+    @MainActor static func eventually(line: Int = #line, _ condition: () -> Bool) async {
         for _ in 0..<5000 { if condition() { return }; try? await Task.sleep(nanoseconds: 1_000_000) }
-        preconditionFailure("Asynchronous bridge did not settle")
+        preconditionFailure("Asynchronous bridge did not settle (line \(line))")
     }
     static func pixels(_ value: UInt8) -> CVPixelBuffer {
         var pixel: CVPixelBuffer?
@@ -212,6 +212,86 @@ import CoreVideo
         precondition(!frameBridge.wantsVisualEvents && !previous.isAccessibilityElement())
         precondition(frameNetwork.requests.count == 3, "Idle events must not turn into background polling")
         frameBridge.update(target: nil)
+        // A slow snapshot owns the device helper. Moving pictures must not chain
+        // another one straight after it, by frame events or by repeated reads.
+        let slowNetwork = Network()
+        let slowBridge = MirrorAccessibilityBridge(clock: { now }, send: slowNetwork.send)
+        let slowHost = MirrorAXHost(frame: hostRect, bridge: slowBridge)
+        slowBridge.update(target: a)
+        _ = slowHost.accessibilityChildren()
+        await eventually { slowNetwork.requests.count == 1 }
+        now += 2
+        slowBridge.presented(white)
+        slowNetwork.reply(0, observation(source))
+        await eventually { !slowBridge.elements.isEmpty }
+        slowBridge.presented(black)
+        _ = slowHost.accessibilityChildren()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        precondition(slowNetwork.requests.count == 1, "A two-second snapshot holds frame-driven refreshes for six seconds")
+        precondition(!slowBridge.elements.isEmpty, "The cached tree stays readable during the hold")
+        slowBridge.receiveContentRevision(1, instance: a.instance)
+        await eventually { slowNetwork.requests.count == 2 }
+        slowNetwork.reply(1, observation(source))
+        await eventually { slowBridge.observation != nil && slowNetwork.pending.isEmpty }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        slowBridge.presented(white)
+        await eventually { slowNetwork.requests.count == 3 }
+        slowNetwork.reply(2, observation(source), code: 502)
+        await eventually { slowBridge.elements.isEmpty }
+        slowNetwork.requests.removeAll()
+        now += 1.5; _ = slowHost.accessibilityChildren()
+        await eventually { slowNetwork.requests.count == 1 }
+        slowNetwork.reply(0, observation(source), code: 502)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        now += 1.5; _ = slowHost.accessibilityChildren()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        precondition(slowNetwork.requests.count == 1, "Repeated failures back off instead of retrying every second")
+        slowBridge.update(target: nil)
+        // A snapshot that stalls is not retried while the same app stays in front.
+        let stallNetwork = Network()
+        let stallBridge = MirrorAccessibilityBridge(clock: { now }, send: stallNetwork.send)
+        let stallHost = MirrorAXHost(frame: hostRect, bridge: stallBridge)
+        func routes() -> [String] { stallNetwork.requests.map { $0.url!.lastPathComponent } }
+        stallBridge.update(target: a)
+        _ = stallHost.accessibilityChildren()
+        await eventually { routes() == ["observe"] }
+        now += 8
+        stallNetwork.reply(0, observation(source), code: 408)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        now += 10; _ = stallHost.accessibilityChildren()
+        await eventually { routes() == ["observe", "state"] }
+        stallNetwork.reply(1, ["app": ["bundleId": "com.example.video"]])
+        try await Task.sleep(nanoseconds: 200_000_000)
+        now += 10; _ = stallHost.accessibilityChildren()
+        await eventually { routes().count == 3 }
+        precondition(routes()[2] == "state", "The stalled app is checked cheaply, never snapshotted again")
+        stallNetwork.reply(2, ["app": ["bundleId": "com.example.video"]])
+        try await Task.sleep(nanoseconds: 200_000_000)
+        now += 10; _ = stallHost.accessibilityChildren()
+        await eventually { routes().count == 4 }
+        stallNetwork.reply(3, ["app": ["bundleId": "com.example.notes"]])
+        await eventually { routes().count == 5 }
+        precondition(routes()[3] == "state" && routes()[4] == "observe", "Another app in front lifts the hold")
+        stallNetwork.reply(4, observation(source))
+        await eventually { !stallBridge.elements.isEmpty }
+        stallBridge.update(target: nil)
+        // The stall usually arrives as a lost target: the helper was restarted
+        // under the pending snapshot. It must still be remembered afterwards.
+        let lostNetwork = Network()
+        let lostBridge = MirrorAccessibilityBridge(clock: { now }, send: lostNetwork.send)
+        let lostHost = MirrorAXHost(frame: hostRect, bridge: lostBridge)
+        lostBridge.update(target: a)
+        _ = lostHost.accessibilityChildren()
+        await eventually { lostNetwork.requests.count == 1 }
+        now += 9
+        lostBridge.update(target: nil)
+        lostBridge.update(target: MirrorAXTarget(port: a.port, instance: a.instance, device: a.device,
+                                                 generation: a.generation + 1, epoch: a.epoch + 1))
+        _ = lostHost.accessibilityChildren()
+        await eventually { lostNetwork.requests.count == 2 }
+        precondition(lostNetwork.requests[1].url!.lastPathComponent == "state",
+                     "After a restart caused by a stalled snapshot, the snapshot is not repeated")
+        lostBridge.update(target: nil)
 
         let actionNetwork = Network()
         let actionBridge = MirrorAccessibilityBridge(clock: { now }, send: actionNetwork.send)
