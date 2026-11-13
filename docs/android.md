@@ -345,6 +345,8 @@ Observed behaviour worth knowing:
 
 ## Not built yet
 
+- **The PIN pad is black in the mirror.** Android marks it as a secure window. The
+  lock screen itself is shown, and typed digits and Enter still reach the pad.
 - **Native audio is unverified with real playback.** Native video runs on the
   test phone; the helper captures audio, but its level has not been checked.
 - **Mac accessibility bridge on Android is unverified on a phone.** The bridge has
