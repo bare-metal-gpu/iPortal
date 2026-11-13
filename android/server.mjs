@@ -265,6 +265,10 @@ export async function runAndroid(opts, positionals) {
       ],
       { input: `${token}\n` },
     );
+    // The new process has not had its time to come up. Without this, a helper
+    // started after a long outage would be replaced at every check until one
+    // happened to listen within a single check interval.
+    downSince = Date.now();
   };
   /** @param {import("./devices.mjs").AndroidDevice} device */
   const ensureHelper = (device) => {
