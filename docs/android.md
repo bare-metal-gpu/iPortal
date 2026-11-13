@@ -93,8 +93,9 @@ as it is without the paired transport.
 responses have the same shapes as on iPhone, with these differences:
 
 - **Selectors.** `accessibility id` (content description), `id` (resource ID, full
-  or the part after `:id/`), `name` (text or content description), `text`, and
-  `class name`. `predicate string`, `class chain` and `xpath` are iPhone-only.
+  or the part after `:id/`), `name` (text or content description), `text`,
+  `class name`, and a subset of `xpath` (see [XPath selectors](#xpath-selectors)).
+  `predicate string` and `class chain` are iPhone-only.
 - **Element types** are Android class names, for example `android.widget.Button`.
 - **Bounds** are in pixels.
 - **Buttons.** `home`, `volumeUp`, `volumeDown`, plus `back`, `appSwitch`,
@@ -104,8 +105,147 @@ responses have the same shapes as on iPhone, with these differences:
 - **Keyboard.** `command` is sent as Control, which is what Android apps use for
   copy, cut, paste, undo and select all.
 - **Siri** is not available; `/api/siri` returns 404.
-- **Clipboard** transfers need no prompt and do not switch apps. Images are not
-  supported yet.
+- **Clipboard** transfers need no prompt and do not switch apps. Images go both
+  ways (see [Image clipboard](#image-clipboard)).
+- **Live touch.** `POST /api/pointer` sends a stroke one event at a time. It
+  exists on Android only (see [Live touch](#live-touch)).
+- **Lock screen.** A locked phone with its screen on is `lifecycle: "ready"`
+  with `locked: true`, and takes input (see [The lock screen](#the-lock-screen)).
+
+## Live touch
+
+The browser page and the Mac window send touch as it happens: the phone follows
+the pointer during a drag, a trackpad scroll or a pinch, instead of replaying
+the gesture after it ends. `/api/gesture` and `/api/pinch` still work and are
+what the iPhone path uses.
+
+```bash
+# One finger down, moved, and lifted. Use one stroke ID for the whole stroke.
+curl -s localhost:7100/api/pointer -H 'Content-Type: application/json' \
+  -d '{"stroke":"s1","phase":"down","points":[[0.5,0.7]]}'
+curl -s localhost:7100/api/pointer -H 'Content-Type: application/json' \
+  -d '{"stroke":"s1","phase":"move","points":[[0.5,0.5]]}'
+curl -s localhost:7100/api/pointer -H 'Content-Type: application/json' \
+  -d '{"stroke":"s1","phase":"up","points":[[0.5,0.3]]}'
+```
+
+- `phase` is `down`, `move`, `up` or `cancel`. `points` holds one or two
+  fingers as `[x, y]`, normalized in the current orientation. `down` and `move`
+  need it, `up` may give a final position, `cancel` takes none. A stroke may
+  gain or lose its second finger between events.
+- `down` accepts `expectedApp` and `expectedOrientation` and checks the screen
+  state, as a gesture does. Later events only check that the screen is still on
+  and has not rotated. A drag may change the foreground app.
+- The reply is `{"ok":true}` once the phone has taken the event. Send the next
+  event after the reply.
+
+A stroke is many small events, so it is handled differently from an action:
+
+- **No receipts, no replay.** An event has no `requestId` and nothing about it
+  is recorded. If an event fails or its reply is lost, do not send it again. The
+  stroke is over and the finger has been lifted. Later events for that stroke
+  return HTTP 409 with code `stroke ended`.
+- **It always ends with the finger up.** A stroke ends on `up` or `cancel`, when
+  an event fails, after 2 seconds without an event, after 60 seconds in total,
+  when another stroke or any other input begins, when the route to the phone
+  changes, and when the session closes. Every ending except `up` cancels the
+  touch, so it cannot land as a tap. The helper applies the same 2-second rule
+  by itself, so a finger is lifted even if the Mac disappears. To hold a finger
+  still for longer, repeat its position; the page does this every 500 ms.
+- **It owns the queue.** `down` waits its turn like any input, for at most 5
+  seconds. From then until the stroke ends, nothing else runs: no inspection and
+  no other input can come between two events of one stroke. Requests that
+  arrive meanwhile wait, and their own timeouts keep running.
+
+The page sends at most one `move` per 16 ms and only while the previous event
+has been answered; positions in between are dropped in favour of the newest.
+A mouse wheel puts a finger down at the first notch and lifts it 80 ms after the
+last. A scroll that runs out of screen is cancelled and gripped again at its
+starting point, which leaves the content where it is instead of flinging it.
+
+## XPath selectors
+
+`xpath` selects against the same tree `/api/source` returns, with these names:
+
+- **Steps.** Absolute paths of `/` (child) and `//` (descendant) steps. A step
+  is a class name (`android.widget.Button`), `*`, or `node`.
+- **Attributes.** `text`, `content-desc`, `resource-id`, `class`, `package`,
+  `index`, `checkable`, `checked`, `clickable`, `enabled`, `focusable`,
+  `focused`, `scrollable`, `long-clickable`, `password`, `selected`,
+  `displayed`, and iPortal's `label`, `value` and `visible`. Flags compare with
+  `'true'` and `'false'`. A password field's `text` is always empty.
+- **Predicates.** A position (`[2]`, `[last()]`), comparisons with `=`, `!=`,
+  `<`, `<=`, `>`, `>=`, `contains()`, `starts-with()`, `text()`, `position()`,
+  `not()`, `and`, `or`, and several predicates in a row.
+- **One parenthesized path** with predicates: `(//android.widget.Button)[2]`.
+
+```json
+{ "selector": { "using": "xpath", "value": "//android.widget.Button[@text='OK']" } }
+```
+
+The Mac accessibility bridge's paths (`/*[1]/*[3]/*[2]`) are in this subset.
+Everything else fails with `invalid selector` (HTTP 400) rather than matching
+something: other axes (`..`, `parent::`), unions, arithmetic, other functions,
+a bare `[@text]`, and relative paths.
+
+## Image clipboard
+
+`clipboard-write` and `clipboard-read` carry `image` on Android within the
+existing contract and limits (base64, 4 MiB, 20 megapixels).
+
+The helper is not an installed app, so it has no content provider of its own to
+serve a picture from. It works as the shell user instead:
+
+- **To the phone.** The picture (PNG or JPEG) is stored in the phone's media
+  store under `Pictures/iPortal`, and the clipboard is given that item's
+  `content://` address. The picture is therefore visible in the phone's
+  gallery. iPortal keeps only the latest one and removes the previous.
+- **From the phone.** Reading the clipboard grants the shell user access to the
+  copied item's address. The helper opens it through the activity manager, the
+  way the `content read` shell command does, and returns PNG. A picture too
+  large for the limits is scaled down by halves until it fits.
+
+If the phone refuses either step, the transfer fails with `unsupported
+operation` and a message saying which step. Neither direction has been run on a
+phone yet; see [Not verified](#verified).
+
+## The lock screen
+
+Android mirrors its lock screen and accepts input on it, so a locked phone can
+be unlocked from the Mac. The iPhone path is unchanged.
+
+| Phone state        | `locked` | `lifecycle` | What works                               |
+| ------------------ | -------- | ----------- | ---------------------------------------- |
+| Unlocked           | `false`  | `ready`     | Everything                               |
+| Locked, screen on  | `true`   | `ready`     | Picture, touch, live touch, typing, keys |
+| Locked, screen off | `true`   | `locked`    | **Wake** (`/api/unlock`), Lock, buttons  |
+
+`locked` is always the truth. `lifecycle` says whether the mirror is usable, and
+no new value was added: the page and the Mac app show their Locked overlay only
+for `lifecycle: "locked"`, which now means the screen is off. **Wake** turns the
+screen on and dismisses a lock screen that has no PIN; a secure one stays for
+its owner to unlock in the mirror.
+
+While `locked` is `true`, these return HTTP 409 with code `device locked`:
+`launch`, `open-url`, `tap`, `element-action`, `type` with a target, any action
+with `waitFor` or `observationId`, `elements`, `element`, `source`,
+`screenshot`, `observe`, `wait`, `clipboard-read` and `clipboard-write`. The
+lock screen is shown in the mirror, but its PIN pad is not readable through the
+API. `expectedApp` and `expectedOrientation` work as usual. Keep-awake stops
+when the phone locks, as before.
+
+What is typed or drawn on a lock screen is a PIN, a password or a pattern:
+
+- Command receipts normally store a hash of the request. A hash does not hide a
+  short PIN, which is found by trying every candidate. For `type`, `key`,
+  `gesture` and `pinch` sent while the phone is locked, or while its lock state
+  is not known, the payload is left out of the hash. The receipt keeps the
+  request ID and outcome, and still never runs one ID twice. The lock state is
+  asked of the phone for each such input, not taken from a cached value.
+- Live touch events are never recorded, locked or not.
+- Logs and `/api/diagnostics` name operations and outcomes, never arguments.
+- Text the virtual keyboard cannot produce is refused on a lock screen. Placing
+  it would mean reading the password field.
 
 ## Verified
 
@@ -149,6 +289,14 @@ Not verified:
 - Rotation while streaming, long-press, double-tap, sliders, volume keys, lock and
   wake through the API.
 - Any other phone or Android version.
+- **Live touch, `xpath`, the image clipboard and the usable lock screen.** They
+  were built without a phone attached. The helper compiles, the XPath evaluator
+  is tested on the Mac with the helper's own code, and the server and page
+  logic are unit-tested, but nothing here has run on a device. In particular:
+  whether the media store lets the shell user store a picture and the clipboard
+  accept its address, whether other apps can paste it, whether a copied
+  picture's address opens for the shell user, how a cancelled touch behaves in
+  scrolling lists, and how live strokes feel over Wi-Fi.
 
 Observed behaviour worth knowing:
 
@@ -163,12 +311,11 @@ Observed behaviour worth knowing:
 
 - **Native video and audio in the Mac app.** Android windows use the basic JPEG
   stream, without sound, and the audio menu item is disabled for them.
-- **Mac accessibility bridge actions.** The bridge addresses elements by `xpath`,
-  which the Android helper does not support, and has no Android role table.
-- **Live touch.** The helper injects events as they happen, but the client still
-  sends a gesture when it ends, as it does for iPhone.
-- **`xpath` selectors.**
-- **Unlocking through the mirror.** A locked phone is shown as locked, as on
-  iPhone. Whether iPortal should pass input to a lock screen is undecided.
+- **Mac accessibility bridge actions.** The helper now accepts the bridge's
+  `xpath` paths. The bridge itself still has no Android role table and only
+  accepts iPhone type names.
+- **Clipboard images without the gallery.** A picture sent to the phone's
+  clipboard is stored in the media store, because the helper has no content
+  provider. Avoiding that needs an installed app.
 - **Automated tests against a fake device.** Unit tests cover the adb protocol,
   device selection and the contract; the rest was checked on a real phone.

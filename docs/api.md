@@ -45,7 +45,7 @@ for its schema, timing scope and log levels.
 
 `element` and `screenshot` also accept a `selector` instead of an `id`. A selector must resolve to exactly one element for these calls; multiple matches produce HTTP 409. Omit both for a whole-screen screenshot. Screenshot MIME types are detected from the returned bytes (PNG, JPEG or HEIC), not assumed.
 
-Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate string`, `class chain`, and `xpath`. For example:
+Selectors support `accessibility id`, `id`, `name`, `class name`, `predicate string`, `class chain`, and `xpath`. On Android they are `accessibility id`, `id`, `name`, `text`, `class name` and a documented [subset of `xpath`](android.md#xpath-selectors); an expression outside that subset returns `invalid selector` instead of matching. For example:
 
 ```json
 {
@@ -195,6 +195,19 @@ Successful input replies also include diagnostic `timing`: `queueMs` (admission 
 
 `POST /api/pinch` accepts `{ "x": 0.5, "y": 0.5, "scale": 2, "durationMs": 240 }` plus the normal action metadata. Coordinates are normalized in the current interface orientation; scale is 0.25–4 (below 1 zooms out, above 1 zooms in, 1 does nothing), and duration is 80–1000 ms, default 240. Both fingers start together, settle for 40 ms, then move for the requested duration and lift together. The center is clamped near screen edges so neither finger leaves the display. Dimensions are read for every pinch; lock/app/orientation checks, serialization and receipt recovery use the existing action pipeline. Supported behavior depends on the foreground app; Photos supports zooming an open photo.
 
+## Live touch (Android)
+
+`POST /api/pointer` sends one event of a touch stroke as it happens: `{ "stroke": "s1", "phase": "down", "points": [[0.5, 0.7]] }`, then `move` events, then `up`. `points` holds one or two fingers as normalized `[x, y]` in the current interface orientation. `down` accepts `expectedApp` and `expectedOrientation`. The reply is `{ "ok": true }`. The route exists only on an Android server; on iPhone it returns 404, and gestures are sent whole with `gesture` and `pinch`.
+
+Live touch is not part of the action pipeline:
+
+- An event takes no `requestId`, `waitFor`, `observationId` or `timeoutMs`, has no receipt under `/api/commands`, and reports no `outcome`.
+- An event is never replayed. If one fails or its reply is lost, the stroke has ended and the finger has been lifted; do not resend. Further events for that stroke return 409 `stroke ended`.
+- A stroke owns the command queue from `down` until it ends. No inspection and no other input runs between its events. `down` waits for the queue for at most five seconds.
+- A stroke ends by itself after two seconds without an event or sixty seconds in total, and whenever other input begins. These endings cancel the touch instead of lifting it.
+
+See [Android: live touch](android.md#live-touch) for the full rules.
+
 ## Observations
 
 `observe` captures app/orientation, source, an optional screenshot, then source/app/orientation again. It returns component capture timestamps and an opaque `id`. `stable: true` means the two sampled trees and app/orientation agreed; this is a bounded consistency check, **not an atomic snapshot or a guarantee of pixel stability**. If `settleMs` is supplied, that agreement must persist across samples; `timeoutMs` defaults to 8000, maximum 60000. Omit screenshot with `{"screenshot":false}` when a tree is enough.
@@ -251,6 +264,13 @@ the phone is unlocked. `GET /api/health` checks the local server without contact
 the phone. Input requires a ready, unlocked device; queued work is discarded when
 its device connection is invalidated.
 
+On Android a locked phone whose screen is on reports `locked: true` with
+`lifecycle: "ready"`: its lock screen is mirrored and takes touch, typing and
+keys, so it can be unlocked from the Mac. `lifecycle: "locked"` there means the
+screen is off. Inspection, element actions, `launch`, `open-url` and the
+clipboard return 409 `device locked` until the phone is unlocked. See
+[Android: the lock screen](android.md#the-lock-screen).
+
 `GET /api/events` returns `text/event-stream`. Each `data:` record contains the same
 connection snapshot as `/api/status`, plus an increasing `eventSequence` and
 `observedAt` (Unix milliseconds). Subscribe once per viewer; do not poll status while
@@ -283,6 +303,12 @@ Mac clipboard. Writes use a local-only pasteboard item to avoid Handoff loops.
 No transfer payload or response is retained in the command receipt ledger, and
 neither direction retries automatically. Clipboard writes copy the item only;
 they do not invoke Paste in the foreground app.
+
+On Android no prompt appears and no app is switched. An image sent to the phone
+is stored in its media store (`Pictures/iPortal`, latest only) so that the
+clipboard can point other apps at it; an image read from the phone is returned
+as PNG, scaled down if it exceeds the limits. See
+[Android: image clipboard](android.md#image-clipboard).
 
 ## Keyboard editing
 

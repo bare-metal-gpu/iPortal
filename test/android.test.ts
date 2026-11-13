@@ -9,7 +9,22 @@ import {
   serialFromTransport,
 } from "../android/adb.mjs";
 import { attachmentProblem, selectAndroidDevice } from "../android/devices.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Database } from "bun:sqlite";
+import { commandContext, createScheduler } from "../scheduler.ts";
+import { createCommands, fingerprint } from "../commands.ts";
+import { createLiveTouch } from "../android/live-touch.ts";
 import {
+  admittedWhileLocked,
+  androidLifecycle,
+  lockedError,
+  privateLedger,
+} from "../android/lock.ts";
+import {
+  AndroidActionSchemas,
   AndroidRequestSchemas,
   androidHelperProtocol,
   androidOperations,
@@ -146,6 +161,435 @@ test("public responses are validated against the platform that produced them", (
   expect(() => validateAndroidResponse("element", element("android.widget.Button"))).not.toThrow();
   expect(() => validatePublicResponse("element", element("android.widget.Button"))).toThrow();
   expect(() => validatePublicResponse("element", element("XCUIElementTypeButton"))).not.toThrow();
+});
+
+test("Android selects by the XPath subset its helper implements", () => {
+  const decode = (schema: Schema.ConstraintDecoder<unknown>, value: unknown) =>
+    Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
+  // The path format the Mac accessibility bridge builds from the UI tree.
+  for (const value of ["/*[1]/*[3]/*[2]", "//android.widget.Button[@text='OK']"]) {
+    expect(() =>
+      decode(androidOperations.elements.request, { using: "xpath", value }),
+    ).not.toThrow();
+    expect(() =>
+      parseAndroidRequest("elements", { selector: { using: "xpath", value } }),
+    ).not.toThrow();
+    expect(() => parseAndroidRequest("tap", { selector: { using: "xpath", value } })).not.toThrow();
+  }
+  expect(() =>
+    parseAndroidRequest("elements", { selector: { using: "class chain", value: "x" } }),
+  ).toThrow();
+});
+
+// The helper's XPath evaluator has no Android dependency, so the real code runs here.
+test.skipIf(!Bun.which("javac") || !Bun.which("java"))(
+  "the helper's XPath subset selects correctly and refuses what it does not support",
+  () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-xpath-"));
+    try {
+      const source = (name: string) =>
+        fileURLToPath(new URL(`../android/agent/${name}`, import.meta.url));
+      const compiled = Bun.spawnSync([
+        "javac",
+        "-nowarn",
+        "-d",
+        out,
+        source("src/iportal/XPath.java"),
+        source("src/iportal/Failure.java"),
+        source("test/iportal/XPathCheck.java"),
+      ]);
+      expect(compiled.stderr.toString()).toBe("");
+      const ran = Bun.spawnSync(["java", "-cp", out, "iportal.XPathCheck"]);
+      expect(ran.stdout.toString().trim()).toBe("ok");
+      expect(ran.exitCode).toBe(0);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  },
+);
+
+// ---- live touch ----
+
+test("live touch has its own route and contract, on Android only", () => {
+  const decode = (schema: Schema.ConstraintDecoder<unknown>, value: unknown) =>
+    Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
+  const stroke = "s-1";
+  const one = [[0.25, 0.5]];
+  const two = [
+    [0.4, 0.5],
+    [0.6, 0.5],
+  ];
+  for (const body of [
+    { stroke, phase: "down", points: one },
+    { stroke, phase: "down", points: two, expectedApp: "com.android.settings" },
+    { stroke, phase: "down", points: one, expectedOrientation: "PORTRAIT" },
+    { stroke, phase: "move", points: two },
+    { stroke, phase: "up" },
+    { stroke, phase: "up", points: one },
+    { stroke, phase: "cancel" },
+  ])
+    expect(() => parseAndroidRequest("pointer", body)).not.toThrow();
+  for (const body of [
+    { stroke, phase: "down" },
+    { stroke, phase: "move" },
+    { stroke, phase: "cancel", points: one },
+    { stroke, phase: "move", points: one, expectedApp: "com.android.settings" },
+    { stroke, phase: "down", points: [] },
+    { stroke, phase: "down", points: [...two, [0.5, 0.5]] },
+    { stroke, phase: "down", points: [[1.2, 0.5]] },
+    { stroke, phase: "down", points: [[0.5, 0.5, 40]] },
+    { stroke, phase: "press", points: one },
+    { phase: "down", points: one },
+    { stroke: "not an id", phase: "down", points: one },
+    // A stroke is never replayed, so it takes no receipt and no postcondition.
+    { stroke, phase: "down", points: one, requestId: "r1" },
+    { stroke, phase: "down", points: one, waitFor: { selector: { using: "text", value: "OK" } } },
+  ])
+    expect(() => parseAndroidRequest("pointer", body)).toThrow();
+  expect(Object.hasOwn(AndroidActionSchemas, "pointer")).toBe(false);
+  expect(Object.hasOwn(RequestSchemas, "pointer")).toBe(false);
+  expect("pointer" in helperOperations).toBe(false);
+
+  expect(androidOperations.pointer.mutates).toBe(true);
+  expect(() =>
+    decode(androidOperations.pointer.request, {
+      stroke,
+      phase: "down",
+      points: one,
+      expectedBundleId: "com.android.settings",
+    }),
+  ).not.toThrow();
+  expect(() => decode(androidOperations.pointer.request, { stroke, phase: "move" })).toThrow();
+  expect(androidHelperProtocol.decodeResult("pointer", {}, null)).toBeNull();
+
+  expect(() => validateAndroidResponse("pointer", { ok: true })).not.toThrow();
+  expect(() =>
+    validateAndroidResponse("pointer", { ok: false, error: "ended", code: "stroke ended" }),
+  ).not.toThrow();
+  expect(() => validateAndroidResponse("pointer", { ok: "yes" })).toThrow();
+  expect(() => validatePublicResponse("pointer", { ok: true })).toThrow();
+});
+
+/** A helper stand-in that records pointer operations and can fail or stall them. */
+function strokeRig(options: { idleMs?: number; maxMs?: number; admitMs?: number } = {}) {
+  const sent: string[] = [];
+  const scheduler = createScheduler();
+  let transport = new AbortController();
+  let fail: ((phase: string) => unknown) | undefined;
+  let ended = 0;
+  const live = createLiveTouch({
+    send: async (args) => {
+      sent.push(`${args.phase}:${args.stroke}`);
+      // Only the down may carry its request's deadline; see live-touch.ts.
+      if ((args.phase === "down") !== Boolean(commandContext.getStore()?.deadline))
+        sent.push("wrong context");
+      const failure = fail?.(args.phase);
+      if (failure) throw failure;
+    },
+    enqueue: scheduler.enqueue,
+    transportSignal: () => transport.signal,
+    onEnd: () => ended++,
+    ...options,
+  });
+  const point = [[0.5, 0.5]] as const;
+  const request = new AbortController().signal;
+  return {
+    sent,
+    scheduler,
+    live,
+    ended: () => ended,
+    failing(next: typeof fail) {
+      fail = next;
+    },
+    reroute() {
+      transport.abort(new Error("Device connection changed"));
+      transport = new AbortController();
+    },
+    down: (stroke: string) => live.handle({ stroke, phase: "down", points: point }, request),
+    move: (stroke: string) => live.handle({ stroke, phase: "move", points: point }, request),
+    up: (stroke: string) => live.handle({ stroke, phase: "up" }, request),
+    cancel: (stroke: string) => live.handle({ stroke, phase: "cancel" }, request),
+  };
+}
+const code = (promise: Promise<unknown>) =>
+  promise.then(
+    () => "resolved",
+    (error: { code?: string }) => error.code ?? "error",
+  );
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+/** Whether the stroke has handed the queue back. The scheduler notices a moment after. */
+const released = async (rig: ReturnType<typeof strokeRig>) => {
+  await tick();
+  const { active, queued } = rig.scheduler.stats();
+  return !active && queued === 0;
+};
+
+test("a live stroke owns the queue from down to up, so nothing runs between its events", async () => {
+  const rig = strokeRig();
+  const order: string[] = [];
+  await rig.down("a");
+  const inspection = rig.scheduler.enqueue(() => {
+    order.push("inspection");
+  });
+  await rig.move("a");
+  await rig.move("a");
+  await tick();
+  expect(order).toEqual([]);
+  expect(rig.scheduler.stats()).toMatchObject({ active: true, queued: 1 });
+  await rig.up("a");
+  await inspection;
+  expect(order).toEqual(["inspection"]);
+  expect(rig.sent).toEqual(["down:a", "move:a", "move:a", "up:a"]);
+  expect(rig.ended()).toBe(1);
+  expect(rig.live.active).toBe(false);
+  // The stroke is over: its ID addresses nothing, and nothing is replayed.
+  expect(await code(rig.move("a"))).toBe("stroke ended");
+  expect(await code(rig.up("a"))).toBe("stroke ended");
+  expect(await code(rig.cancel("a"))).toBe("resolved");
+  expect(rig.sent).toHaveLength(4);
+});
+
+test("a live stroke waits its turn, and events sent early keep their order", async () => {
+  const rig = strokeRig();
+  let finish = () => {};
+  const running = rig.scheduler.enqueue(() => new Promise<void>((resolve) => (finish = resolve)));
+  const down = rig.down("a");
+  const move = rig.move("a");
+  await tick();
+  expect(rig.sent).toEqual([]);
+  finish();
+  await Promise.all([running, down, move]);
+  await rig.up("a");
+  expect(rig.sent).toEqual(["down:a", "move:a", "up:a"]);
+
+  // A down that cannot start in time is refused; it never lands late.
+  const slow = strokeRig({ admitMs: 20 });
+  const blocked = slow.scheduler.enqueue(() => new Promise<void>((resolve) => (finish = resolve)));
+  expect(await code(slow.down("late"))).toBe("timeout");
+  finish();
+  await blocked;
+  expect(slow.sent).toEqual([]);
+  expect(await released(slow)).toBe(true);
+});
+
+test("a live stroke always ends with the finger up", async () => {
+  // An event that fails is not retried: the stroke is cancelled and the queue released.
+  const failed = strokeRig();
+  await failed.down("a");
+  failed.failing((phase) => (phase === "move" ? new Error("Helper request failed") : undefined));
+  expect(await code(failed.move("a"))).toBe("error");
+  expect(failed.sent).toEqual(["down:a", "move:a", "cancel:a"]);
+  expect(await released(failed)).toBe(true);
+  expect(await code(failed.move("a"))).toBe("stroke ended");
+
+  // The helper already lifted the finger: nothing is left to cancel.
+  const gone = strokeRig();
+  await gone.down("a");
+  gone.failing(() => Object.assign(new Error("lifted"), { code: "stroke ended" }));
+  expect(await code(gone.move("a"))).toBe("stroke ended");
+  expect(gone.sent).toEqual(["down:a", "move:a"]);
+  expect(await released(gone)).toBe(true);
+
+  // A refused down touched nothing; one of unknown outcome may have.
+  const refused = strokeRig();
+  refused.failing(() =>
+    Object.assign(new Error("Unlock"), { code: "device locked", outcome: "notExecuted" }),
+  );
+  expect(await code(refused.down("a"))).toBe("device locked");
+  expect(refused.sent).toEqual(["down:a"]);
+  expect(refused.ended()).toBe(0);
+  const unknown = strokeRig();
+  unknown.failing((phase) =>
+    phase === "down" ? Object.assign(new Error("lost"), { outcome: "unknown" }) : undefined,
+  );
+  expect(await code(unknown.down("a"))).toBe("error");
+  expect(unknown.sent).toEqual(["down:a", "cancel:a"]);
+  expect(await released(unknown)).toBe(true);
+
+  // Silence, a stroke that never ends, a new stroke and a route change all cancel.
+  const silent = strokeRig({ idleMs: 30 });
+  await silent.down("a");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  expect(silent.sent).toEqual(["down:a", "cancel:a"]);
+  expect(await released(silent)).toBe(true);
+  const endless = strokeRig({ maxMs: 60, idleMs: 40 });
+  await endless.down("a");
+  for (let i = 0; i < 8 && endless.live.active; i++) {
+    await endless.move("a").catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  expect(endless.sent.at(-1)).toBe("cancel:a");
+  const replaced = strokeRig();
+  await replaced.down("a");
+  await replaced.down("b");
+  expect(replaced.sent).toEqual(["down:a", "cancel:a", "down:b"]);
+  expect(await code(replaced.move("a"))).toBe("stroke ended");
+  await replaced.cancel("b");
+  expect(replaced.sent.at(-1)).toBe("cancel:b");
+  const rerouted = strokeRig();
+  await rerouted.down("a");
+  rerouted.reroute();
+  await tick();
+  expect(rerouted.sent).toEqual(["down:a", "cancel:a"]);
+  expect(await released(rerouted)).toBe(true);
+  await rerouted.live.stop();
+});
+
+// ---- the lock screen ----
+
+test("a locked Android phone is usable while its lock screen is showing", () => {
+  const base = { device: true, up: true };
+  expect(androidLifecycle({ ...base, locked: false, interactive: null })).toBe("ready");
+  // Keyguard showing, screen on: usable, and still reported as locked elsewhere.
+  expect(androidLifecycle({ ...base, locked: true, interactive: true })).toBe("ready");
+  // Screen off, or not known to be on: locked until woken.
+  expect(androidLifecycle({ ...base, locked: true, interactive: false })).toBe("locked");
+  expect(androidLifecycle({ ...base, locked: true, interactive: null })).toBe("locked");
+  expect(androidLifecycle({ ...base, locked: null, interactive: null })).toBe("connecting");
+  expect(androidLifecycle({ ...base, up: false, locked: null, interactive: null })).toBe(
+    "connecting",
+  );
+  expect(androidLifecycle({ device: false, up: false, locked: null, interactive: null })).toBe(
+    "disconnected",
+  );
+  expect(Schema.decodeUnknownSync(androidOperations.power.result)({ interactive: true })).toEqual({
+    interactive: true,
+  });
+});
+
+test("the lock screen takes input but is not read, and nothing starts behind it", () => {
+  const selector = { using: "text", value: "1" };
+  for (const [name, body] of [
+    ["type", { text: "1234" }],
+    ["key", { key: "Enter" }],
+    ["gesture", { points: [[0.5, 0.8, 0]], end: 40 }],
+    ["pinch", { x: 0.5, y: 0.5, scale: 2 }],
+    ["pointer", { stroke: "s", phase: "down", points: [[0.5, 0.5]] }],
+    ["home", {}],
+    ["button", { name: "back" }],
+    ["shortcut", { name: "notifications" }],
+    ["lock", {}],
+    ["unlock", {}],
+    ["state", {}],
+    ["status", {}],
+    ["presence", { clientId: "c", ready: true }],
+    ["keep-awake", {}],
+    ["quality", { level: "low" }],
+  ] as const)
+    expect([name, admittedWhileLocked(name, body)]).toEqual([name, true]);
+  for (const [name, body] of [
+    ["launch", { bundleId: "com.android.settings" }],
+    ["open-url", { url: "https://example.com/" }],
+    ["tap", { selector }],
+    ["element-action", { selector, action: "focus" }],
+    ["type", { text: "1234", selector }],
+    ["type", { text: "1234", id: "a1" }],
+    ["elements", { selector }],
+    ["element", { selector }],
+    ["source", {}],
+    ["screenshot", {}],
+    ["observe", {}],
+    ["wait", { selector }],
+    ["clipboard-read", {}],
+    ["clipboard-write", { format: "text", content: "eA==" }],
+    // A postcondition or an observation guard would read the lock screen.
+    ["key", { key: "Enter", waitFor: { selector } }],
+    ["type", { text: "1234", observationId: "o1" }],
+  ] as const)
+    expect([name, admittedWhileLocked(name, body)]).toEqual([name, false]);
+  expect(lockedError()).toMatchObject({ status: 409, code: "device locked" });
+});
+
+test("nothing typed or drawn on a lock screen can be recovered from a receipt", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-lock-"));
+  const file = path.join(directory, "commands.sqlite");
+  try {
+    let locked: boolean | null = true;
+    let asked = 0;
+    const commands = createCommands({ file });
+    const ledger = privateLedger(commands, async () => {
+      asked++;
+      if (locked === undefined) throw new Error("helper unreachable");
+      return locked;
+    });
+    const ok = (id: string) => async () => ({
+      status: 200,
+      body: { ok: true, requestId: id, outcome: "executed" as const, verified: false },
+    });
+    const inputs = {
+      pin: { name: "type", body: { text: "4821", requestId: "pin" } },
+      enter: { name: "key", body: { key: "Enter", modifiers: [], requestId: "enter" } },
+      digit: { name: "key", body: { key: "7", requestId: "digit" } },
+      pattern: {
+        name: "gesture",
+        body: {
+          points: [
+            [0.2, 0.6, 0],
+            [0.8, 0.6, 200],
+          ],
+          end: 200,
+          requestId: "pattern",
+        },
+      },
+      zoom: { name: "pinch", body: { x: 0.5, y: 0.5, scale: 2, requestId: "zoom" } },
+    };
+    for (const [id, input] of Object.entries(inputs)) await ledger.execute(id, input, ok(id));
+    // The lock state is not known: treated as locked.
+    locked = null;
+    await ledger.execute("unknown", { name: "type", body: { text: "9999" } }, ok("unknown"));
+    locked = undefined as unknown as null;
+    await ledger.execute(
+      "unreachable",
+      { name: "type", body: { text: "0000" } },
+      ok("unreachable"),
+    );
+    expect(asked).toBe(7);
+
+    const db = new Database(commands.databasePath, { readonly: true });
+    const rows = db.query<{ id: string; hash: string }, []>("SELECT id, hash FROM receipts").all();
+    db.close();
+    expect(rows).toHaveLength(7);
+    for (const row of rows) {
+      const name = row.id in inputs ? inputs[row.id as keyof typeof inputs].name : "type";
+      // The stored hash depends on nothing but the kind of input.
+      expect(row.hash).toBe(fingerprint({ name, locked: true }));
+    }
+    // A four-digit PIN is found from an ordinary hash by trying them all.
+    const pinRow = rows.find((row) => row.id === "pin")!;
+    const guessed = Array.from({ length: 10000 }, (_, i) => String(i).padStart(4, "0")).some(
+      (text) => fingerprint({ name: "type", body: { text, requestId: "pin" } }) === pinRow.hash,
+    );
+    expect(guessed).toBe(false);
+    for (const text of ["4821", "9999", "0000"])
+      for (const suffix of ["", "-wal"])
+        if (fs.existsSync(commands.databasePath + suffix))
+          expect(fs.readFileSync(commands.databasePath + suffix).includes(text)).toBe(false);
+
+    // The receipt still answers for its ID and still never runs it twice.
+    expect(ledger.get("pin")).toMatchObject({ state: "executed" });
+    let reran = false;
+    const again = await ledger.execute("pin", inputs.pin, async () => {
+      reran = true;
+      return ok("pin")();
+    });
+    expect(reran).toBe(false);
+    expect(again.body.outcome).toBe("executed");
+
+    // Unlocked input and input that carries no secret keep their ordinary fingerprint.
+    locked = false;
+    const text = { name: "type", body: { text: "hello", requestId: "text" } };
+    await ledger.execute("text", text, ok("text"));
+    expect(
+      await code(ledger.execute("text", { name: "type", body: { text: "other" } }, ok("text"))),
+    ).toBe("request conflict");
+    locked = true;
+    const before = asked;
+    await ledger.execute("home", { name: "home", body: {} }, ok("home"));
+    expect(asked).toBe(before);
+    commands.close();
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 // A stand-in for the adb server's local socket protocol.

@@ -282,8 +282,8 @@ test("native loading tracks queued input, reconnects and the first fallback fram
 
 // Stateful browser harness: classes, canvas contents, time and network liveness
 // remain observable, so readiness tests cannot bypass CSS or native handshakes.
-/** @param {{fetchAction?: Function, decodeFrame?: Function, beforeStatus?: Function}} [options] */
-function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
+/** @param {{fetchAction?: Function, decodeFrame?: Function, beforeStatus?: Function, platform?: "android"}} [options] */
+function browserHarness({ fetchAction, decodeFrame, beforeStatus, platform } = {}) {
   const nodes = new Map(),
     timers = new Map(),
     messages = [],
@@ -313,6 +313,8 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
         setPointerCapture() {},
         append() {},
         remove() {},
+        replaceChildren() {},
+        setAttribute() {},
         style: {},
         dataset: {},
         value: "",
@@ -334,12 +336,20 @@ function browserHarness({ fetchAction, decodeFrame, beforeStatus } = {}) {
     queueMicrotask,
     location: { search: "?app=1&video=native", reload() {} },
     performance: { now: () => now },
+    NodeFilter: { SHOW_TEXT: 4 },
     document: {
       body: element("body"),
       getElementById: element,
-      querySelector: element,
+      // The Android server marks its page; without the mark it is an iPhone's.
+      querySelector: (selector) =>
+        selector === 'meta[name="iportal-platform"]'
+          ? platform
+            ? { content: platform }
+            : null
+          : element(selector),
       querySelectorAll: () => [],
       createElement: () => element("ripple"),
+      createTreeWalker: () => ({ nextNode: () => false }),
       activeElement: null,
     },
     window: {
@@ -1474,4 +1484,242 @@ test("editing keys preserve modifiers, ordering, composition and settings isolat
   await h.settle();
   assert.equal(h.calls.filter(([url]) => url === "/api/key").length, 1);
   assert.equal(h.calls.filter(([url]) => url === "/api/type").length, 2);
+});
+
+// ---- Android: live touch ----
+
+const pointerCalls = (h) =>
+  h.calls.filter(([url]) => url === "/api/pointer").map(([, options]) => JSON.parse(options.body));
+const at = (x, y) => ({
+  button: 0,
+  pointerId: 1,
+  clientX: x * 400,
+  clientY: y * 800,
+  preventDefault() {},
+});
+
+test("an Android page streams a drag as it happens; an iPhone page still sends one gesture", async () => {
+  const h = browserHarness({ platform: "android" });
+  await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const screen = h.element("screen");
+  screen.listeners.pointerdown(at(0.5, 0.5));
+  // Positions that arrive while the down is in flight collapse into the newest.
+  screen.listeners.pointermove(at(0.5, 0.45));
+  screen.listeners.pointermove(at(0.5, 0.4));
+  await h.settle();
+  assert.deepEqual(
+    pointerCalls(h).map((e) => [e.phase, e.points]),
+    [
+      ["down", [[0.5, 0.5]]],
+      ["move", [[0.5, 0.4]]],
+    ],
+  );
+  // At most one move per display frame.
+  screen.listeners.pointermove(at(0.5, 0.35));
+  screen.listeners.pointermove(at(0.5, 0.3));
+  await h.settle();
+  assert.equal(pointerCalls(h).length, 2);
+  await h.advance(16);
+  assert.deepEqual(pointerCalls(h).at(-1).points, [[0.5, 0.3]]);
+  assert.equal(pointerCalls(h).length, 3);
+  // A finger held still repeats its position, so the phone keeps it down.
+  await h.advance(500);
+  assert.deepEqual(
+    pointerCalls(h)
+      .slice(3)
+      .map((e) => [e.phase, e.points]),
+    [["move", [[0.5, 0.3]]]],
+  );
+  screen.listeners.pointerup(at(0.5, 0.2));
+  await h.settle();
+  const stroke = pointerCalls(h);
+  assert.deepEqual([stroke.at(-1).phase, stroke.at(-1).points], ["up", [[0.5, 0.2]]]);
+  assert.equal(new Set(stroke.map((e) => e.stroke)).size, 1);
+  assert.ok(
+    stroke.every((e) => !("requestId" in e)),
+    "live events carry no receipt",
+  );
+  await h.advance(1000);
+  assert.equal(pointerCalls(h).length, stroke.length, "a finished stroke sends nothing more");
+  // A click is a down and an up; the up waits for the down to be answered.
+  screen.listeners.pointerdown(at(0.25, 0.75));
+  screen.listeners.pointerup(at(0.25, 0.75));
+  await h.settle();
+  const click = pointerCalls(h).slice(stroke.length);
+  assert.deepEqual(
+    click.map((e) => e.phase),
+    ["down", "up"],
+  );
+  assert.notEqual(click[0].stroke, stroke[0].stroke);
+  assert.equal(h.calls.filter(([url]) => url === "/api/gesture").length, 0);
+
+  const iphone = browserHarness();
+  await iphone.settle();
+  iphone.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const iphoneScreen = iphone.element("screen");
+  iphoneScreen.listeners.pointerdown(at(0.5, 0.5));
+  await iphone.advance(40);
+  iphoneScreen.listeners.pointermove(at(0.5, 0.4));
+  await iphone.settle();
+  assert.equal(iphone.calls.filter(([url]) => url === "/api/gesture").length, 0);
+  iphoneScreen.listeners.pointerup(at(0.5, 0.2));
+  await iphone.settle();
+  assert.equal(iphone.calls.filter(([url]) => url === "/api/gesture").length, 1);
+  assert.equal(pointerCalls(iphone).length, 0);
+});
+
+test("a live stroke is never resent: failure ends it, and invalidated input cancels it", async () => {
+  let refuse = false;
+  const h = browserHarness({
+    platform: "android",
+    fetchAction: (url, options) =>
+      url === "/api/pointer" && refuse && JSON.parse(options.body).phase === "move"
+        ? { json: async () => ({ ok: false, code: "stroke ended", error: "ended" }) }
+        : undefined,
+  });
+  await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const screen = h.element("screen");
+  screen.listeners.pointerdown(at(0.5, 0.5));
+  await h.settle();
+  refuse = true;
+  screen.listeners.pointermove(at(0.5, 0.4));
+  await h.settle();
+  const failed = pointerCalls(h).length;
+  screen.listeners.pointermove(at(0.5, 0.3));
+  screen.listeners.pointerup(at(0.5, 0.3));
+  await h.advance(600);
+  assert.equal(pointerCalls(h).length, failed, "nothing follows a failed event");
+  refuse = false;
+  // Lock, reconnect or rotation: the finger is cancelled, never left down or lifted as a tap.
+  screen.listeners.pointerdown(at(0.5, 0.5));
+  await h.settle();
+  h.run("invalidateInput()");
+  await h.settle();
+  assert.equal(pointerCalls(h).at(-1).phase, "cancel");
+  assert.equal(pointerCalls(h).at(-1).points, undefined);
+  screen.listeners.pointermove(at(0.5, 0.3));
+  screen.listeners.pointerup(at(0.5, 0.3));
+  await h.advance(600);
+  assert.equal(pointerCalls(h).at(-1).phase, "cancel");
+  // A stroke abandoned before its down was sent has nothing to cancel.
+  const count = pointerCalls(h).length;
+  h.run("void api('home')");
+  screen.listeners.pointerdown(at(0.5, 0.5));
+  h.run("invalidateInput()");
+  await h.settle();
+  assert.equal(pointerCalls(h).length, count);
+});
+
+test("Android scrolling and pinching follow the trackpad live", async () => {
+  const h = browserHarness({ platform: "android" });
+  await h.settle();
+  h.run("setNativeVideoReady(true, videoEpoch, bridgeId)");
+  const scroll = (event) =>
+    h.run(
+      `nativeScroll(${JSON.stringify({ x: 0.5, y: 0.5, dx: 0, dy: 0, ...event })}, videoEpoch, bridgeId)`,
+    );
+  const phases = (from = 0) =>
+    pointerCalls(h)
+      .slice(from)
+      .map((e) => e.phase);
+  scroll({ phase: "began" });
+  await h.settle();
+  scroll({ phase: "changed", dy: 0.1 });
+  await h.settle();
+  assert.deepEqual(
+    pointerCalls(h).map((e) => [e.phase, e.points]),
+    [
+      ["down", [[0.5, 0.5]]],
+      ["move", [[0.5, 0.4]]],
+    ],
+    "content follows the finger, which moves against the scroll",
+  );
+  scroll({ phase: "ended" });
+  await h.settle();
+  scroll({ phase: "momentum", dy: 0.2 });
+  scroll({ phase: "changed", dy: 0.2 });
+  await h.settle();
+  assert.deepEqual(phases(), ["down", "move", "up"], "momentum and tails send nothing");
+
+  // Out of screen: cancel so nothing flings, and take a new grip.
+  let start = pointerCalls(h).length;
+  scroll({ phase: "began" });
+  await h.settle();
+  scroll({ phase: "changed", dy: 0.3 });
+  await h.advance(16);
+  scroll({ phase: "changed", dy: 0.3 });
+  await h.advance(16);
+  scroll({ phase: "changed", dy: 0.1 });
+  await h.advance(16);
+  scroll({ phase: "cancelled" });
+  await h.settle();
+  assert.deepEqual(phases(start), ["down", "move", "cancel", "down", "move", "cancel"]);
+  assert.deepEqual(pointerCalls(h).at(-2).points, [[0.5, 0.4]]);
+
+  // A mouse wheel has no phases: down with the first notch, up after a pause.
+  start = pointerCalls(h).length;
+  const wheel = (modifiers = {}) =>
+    h.element("screen").listeners.wheel({
+      clientX: 200,
+      clientY: 400,
+      deltaX: 0,
+      deltaY: 40,
+      preventDefault() {},
+      ...modifiers,
+    });
+  wheel();
+  await h.advance(20);
+  wheel();
+  await h.advance(20);
+  assert.deepEqual(phases(start), ["down", "move", "move"]);
+  await h.advance(80);
+  assert.deepEqual(phases(start), ["down", "move", "move", "up"]);
+  assert.equal(h.calls.filter(([url]) => url === "/api/gesture").length, 0);
+
+  // Pinch: two fingers that spread about a fixed centre.
+  start = pointerCalls(h).length;
+  const pinch = (event) =>
+    h.run(
+      `nativePinch(${JSON.stringify({ x: 0.4, y: 0.6, delta: 0, ...event })}, videoEpoch, bridgeId)`,
+    );
+  pinch({ phase: "began" });
+  await h.settle();
+  pinch({ phase: "changed", delta: 1 });
+  await h.settle();
+  pinch({ phase: "ended" });
+  await h.settle();
+  const fingers = pointerCalls(h).slice(start);
+  assert.deepEqual(
+    fingers.map((e) => e.phase),
+    ["down", "move", "up"],
+  );
+  for (const event of fingers) {
+    const [[x1, y1], [x2, y2]] = event.points;
+    assert.ok(
+      Math.abs((x1 + x2) / 2 - 0.4) < 1e-9 && y1 === 0.6 && y2 === 0.6,
+      "zoom must not pan",
+    );
+  }
+  const spread = (event) => event.points[1][0] - event.points[0][0];
+  assert.ok(Math.abs(spread(fingers[1]) / spread(fingers[0]) - 2) < 1e-9);
+  assert.equal(h.calls.filter(([url]) => url === "/api/pinch").length, 0);
+
+  // Other input lifts a gesture in progress and ignores its tail.
+  start = pointerCalls(h).length;
+  pinch({ phase: "began" });
+  await h.settle();
+  await h.run("api('home')");
+  pinch({ phase: "changed", delta: 1 });
+  pinch({ phase: "ended" });
+  await h.settle();
+  assert.deepEqual(phases(start), ["down", "up"]);
+  // Command-scroll zooms with two fingers.
+  start = pointerCalls(h).length;
+  wheel({ metaKey: true });
+  await h.advance(20);
+  await h.advance(80);
+  assert.deepEqual(phases(start), ["down", "move", "up"]);
+  assert.equal(pointerCalls(h)[start].points.length, 2);
 });

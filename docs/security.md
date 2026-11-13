@@ -15,6 +15,27 @@ Runtime logs and receipts use restricted filesystem permissions. Logs can still 
 
 Clipboard transfer is explicit, not continuous synchronization. iPortal does not automatically approve iOS Paste prompts. Camera and Microphone permission behavior is explained in [setup](setup.md#permissions-and-audio).
 
+## Android lock screen
+
+A locked iPhone admits nothing. A locked Android phone shows its lock screen in
+the mirror and accepts touch, typing and keys there, so its owner can unlock it
+from the Mac. Anything that can reach the Mac API can therefore also try PINs
+on a locked Android phone, at the pace and with the lockouts the phone itself
+enforces. The API does not bypass the lock.
+
+- **Not readable.** While the phone is locked, the API refuses its UI tree,
+  elements, screenshots and observations, element actions, starting apps,
+  opening links and the clipboard. The picture in the mirror is the only view.
+- **Not recorded.** Input sent while the phone is locked, or while its lock
+  state is not known, leaves no trace of its content: its receipt stores the
+  request ID and outcome without a hash of the payload, because a hash does not
+  hide a short PIN. Live touch events are never recorded at all. Logs and
+  diagnostics carry operation names and outcomes, not arguments.
+- **Not replayed.** As for all input, an uncertain result is never sent again.
+
+An image sent to an Android phone's clipboard is stored in the phone's media
+store, where the gallery and other apps with media access can see it.
+
 ## Limits
 
 - The Mac app is **not App Sandboxed or notarized**. It runs Xcode tooling and device automation as the logged-in user. Use it only on a Mac you trust.

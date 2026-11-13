@@ -1,8 +1,15 @@
 package iportal;
 
+import android.content.AttributionSource;
 import android.content.ClipData;
 import android.content.ComponentName;
+import android.content.ContentValues;
+import android.content.res.AssetFileDescriptor;
+import android.net.Uri;
+import android.os.Binder;
+import android.os.Bundle;
 import android.os.IBinder;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.InputEvent;
@@ -11,6 +18,7 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -67,8 +75,16 @@ final class Device {
         else if (types[i] == long.class) values[i] = 0L;
         else if (types[i] == boolean.class) values[i] = false;
         else if (types[i] == float.class) values[i] = 0f;
+        // Content providers identify their caller this way since Android 12.
+        else if (types[i] == AttributionSource.class) values[i] = attribution();
       }
       if (used != given.length) continue;
+      try {
+        // Binder proxies are public methods of classes that are not public.
+        method.setAccessible(true);
+      } catch (RuntimeException inaccessible) {
+        // Invoke it as it is.
+      }
       try {
         return method.invoke(target, values);
       } catch (InvocationTargetException error) {
@@ -311,6 +327,136 @@ final class Device {
 
   static void writeClip(ClipData clip) throws Exception {
     call(clipboardService(), "setPrimaryClip", clip);
+  }
+
+  // ---- content providers ----
+
+  private static Object activityManager;
+
+  private static AttributionSource attribution() {
+    return new AttributionSource.Builder(android.os.Process.myUid()).setPackageName(SHELL_PACKAGE).build();
+  }
+
+  private static int currentUser() {
+    try {
+      return (Integer) Class.forName("android.app.ActivityManager").getMethod("getCurrentUser").invoke(null);
+    } catch (Throwable unavailable) {
+      return 0;
+    }
+  }
+
+  private interface ProviderUse<T> {
+    T with(Object provider) throws Exception;
+  }
+
+  /**
+   * Reaches a content provider the way the {@code content} shell command does.
+   * The helper has no application context, so it has no ContentResolver; the
+   * activity manager hands the shell user a provider's binder directly.
+   */
+  private static <T> T provider(String authority, int user, ProviderUse<T> use) throws Exception {
+    if (activityManager == null) activityManager = service("activity", "android.app.IActivityManager$Stub");
+    IBinder token = new Binder();
+    Object holder = call(activityManager, "getContentProviderExternal", authority, user, token, "iportal");
+    Object provider = holder == null ? null : holder.getClass().getField("provider").get(holder);
+    if (provider == null) throw new Failure("unsupported operation", "Content provider unavailable: " + authority);
+    try {
+      return use.with(provider);
+    } finally {
+      try {
+        call(activityManager, "removeContentProviderExternalAsUser", authority, token, user);
+      } catch (Throwable renamed) {
+        try {
+          call(activityManager, "removeContentProviderExternal", authority, token);
+        } catch (Throwable ignored) {
+          // The reference is dropped with the token when this process exits.
+        }
+      }
+    }
+  }
+
+  /** A URI can name another user's provider as {@code content://10@authority/…}. */
+  private static int userOf(Uri uri) {
+    try {
+      return uri.getUserInfo() == null ? currentUser() : Integer.parseInt(uri.getUserInfo());
+    } catch (NumberFormatException unusual) {
+      return currentUser();
+    }
+  }
+
+  /** Reads what a content URI names, refusing more than {@code limit} bytes. */
+  static byte[] readContent(Uri uri, int limit) throws Exception {
+    String authority = uri.getHost();
+    if (authority == null) throw new Failure("unsupported operation", "Unreadable content address");
+    Uri plain = uri.buildUpon().encodedAuthority(authority).build();
+    return provider(authority, userOf(uri), provider -> {
+      Object opened;
+      try {
+        opened = call(provider, "openFile", plain, "r");
+      } catch (Exception first) {
+        // Some providers serve streams only by type.
+        try {
+          opened = call(provider, "openTypedAssetFile", plain, "image/*");
+        } catch (Exception second) {
+          throw first;
+        }
+      }
+      if (opened == null) throw new Failure("unsupported operation", "The content could not be opened");
+      try (InputStream in = opened instanceof ParcelFileDescriptor
+          ? new ParcelFileDescriptor.AutoCloseInputStream((ParcelFileDescriptor) opened)
+          : ((AssetFileDescriptor) opened).createInputStream()) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 16);
+        byte[] buffer = new byte[65536];
+        for (int read; (read = in.read(buffer)) > 0; ) {
+          if (out.size() + read > limit) throw new Failure("unsupported operation", "The content is too large");
+          out.write(buffer, 0, read);
+        }
+        return out.toByteArray();
+      }
+    });
+  }
+
+  private static final Uri IMAGES = Uri.parse("content://media/external/images/media");
+
+  /** Stores a picture in the media store and returns its content URI. */
+  static Uri insertImage(String name, String type, byte[] bytes) throws Exception {
+    return provider("media", currentUser(), provider -> {
+      ContentValues values = new ContentValues();
+      values.put("_display_name", name);
+      values.put("mime_type", type);
+      values.put("relative_path", "Pictures/iPortal");
+      Uri item = (Uri) call(provider, "insert", IMAGES, values);
+      if (item == null) throw new Failure("unsupported operation", "The media store refused the image");
+      try {
+        ParcelFileDescriptor file = (ParcelFileDescriptor) call(provider, "openFile", item, "w");
+        try (OutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(file)) {
+          out.write(bytes);
+        }
+      } catch (Exception failed) {
+        // Do not leave an empty picture in the owner's gallery.
+        try {
+          call(provider, "delete", item);
+        } catch (Throwable ignored) {
+          // Nothing more can be done from here.
+        }
+        throw failed;
+      }
+      return item;
+    });
+  }
+
+  /** Removes the pictures whose file names begin with {@code prefix}. Failing to is not an error. */
+  static void deleteImages(String prefix) {
+    try {
+      provider("media", currentUser(), provider -> {
+        Bundle where = new Bundle();
+        where.putString("android:query-arg-sql-selection", "_display_name LIKE ?");
+        where.putStringArray("android:query-arg-sql-selection-args", new String[] {prefix + "%"});
+        return call(provider, "delete", IMAGES, where);
+      });
+    } catch (Throwable unavailable) {
+      Agent.log("could not remove stored clipboard images: " + unwrap(unavailable).getClass().getSimpleName());
+    }
   }
 
   // ---- shell tools ----

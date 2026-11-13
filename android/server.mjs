@@ -11,12 +11,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { Schema } from "effect";
 import { StatusSchema } from "../public-contracts.ts";
-import { apiError } from "../errors.mjs";
+import { apiError, errorInfo } from "../errors.mjs";
 import { createClipboard } from "../clipboard.ts";
 import { createInspection } from "../inspection.ts";
 import { createKeepAwake } from "../keep-awake.mjs";
 import { createIPortalStatus } from "../iportal-status.mjs";
-import { createScheduler } from "../scheduler.ts";
+import { commandContext, createScheduler } from "../scheduler.ts";
 import { createCommands } from "../commands.ts";
 import { startServer } from "../server.mjs";
 import { createDispatch } from "../command-dispatch.mjs";
@@ -38,6 +38,8 @@ import {
   parseAndroidRequest,
   validateAndroidResponse,
 } from "./protocol.ts";
+import { createLiveTouch } from "./live-touch.ts";
+import { admittedWhileLocked, androidLifecycle, lockedError, privateLedger } from "./lock.ts";
 
 const REMOTE_DIRECTORY = "/data/local/tmp";
 const agentJar =
@@ -314,6 +316,9 @@ export async function runAndroid(opts, positionals) {
     expectedBundleId: body.expectedApp,
     expectedOrientation: body.expectedOrientation,
   });
+  // A status read started from inside a command must not inherit that
+  // command's deadline and cancellation: it would fail when the command ends.
+  const refreshStatus = () => commandContext.exit(() => statusEvents.invalidate());
   /** @type {import("./protocol.ts").AndroidActionHandlers} */
   const actions = {
     key: async (body) => {
@@ -349,8 +354,17 @@ export async function runAndroid(opts, positionals) {
     "element-action": (body) => inspection.elementAction(/** @type {never} */ (body)),
     home: (body) => helper.command("home", guards(body)),
     button: (body) => button(body.name, body),
-    lock: (body) => helper.command("lock", guards(body)),
-    unlock: (body) => helper.command("unlock", guards(body)),
+    lock: async (body) => {
+      await helper.command("lock", guards(body));
+      refreshStatus();
+    },
+    unlock: async (body) => {
+      await helper.command("unlock", guards(body));
+      // Waking turns a locked phone into a usable lock screen. Tell viewers
+      // now, and once more when the screen has had time to come on.
+      refreshStatus();
+      setTimeout(() => refreshStatus(), 400).unref();
+    },
     launch: (body) => helper.command("launch", { bundleId: body.bundleId, ...guards(body) }),
     "open-url": (body) => helper.command("openURL", { url: body.url, ...guards(body) }),
     ensure: async () => {},
@@ -361,10 +375,11 @@ export async function runAndroid(opts, positionals) {
   };
   // The Android button set is wider than the shared client type knows.
   /** @param {string} name @param {Parameters<typeof guards>[0]} body */
-  const button = (name, body) =>
-    /** @type {(operation: string, args: object) => Promise<unknown>} */ (helper.command)(
-      "button",
-      { name, ...guards(body) },
+  const button = (name, body) => androidCommand("button", { name, ...guards(body) });
+  // Operations only the Android helper has are not in the shared client's types.
+  const androidCommand =
+    /** @type {(operation: string, args: object, options?: import("../helper-client.ts").HelperCommandOptions) => Promise<any>} */ (
+      helper.command
     );
 
   // ---- status ----
@@ -385,13 +400,23 @@ export async function runAndroid(opts, positionals) {
     const up = Boolean(device) && (await helperUp(signal));
     signal?.throwIfAborted();
     let locked = null;
+    /** @type {boolean | null} */
+    let interactive = null;
     /** @type {import("../public-contracts.ts").PublicStatus["orientation"]} */
     let orientation = null;
     if (up) {
       problem = null;
       locked = helper.cached?.locked ?? null;
-      if (locked) keepAwake.stop("locked");
-      if (locked === false) {
+      if (locked) {
+        keepAwake.stop("locked");
+        try {
+          interactive = (await androidCommand("power", {}, { timeout: 1200, signal })).interactive;
+        } catch {
+          /* Unknown is shown as locked; the next status read asks again. */
+        }
+      }
+      // A lock screen that is showing rotates and is touched like any other.
+      if (locked === false || interactive) {
         try {
           orientation = await helper.command("orientation", {}, { timeout: 1200, signal });
         } catch {
@@ -417,13 +442,7 @@ export async function runAndroid(opts, positionals) {
       },
       pinnedUdid: pinned,
       locked,
-      lifecycle: !device
-        ? "disconnected"
-        : locked === true
-          ? "locked"
-          : up && locked === false
-            ? "ready"
-            : "connecting",
+      lifecycle: androidLifecycle({ device: Boolean(device), up, locked, interactive }),
       orientation,
       displayPixels: up ? (helper.cached?.displayPixels ?? null) : null,
       // Android has no Mac capture device; video always comes from the helper.
@@ -443,22 +462,30 @@ export async function runAndroid(opts, positionals) {
     read: async (signal) => Schema.decodeUnknownSync(StatusSchema)(await status(signal)),
   });
   let contentRevision = 0;
-  /** @type {ReturnType<typeof createCommands> | undefined} */
+  /** @type {ReturnType<typeof privateLedger> | undefined} */
   let commands;
-  const dispatch = createDispatch({
+  // Asked fresh for each secret-bearing input: the cached state can be a moment
+  // behind a phone that has just locked itself.
+  const lockedNow = async () => (await helper.status(undefined, 1000)).locked;
+  const actionDispatch = createDispatch({
     instanceId,
     transportSignal: () => transport.signal,
     statusEvents,
     commandLedger: () =>
-      (commands ??= createCommands({
-        file:
-          process.env.IPORTAL_COMMANDS_FILE ??
-          statePath(
-            opts.udid
-              ? `commands-android-${createHash("sha256").update(opts.udid).digest("hex").slice(0, 24)}.json`
-              : `commands-android-${opts.port}.json`,
-          ),
-      })),
+      /** @type {ReturnType<typeof createCommands>} */ (
+        commands ??= privateLedger(
+          createCommands({
+            file:
+              process.env.IPORTAL_COMMANDS_FILE ??
+              statePath(
+                opts.udid
+                  ? `commands-android-${createHash("sha256").update(opts.udid).digest("hex").slice(0, 24)}.json`
+                  : `commands-android-${opts.port}.json`,
+              ),
+          }),
+          lockedNow,
+        )
+      ),
     parse: /** @type {never} */ (parseAndroidRequest),
     execute: (name, body) =>
       /** @type {Promise<import("../schemas.ts").ActionResult>} */ (
@@ -471,9 +498,43 @@ export async function runAndroid(opts, positionals) {
     clipboard,
     helper,
     lockedMessage: "Unlock your Android device",
-    onFailure() {},
+    onFailure(failure) {
+      // The page may still believe the screen is on. Correct it at once.
+      if (failure.code === "device locked") refreshStatus();
+    },
     contentChanged: () => statusEvents.patch({ contentRevision: ++contentRevision }),
   });
+  const liveTouch = createLiveTouch({
+    send: (args, options) => androidCommand("pointer", args, options),
+    enqueue,
+    transportSignal: () => transport.signal,
+    onBegin: () => inspection.invalidateObservations(),
+    onEnd() {
+      inspection.invalidateObservations();
+      keepAwake.activity();
+      statusEvents.patch({ contentRevision: ++contentRevision });
+    },
+  });
+  /** @param {string} name @param {unknown} body @param {AbortSignal} signal */
+  const dispatch = async (name, body, signal) => {
+    if (name === "pointer") {
+      // Live touch has its own queue and failure rules; see live-touch.ts.
+      const event = /** @type {import("./protocol.ts").PointerRequest} */ (
+        parseAndroidRequest(name, body).body
+      );
+      try {
+        await liveTouch.handle(event, signal);
+      } catch (error) {
+        if (errorInfo(error).code === "device locked") refreshStatus();
+        throw error;
+      }
+      return { status: 200, body: { ok: true } };
+    }
+    // The helper enforces the same rule. Refusing here as well means a request
+    // that reads or acts on the lock screen never waits in the queue for it.
+    if (helper.cached?.locked && !admittedWhileLocked(name, body)) throw lockedError();
+    return actionDispatch(name, body, signal);
+  };
 
   // ---- lifetime ----
 
@@ -487,6 +548,7 @@ export async function runAndroid(opts, positionals) {
     stopHelperEvents();
     statusEvents.stop();
     monitor?.stop();
+    await liveTouch.stop();
     // The helper would exit by itself once nothing talks to it; ending it now
     // releases the device's automation connection immediately.
     if (helper.cached) await helper.command("shutdown", {}, { timeout: 750 }).catch(() => {});
