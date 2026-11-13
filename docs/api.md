@@ -99,7 +99,8 @@ Actions require a recent stable observation, the same server/device generation,
 foreground app and orientation, and current actionability checks. Closing the
 window, losing readiness, opening Settings, or changing connection identity
 retires the tree. Password values are excluded. The bridge stores no snapshots
-on disk and does not log their text.
+on disk and does not log their text. The only thing it stores is the bundle
+identifiers of apps whose snapshot stalled.
 Video-only refreshes preserve readable content; input still requires the
 window's existing video/readiness checks.
 
@@ -123,6 +124,94 @@ Controls navigation, before reaching the new action checks. It does not establis
 simulator or older-device parity.
 
 Run `bun run test:accessibility` for the native bridge regression checks.
+
+### Snapshots that stall
+
+On an iPhone a snapshot is one XCTest call on the helper's only executor. It
+cannot be cancelled, and on some apps it never returns (measured: X, bundle
+`com.atebits.Tweetie2`, on a video timeline). The helper is then restarted and
+the mirror shows "Connecting" for 6 to 47 seconds. Nothing on the phone can
+shorten that: the stuck call holds the helper's main thread, so input queued
+behind it cannot run until the process is replaced, and no cheaper call is
+known that predicts whether a snapshot will return. The bridge therefore avoids repeating
+the snapshot instead:
+
+- A failed snapshot that took five seconds or more, or a helper restart under
+  a snapshot that had been pending that long, counts as a stall of the app in
+  front. If that app was not known, the next request is `/api/state` (no
+  snapshot), and the app it reports is taken to be the one.
+- The app's bundle identifier is remembered per device in the Mac app's
+  preferences (`AccessibilityStalledApps`), across launches. Automatic
+  snapshots of it are withheld for 10 minutes after the first stall, then 1
+  day, 7 days and 30 days for repeats. An app with no stall for 30 days after
+  its hold ended starts over. At most 64 apps per device are kept.
+- While any hold is active for a device, every snapshot is preceded by
+  `/api/state`. A held app in front is not snapshotted; the query repeats every
+  three seconds while a reader stays interested, and reading resumes as soon
+  as another app is in front. If the query fails, no snapshot is taken. A
+  device with no active hold is read exactly as before, without the query.
+- During a hold the group has no children, its help text says that reading is
+  paused, and it offers a **Read anyway** action. That takes one snapshot on
+  request. If it works the hold ends (the repeat count is kept); if it stalls,
+  mirroring is interrupted once more and the hold is extended.
+
+What this does not prevent: the first stall of an app that has never stalled
+on that device still restarts the helper once, as does the first after a hold
+runs out. The app can also change between the state query and the snapshot.
+`defaults delete com.baremetalgpu.iportal AccessibilityStalledApps` forgets
+all holds; `defaults write com.baremetalgpu.iportal AccessibilityBridgeDisabled
+-bool YES` turns tree inspection off altogether.
+
+### Seeing that the tree is read
+
+macOS does not tell an app which client reads its accessibility tree. The Mac
+app writes a line to the system log when a client starts reading device
+content (at most once every ten minutes, with the number of reading sessions
+since the last line), when a stall is recorded, when reading of an app is
+paused or resumed, and when Read anyway is used. Each line ends with the
+frontmost Mac app and whether VoiceOver is on, the nearest available hints to
+who is reading. Lines carry bundle identifiers only, never UI text:
+
+```sh
+log show --last 1h --predicate 'process == "iPortal" AND eventMessage CONTAINS "iPortal accessibility"'
+```
+
+Per-request events (`accessibility-request`, `accessibility-state-check`,
+`accessibility-held`, `accessibility-stalled` and others) go to
+`reconnect-trace.jsonl` when the `trace-reconnect` file exists in the state
+directory.
+
+### Android
+
+An Android tree is the active window as the system's accessibility service
+reports it. Element types are Java class names and bounds are display pixels.
+The bridge maps each class to the iPhone element type it behaves as (for
+example `android.widget.Button` to Button, `android.widget.EditText` to
+TextField, `android.widget.SeekBar` to Slider, `android.widget.Switch` to
+Switch, `android.widget.TextView` to StaticText, `android.widget.ImageView` to
+Image, `androidx.recyclerview.widget.RecyclerView` to CollectionView); layouts
+and unknown classes, such as `androidx.compose.ui.platform.ComposeView`, are
+groups. Traits refine the class, which matters for Compose and custom views
+that report `android.view.View`: `password` makes a secure field, `editable` a
+text field, `checkable` a checkbox, `scrollable` a scroll area, and a
+`clickable` view without children a button. A clickable container stays a
+group that can be pressed. An unlabeled view is named by the last part of its
+resource ID.
+
+The active window can be smaller than the display (a dialog, split screen), so
+an Android window's first snapshot per connection is preceded by `/api/state`
+to learn the display size in pixels. Node frames and scroll gestures are
+proportions of that display; if the device turned between the two requests the
+sides are swapped. A slider reports its raw position without a range, so it is
+not settable by value; Increase and Decrease are offered.
+
+Actions address nodes by position only: `{"using":"xpath","value":"/*[1]/*[3]/*[2]"}`,
+where `/*[1]` is the root of the snapshot and each further `/*[n]` is the
+1-based index in the parent's `children` array as the helper reported it.
+
+The remembered stalls, the log lines and the Android mapping are covered by the
+native regression tests only; they have not yet been checked on a physical
+iPhone or Android phone.
 
 ## Waits
 

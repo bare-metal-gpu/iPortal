@@ -309,7 +309,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             && deviceLifecycle == "ready"
         let selected = available ? clipboardTarget : nil
         accessibilityHost?.bridge.update(target: selected.map {
-            MirrorAXTarget(port: $0.port, instance: $0.instance, device: $0.device, generation: $0.generation, epoch: $0.epoch)
+            MirrorAXTarget(port: $0.port, instance: $0.instance, device: $0.device, generation: $0.generation, epoch: $0.epoch,
+                           android: kind == .android)
         })
         accessibilityHost?.setAccessibilityHidden(selected == nil)
     }
@@ -734,6 +735,13 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         let accessibilityHost = MirrorAXHost(frame: phone.bounds)
         self.accessibilityHost = accessibilityHost
         accessibilityHost.bridge.diagnostic = { event, fields in iportalTrace("accessibility-\(event)", fields) }
+        accessibilityHost.bridge.notice = { message in
+            // macOS does not tell an app which client reads its accessibility
+            // tree. The app in front and VoiceOver are the nearest hints.
+            NSLog("iPortal accessibility: %@ (frontmost app %@, VoiceOver %@)", message,
+                  NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown",
+                  NSWorkspace.shared.isVoiceOverEnabled ? "on" : "off")
+        }
         accessibilityHost.bridge.allowsActions = { [weak self] in
             guard let self else { return false }
             return self.mirroringActive && !self.terminating && !self.systemSleeping && !self.settingsBlocksInput

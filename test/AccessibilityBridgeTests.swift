@@ -17,7 +17,23 @@ import CoreVideo
     }
 }
 
+// Stands in for UserDefaults, so a test never leaves a remembered stall behind.
+private final class Store { var value: [String: Any] = [:] }
+
 @main struct AccessibilityBridgeTests {
+    private static func memory(_ store: Store, now: @escaping () -> TimeInterval) -> MirrorAXStallMemory {
+        MirrorAXStallMemory(load: { store.value }, save: { store.value = $0 }, now: now)
+    }
+    // An Android node as its helper reports it: Java class name, pixel bounds.
+    static func view(_ type: String, label: Any = NSNull(), name: Any = NSNull(), value: Any = NSNull(),
+                     traits: String = "", rect: [Int] = [0, 0, 1080, 2400], children: [[String: Any]] = []) -> [String: Any] {
+        ["type": type, "label": label, "name": name, "value": value, "traits": traits,
+         "rect": ["x": rect[0], "y": rect[1], "width": rect[2], "height": rect[3]],
+         "isEnabled": "1", "isVisible": "1", "isFocused": "0", "isAccessible": "1", "children": children]
+    }
+    static func decoded(_ value: Any) -> Any {
+        try! JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: value))
+    }
     static func node(_ type: String = "Application", label: String = "Fixture", visible: Bool = true,
                      enabled: Bool = true, children: [[String: Any]] = []) -> [String: Any] {
         ["type": type, "label": label, "name": label, "value": "fixture value",
@@ -25,8 +41,9 @@ import CoreVideo
          "isEnabled": enabled ? "1" : "0", "isVisible": visible ? "1" : "0",
          "isFocused": "0", "isAccessible": "1", "children": children]
     }
-    static func observation(_ source: [String: Any], stable: Bool = true, id: String = "observation-a") -> [String: Any] {
-        ["id": id, "app": ["bundleId": "com.example.fixture"], "orientation": "PORTRAIT", "stable": stable, "source": source]
+    static func observation(_ source: [String: Any], stable: Bool = true, id: String = "observation-a",
+                            app: String = "com.example.fixture", orientation: String = "PORTRAIT") -> [String: Any] {
+        ["id": id, "app": ["bundleId": app], "orientation": orientation, "stable": stable, "source": source]
     }
     @MainActor static func eventually(line: Int = #line, _ condition: () -> Bool) async {
         for _ in 0..<5000 { if condition() { return }; try? await Task.sleep(nanoseconds: 1_000_000) }
@@ -59,7 +76,11 @@ import CoreVideo
         var invalid = source; invalid["isVisible"] = "unknown"; rejects(invalid)
         invalid = source; invalid["rect"] = ["x": 0, "y": 0, "width": -1, "height": 20]; rejects(invalid)
         invalid = source; invalid["children"] = "not a tree"; rejects(invalid)
-        invalid = node(); for _ in 0..<52 { invalid = node(children: [invalid]) }; rejects(invalid)
+        invalid = node(); for _ in 0..<102 { invalid = node(children: [invalid]) }; rejects(invalid)
+        var deep = node(); for _ in 0..<80 { deep = node(children: [deep]) }
+        _ = try MirrorAXNode.parse(deep) // Android hierarchies are deeper than iPhone ones.
+        invalid = source; invalid["type"] = "Not A Type"; rejects(invalid)
+        invalid = source; invalid["type"] = "android..Button"; rejects(invalid)
         invalid = node(children: Array(repeating: node(), count: 10_000)); rejects(invalid)
         let hostRect = CGRect(x: -600, y: 120, width: 201, height: 437)
         precondition(MirrorAXNode.frame(CGRect(x: 20, y: 40, width: 100, height: 60), screen: parsed.rect, host: hostRect)
@@ -248,8 +269,10 @@ import CoreVideo
         precondition(slowNetwork.requests.count == 1, "Repeated failures back off instead of retrying every second")
         slowBridge.update(target: nil)
         // A snapshot that stalls is not retried while the same app stays in front.
+        var wall = 1_000_000.0
+        let stallStore = Store()
         let stallNetwork = Network()
-        let stallBridge = MirrorAccessibilityBridge(clock: { now }, send: stallNetwork.send)
+        let stallBridge = MirrorAccessibilityBridge(clock: { now }, memory: memory(stallStore) { wall }, send: stallNetwork.send)
         let stallHost = MirrorAXHost(frame: hostRect, bridge: stallBridge)
         func routes() -> [String] { stallNetwork.requests.map { $0.url!.lastPathComponent } }
         stallBridge.update(target: a)
@@ -274,11 +297,13 @@ import CoreVideo
         precondition(routes()[3] == "state" && routes()[4] == "observe", "Another app in front lifts the hold")
         stallNetwork.reply(4, observation(source))
         await eventually { !stallBridge.elements.isEmpty }
+        precondition(memory(stallStore) { wall }.heldUntil(device: a.device, app: "com.example.video") == wall + 600,
+                     "The first stall of an app withholds it for ten minutes")
         stallBridge.update(target: nil)
         // The stall usually arrives as a lost target: the helper was restarted
         // under the pending snapshot. It must still be remembered afterwards.
         let lostNetwork = Network()
-        let lostBridge = MirrorAccessibilityBridge(clock: { now }, send: lostNetwork.send)
+        let lostBridge = MirrorAccessibilityBridge(clock: { now }, memory: memory(Store()) { wall }, send: lostNetwork.send)
         let lostHost = MirrorAXHost(frame: hostRect, bridge: lostBridge)
         lostBridge.update(target: a)
         _ = lostHost.accessibilityChildren()
@@ -292,6 +317,198 @@ import CoreVideo
         precondition(lostNetwork.requests[1].url!.lastPathComponent == "state",
                      "After a restart caused by a stalled snapshot, the snapshot is not repeated")
         lostBridge.update(target: nil)
+
+        // What is remembered about stalls: longer holds for repeat offenders,
+        // an end to each hold, and nothing shared between devices.
+        let ladderStore = Store()
+        let ladder = memory(ladderStore) { wall }
+        precondition(!ladder.holdsAny(device: "phone-a") && ladder.heldUntil(device: "phone-a", app: "com.example.video") == nil)
+        precondition(ladder.record(device: "phone-a", app: "com.example.video") == wall + 600)
+        precondition(ladder.holdsAny(device: "phone-a") && !ladder.holdsAny(device: "phone-b"), "A stall belongs to one device")
+        precondition(ladder.heldUntil(device: "phone-a", app: "com.example.notes") == nil, "Other apps stay readable")
+        wall += 601
+        precondition(!ladder.holdsAny(device: "phone-a"), "A hold ends by itself")
+        precondition(ladder.record(device: "phone-a", app: "com.example.video") == wall + 86_400, "A relapse is held for longer")
+        ladder.release(device: "phone-a", app: "com.example.video")
+        precondition(ladder.heldUntil(device: "phone-a", app: "com.example.video") == nil)
+        precondition(ladder.record(device: "phone-a", app: "com.example.video") == wall + 7 * 86_400, "A successful read does not reset the count")
+        precondition(ladder.record(device: "phone-a", app: "com.example.video") == wall + 30 * 86_400)
+        precondition(ladder.record(device: "phone-a", app: "com.example.video") == wall + 30 * 86_400, "Holds are capped at thirty days")
+        ladder.record(device: "phone-b", app: "com.example.other")
+        precondition(ladder.heldUntil(device: "phone-a", app: "com.example.video") != nil, "Recording for one device keeps the others")
+        wall += 61 * 86_400
+        precondition(ladder.record(device: "phone-a", app: "com.example.video") == wall + 600, "A long quiet app starts over")
+        for index in 0..<80 { ladder.record(device: "phone-c", app: "com.example.app\(index)") }
+        precondition((ladderStore.value["phone-c"] as? [String: Any])?.count == 64, "The list per device is bounded")
+
+        // A stall is remembered across launches: the next session asks which
+        // app is in front before any snapshot, and does not take one of it.
+        let keptStore = Store()
+        let firstNetwork = Network()
+        let firstBridge = MirrorAccessibilityBridge(clock: { now }, memory: memory(keptStore) { wall }, send: firstNetwork.send)
+        let firstHost = MirrorAXHost(frame: hostRect, bridge: firstBridge)
+        var notices: [String] = []
+        firstBridge.notice = { notices.append($0) }
+        firstBridge.update(target: a)
+        for _ in 0..<20 { _ = firstHost.accessibilityChildren() }
+        await eventually { firstNetwork.requests.count == 1 }
+        precondition(firstNetwork.requests[0].url!.lastPathComponent == "observe", "A device with nothing remembered is read without a state query")
+        precondition(notices.count == 1 && notices[0].contains("is reading device content"), "Reading is reported once, not per read")
+        now += 8
+        firstNetwork.reply(0, observation(source), code: 408)
+        await eventually { notices.count == 2 }
+        now += 2; _ = firstHost.accessibilityChildren()
+        await eventually { firstNetwork.requests.count == 2 }
+        precondition(firstNetwork.requests[1].url!.lastPathComponent == "state")
+        firstNetwork.reply(1, ["app": ["bundleId": "com.example.video"]])
+        await eventually { firstBridge.heldApp == "com.example.video" }
+        precondition(firstBridge.elements.isEmpty && firstBridge.help.contains("paused"))
+        precondition(firstHost.accessibilityCustomActions()?.map(\.name) == ["Read anyway"])
+        precondition(notices.count == 4 && notices[2].contains("com.example.video") && notices[3].contains("paused"))
+        precondition(!notices.contains { $0.contains("Fixture") || $0.contains("Open") }, "Notices never carry UI text")
+        firstBridge.update(target: nil)
+        precondition(firstHost.accessibilityCustomActions()?.isEmpty != false && firstBridge.heldApp == nil)
+
+        let nextNetwork = Network()
+        let nextBridge = MirrorAccessibilityBridge(clock: { now }, memory: memory(keptStore) { wall }, send: nextNetwork.send)
+        let nextHost = MirrorAXHost(frame: hostRect, bridge: nextBridge)
+        func nextRoutes() -> [String] { nextNetwork.requests.map { $0.url!.lastPathComponent } }
+        nextBridge.update(target: a)
+        _ = nextHost.accessibilityChildren()
+        await eventually { nextRoutes() == ["state"] }
+        nextNetwork.reply(0, ["app": ["bundleId": "com.example.video"]])
+        await eventually { nextBridge.heldApp == "com.example.video" }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(nextRoutes() == ["state"], "The first snapshot of a remembered app is never taken")
+        // A failed state query must not be followed by a blind snapshot.
+        now += 4; _ = nextHost.accessibilityChildren()
+        await eventually { nextRoutes().count == 2 }
+        nextNetwork.reply(1, [:], code: 502)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(nextRoutes() == ["state", "state"] && keptStore.value.count == 1)
+        // The reader may insist. A read that works ends the hold.
+        precondition(nextHost.accessibilityCustomActions()?.first?.handler?() == true)
+        await eventually { nextRoutes().count == 3 }
+        precondition(nextRoutes()[2] == "state")
+        nextNetwork.reply(2, ["app": ["bundleId": "com.example.video"]])
+        await eventually { nextRoutes().count == 4 }
+        precondition(nextRoutes()[3] == "observe")
+        nextNetwork.reply(3, observation(source, app: "com.example.video"))
+        await eventually { !nextBridge.elements.isEmpty }
+        precondition(nextBridge.heldApp == nil && nextHost.accessibilityCustomActions()?.isEmpty != false)
+        precondition(!memory(keptStore) { wall }.holdsAny(device: a.device))
+        now += 0.1; nextBridge.contentDidChange("test")
+        await eventually { nextRoutes().count == 5 }
+        precondition(nextRoutes()[4] == "observe", "With no hold left, reading goes back to snapshots alone")
+        // The helper is restarted under that snapshot. The app is not known
+        // (nothing was held, so nothing was asked); it is asked for afterwards.
+        now += 9
+        nextBridge.update(target: nil)
+        nextBridge.update(target: MirrorAXTarget(port: a.port, instance: a.instance, device: a.device, generation: 5, epoch: 5))
+        _ = nextHost.accessibilityChildren()
+        await eventually { nextRoutes().count == 6 }
+        precondition(nextRoutes()[5] == "state")
+        nextNetwork.reply(5, ["app": ["bundleId": "com.example.video"]])
+        await eventually { nextBridge.heldApp == "com.example.video" }
+        precondition(memory(keptStore) { wall }.heldUntil(device: a.device, app: "com.example.video") == wall + 86_400)
+        // Another app in front is read; a restart under its snapshot is put
+        // down to that app at once, because it was confirmed just before.
+        now += 4; _ = nextHost.accessibilityChildren()
+        await eventually { nextRoutes().count == 7 }
+        nextNetwork.reply(6, ["app": ["bundleId": "com.example.feed"]])
+        await eventually { nextRoutes().count == 8 }
+        precondition(nextRoutes()[7] == "observe" && nextBridge.heldApp == nil)
+        now += 9
+        nextBridge.update(target: nil)
+        precondition(memory(keptStore) { wall }.heldUntil(device: a.device, app: "com.example.feed") == wall + 600)
+        // A hold that ran out costs nothing: no state query, a plain snapshot.
+        wall += 2 * 86_400
+        nextBridge.update(target: a)
+        _ = nextHost.accessibilityChildren()
+        await eventually { nextRoutes().count == 9 }
+        precondition(nextRoutes()[8] == "observe")
+        nextBridge.update(target: nil)
+
+        // Android: Java class names as types, traits, pixel bounds.
+        let androidSource = view("android.widget.FrameLayout", children: [
+            view("android.widget.Button", label: "Send", traits: "clickable, focusable", rect: [100, 200, 300, 120]),
+            view("android.widget.EditText", label: "Message", value: "hi", traits: "clickable, editable, focusable"),
+            view("android.widget.EditText", name: "com.example:id/pin", traits: "editable, password"),
+            view("android.widget.SeekBar", label: "Volume", value: 30.0),
+            view("android.widget.Switch", label: "Wi-Fi", value: "1", traits: "clickable, checkable"),
+            view("android.widget.TextView", label: "Title", value: "Title"),
+            view("android.widget.ImageView", name: "com.example:id/avatar"),
+            view("androidx.compose.ui.platform.ComposeView", children: [
+                view("android.view.View", label: "Compose button", traits: "clickable"),
+                view("android.view.View", traits: "scrollable", children: [view("android.widget.TextView", label: "Row")]),
+                view("android.view.View", traits: "clickable", children: [view("android.widget.TextView", label: "Card")]),
+                view("android.view.View", label: "Compose field", traits: "editable"),
+            ]),
+            view("androidx.recyclerview.widget.RecyclerView", traits: "scrollable"),
+            view("com.example.Outer$Inner_View"),
+            view("android.widget.ProgressBar", value: 0.5),
+        ])
+        let android = try MirrorAXNode.parse(decoded(androidSource))
+        let views = android.children, compose = views[7].children
+        precondition(android.role == .group && android.android && !parsed.android)
+        precondition(views[0].role == .button && views[0].pressable && views[0].path == "/*[1]/*[1]")
+        precondition(views[1].role == .textField && views[1].editable && views[1].settable && views[1].value as? String == "hi")
+        precondition(views[2].secure && views[2].value == nil && !views[2].settable && views[2].label == "pin")
+        precondition(views[3].role == .slider && views[3].value as? Double == 30 && views[3].normalizedValue == nil && !views[3].settable)
+        precondition(views[4].role == .checkBox && views[4].pressable)
+        precondition(views[5].role == .staticText && !views[5].pressable)
+        precondition(views[6].role == .image && views[6].label == "avatar" && !views[6].pressable,
+                     "An unlabeled view is named by its resource ID, and is not pressable just for being accessible")
+        precondition(views[7].role == .group && compose[0].role == .button && compose[1].role == .scrollArea)
+        precondition(compose[2].role == .group && compose[2].pressable && compose[2].children[0].path == "/*[1]/*[8]/*[3]/*[1]",
+                     "A clickable container can be pressed and still be read into")
+        precondition(compose[3].role == .textField && compose[3].editable)
+        precondition(views[8].role == .scrollArea && views[8].scrollable && views[9].role == .group && views[10].role == .progressIndicator)
+
+        // The Android root is the active window, here a dialog, and bounds are
+        // pixels. Nodes are placed against the display reported by /api/state.
+        let dialog = view("android.widget.FrameLayout", rect: [90, 800, 900, 800], children: [
+            view("android.widget.Button", label: "OK", traits: "clickable", rect: [540, 1350, 360, 150]),
+            view("android.widget.ScrollView", traits: "scrollable", rect: [90, 800, 900, 600]),
+        ])
+        let phoneState: [String: Any] = ["app": ["bundleId": "com.example.android"], "orientation": "PORTRAIT",
+                                         "screen": ["width": 1080, "height": 2400]]
+        let pixel = MirrorAXTarget(port: 7102, instance: "server-a", device: "synthetic-android", generation: 1, epoch: 1, android: true)
+        let androidNetwork = Network()
+        let androidBridge = MirrorAccessibilityBridge(clock: { now }, memory: memory(Store()) { wall }, send: androidNetwork.send)
+        let androidHost = MirrorAXHost(frame: hostRect, bridge: androidBridge)
+        func androidRoutes() -> [String] { androidNetwork.requests.map { $0.url!.lastPathComponent } }
+        androidBridge.update(target: pixel)
+        _ = androidHost.accessibilityChildren()
+        await eventually { androidRoutes() == ["state"] }
+        androidNetwork.reply(0, phoneState)
+        await eventually { androidRoutes() == ["state", "observe"] }
+        androidNetwork.reply(1, observation(dialog, app: "com.example.android"))
+        await eventually { !androidBridge.elements.isEmpty }
+        let display = CGRect(x: 0, y: 0, width: 1080, height: 2400)
+        precondition(androidBridge.observation?.screen == display, "The display, not the dialog, is the frame of reference")
+        let ok = androidBridge.elements[0].descendants[0]
+        precondition(MirrorAXNode.frame(ok.node.rect, screen: display, host: CGRect(x: 0, y: 0, width: 360, height: 800))
+                     == CGRect(x: 180, y: 300, width: 120, height: 50), "Pixels map to the window by proportion")
+        precondition(androidBridge.perform(androidBridge.elements[0].descendants[1], scrollDown: true))
+        await eventually { androidRoutes().count == 3 }
+        let swipe = try JSONSerialization.jsonObject(with: androidNetwork.requests[2].httpBody!) as! [String: Any]
+        precondition((swipe["points"] as? [[Double]]) == [[0.5, 1250.0 / 2400, 0], [0.5, 950.0 / 2400, 250]],
+                     "Gestures are normalized to the display")
+        androidNetwork.reply(2, [:])
+        await eventually { androidRoutes().count == 4 }
+        precondition(androidRoutes()[3] == "observe", "The display size is asked for once per connection")
+        // Turned on its side between the state query and the snapshot.
+        let wide = view("android.widget.FrameLayout", rect: [0, 0, 2400, 1080], children: [
+            view("android.widget.Button", label: "OK", traits: "clickable", rect: [540, 400, 360, 150])])
+        androidNetwork.reply(3, observation(wide, app: "com.example.android", orientation: "LANDSCAPE"))
+        await eventually { androidBridge.observation?.orientation == "LANDSCAPE" }
+        precondition(androidBridge.observation?.screen == CGRect(x: 0, y: 0, width: 2400, height: 1080))
+        precondition(androidBridge.elements[0].descendants[0].accessibilityPerformPress())
+        await eventually { androidRoutes().count == 5 }
+        let tap = try JSONSerialization.jsonObject(with: androidNetwork.requests[4].httpBody!) as! [String: Any]
+        precondition(androidRoutes()[4] == "tap" && tap["selector"] as? [String: String] == ["using": "xpath", "value": "/*[1]/*[1]"])
+        androidBridge.update(target: nil)
 
         let actionNetwork = Network()
         let actionBridge = MirrorAccessibilityBridge(clock: { now }, send: actionNetwork.send)
@@ -360,6 +577,6 @@ import CoreVideo
         precondition(!actionBridge.perform(actionBridge.elements[0].descendants[1], action: .adjust(.nan)))
         precondition(!secure.isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.setAccessibilityValue(_:))))
         actionBridge.update(target: nil)
-        print("Accessibility bridge: roles, off-screen content, password redaction, geometry, guarded actions, scroll, expiry, cancellation and device isolation passed.")
+        print("Accessibility bridge: roles, off-screen content, password redaction, geometry, guarded actions, scroll, expiry, cancellation, device isolation, remembered stalls and Android trees passed.")
     }
 }
