@@ -145,13 +145,14 @@ export function openVideoStream(
   });
 }
 
-/** @param {{port:number,instanceId:string,html:string,mjpeg:string,mjpegSocket?:string,helperAuth?:ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>,dispatch:(name:string,body:unknown,signal:AbortSignal)=>Promise<{status:number,body:unknown}>,statusEvents?:{stream:()=>ReadableStream<Uint8Array>},closing?:AbortSignal,onListening?:(port:number)=>void,identity?:{owner?:string,pinnedUdid?:string|null,platform?:'android'},fallbackPort?:boolean,requests?:Record<string,import('effect').Schema.ConstraintDecoder<unknown>>,validateResponse?:(name:string,raw:unknown,request?:unknown)=>void}} options */
+/** @param {{port:number,instanceId:string,html:string,mjpeg:string,mjpegSocket?:string,media?:string,helperAuth?:ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>,dispatch:(name:string,body:unknown,signal:AbortSignal)=>Promise<{status:number,body:unknown}>,statusEvents?:{stream:()=>ReadableStream<Uint8Array>},closing?:AbortSignal,onListening?:(port:number)=>void,identity?:{owner?:string,pinnedUdid?:string|null,platform?:'android'},fallbackPort?:boolean,requests?:Record<string,import('effect').Schema.ConstraintDecoder<unknown>>,validateResponse?:(name:string,raw:unknown,request?:unknown)=>void}} options */
 export function startServer({
   port,
   instanceId,
   html,
   mjpeg,
   mjpegSocket,
+  media,
   helperAuth,
   dispatch,
   statusEvents,
@@ -279,6 +280,26 @@ export function startServer({
                     : video.contentType,
               },
             },
+          );
+        }
+        // Native media for the Mac window, where the helper has it (Android).
+        // The helper's socket name and credential exist only in this process,
+        // and its route changes with the cable, so the stream is proxied here
+        // beside /stream instead of handing either to a second program. The
+        // bytes are the helper's framed records, passed through untouched.
+        // `audio=0` leaves the device's sound playing on the device.
+        if (request.method === "GET" && url.pathname === "/media" && media) {
+          const source = yield* observability.instrument(
+            openVideoStream(url.searchParams.get("audio") === "0" ? `${media}?audio=0` : media, {
+              unix: mjpegSocket,
+              authentication: helperAuth,
+            }),
+            "video.connect",
+          );
+          const parent = yield* Effect.currentSpan;
+          return HttpServerResponse.stream(
+            source.stream.pipe(Stream.withSpan("video.stream", { parent })),
+            { headers: { ...headers, "content-type": "application/octet-stream" } },
           );
         }
         const name = url.pathname.match(/^\/api\/([\w-]+)$/)?.[1];

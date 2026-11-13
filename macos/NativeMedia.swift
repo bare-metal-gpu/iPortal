@@ -147,6 +147,12 @@ final class NativeMediaReceiver: @unchecked Sendable {
     private let unchanged: @Sendable (UInt32) -> Void
     private let audio = NativeMediaAudio()
     private let rotation = NativeMediaRotation()
+    private var launched = false
+    private var session: URLSession?
+    // An Android helper encodes the display as it is currently rotated and at
+    // the size it chose. Only the iPhone stream is always portrait and needs
+    // turning and padding removed here.
+    private var transformsLocally = true
     static var executable: URL { Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("iPortalTransport") }
     static var available: Bool { FileManager.default.isExecutableFile(atPath: executable.path) }
 
@@ -164,6 +170,7 @@ final class NativeMediaReceiver: @unchecked Sendable {
         process.standardError = FileHandle.nullDevice
         process.terminationHandler = { [weak self] child in iportalTrace("paired-media-exit", ["code":child.terminationStatus]); self?.reportFailure() }
         try process.run()
+        launched = true
         queue.async { [self] in
             defer { resetDecoder(); audio.stop() }
             while !lifetime.isCancelled {
@@ -172,27 +179,62 @@ final class NativeMediaReceiver: @unchecked Sendable {
                 // as soon as any bytes arrive; framing below handles partial reads.
                 let data = readAvailableMediaBytes(output.fileHandleForReading)
                 guard !data.isEmpty else { break }
-                buffered.append(data)
-                while buffered.count >= 16 {
-                    let kind = word(buffered, 0), flags = word(buffered, 4), time = word(buffered, 8), size = Int(word(buffered, 12))
-                    guard size <= 8 * 1024 * 1024 else { reportFailure(); return }
-                    if buffered.count < 16 + size { break }
-                    let data = Data(buffered[16..<16 + size])
-                    buffered.removeSubrange(0..<16 + size)
-                    do { try receive(kind: kind, flags: flags, time: time, data: data) }
-                    catch { reportFailure(); return }
-                }
+                guard ingest(data) else { return }
             }
             if !lifetime.isCancelled { reportFailure() }
         }
     }
+    // The same records, read from a session server that proxies its helper's
+    // stream (Android). There is no child process: the server already owns the
+    // device connection, its credential and its route changes.
+    func start(url: URL, device: String) {
+        decoderBudget = MediaDecoderBudget.device(device)
+        transformsLocally = false
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // The helper sends a record at least twice a second, also while the
+        // screen is still, so silence this long is a dead stream.
+        configuration.timeoutIntervalForRequest = 5
+        let callbacks = OperationQueue()
+        callbacks.underlyingQueue = queue; callbacks.maxConcurrentOperationCount = 1
+        let delegate = NativeMediaStreamDelegate(received: { [weak self] data in
+            guard let self, !self.lifetime.isCancelled else { return false }
+            return self.ingest(data)
+        }, ended: { [weak self] status in
+            guard let self else { return }
+            iportalTrace("helper-media-ended", ["status": status])
+            self.resetDecoder(); self.audio.stop()
+            self.reportFailure()
+        })
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: callbacks)
+        self.session = session
+        session.dataTask(with: url).resume()
+    }
+    // Runs on `queue`. False once the stream is unusable and has been reported.
+    private func ingest(_ data: Data) -> Bool {
+        buffered.append(data)
+        while buffered.count >= 16 {
+            let kind = word(buffered, 0), flags = word(buffered, 4), time = word(buffered, 8), size = Int(word(buffered, 12))
+            guard size <= 8 * 1024 * 1024 else { reportFailure(); return false }
+            if buffered.count < 16 + size { break }
+            let data = Data(buffered[16..<16 + size])
+            buffered.removeSubrange(0..<16 + size)
+            do { try receive(kind: kind, flags: flags, time: time, data: data) }
+            catch { reportFailure(); return false }
+        }
+        return true
+    }
     func setVolume(_ volume: Float) { audio.setVolume(volume) }
-    func setOrientation(_ value: String) { rotation.setOrientation(value) }
-    func setDisplayPixels(_ value: CGSize) { rotation.setDisplayPixels(value) }
+    func setOrientation(_ value: String) { if transformsLocally { rotation.setOrientation(value) } }
+    func setDisplayPixels(_ value: CGSize) { if transformsLocally { rotation.setDisplayPixels(value) } }
     func stop() {
         ownershipLock.lock(); decodeOwnership.retire(); ownershipLock.unlock()
         audio.stop()
+        // Also releases the delegate, which a session otherwise retains.
+        session?.invalidateAndCancel()
         try? input.fileHandleForWriting.close()
+        guard launched else { return }
         // Let the child cancel and drop its lease; force only this owned child
         // after the deadline if an incompatible framework stalls during startup.
         let child = process
@@ -229,6 +271,8 @@ final class NativeMediaReceiver: @unchecked Sendable {
         case 2: try configure(data)
         case 1: receivedFrames += 1; try decode(data, sync: flags & 1 != 0, time: time)
         case 3: audio.consume(data, timestamp: time)
+        case 9: audio.consume(data, timestamp: time, pcm: true)
+        case 10: try configure(data, h264: true)
         case 7: capabilities(try JSONDecoder().decode(PairedCapabilities.self, from: data))
         case 8: unchanged(time)
         case 5: resetDecoder()
@@ -236,21 +280,32 @@ final class NativeMediaReceiver: @unchecked Sendable {
         default: throw CocoaError(.coderReadCorrupt)
         }
     }
-    private func configure(_ data: Data) throws {
+    private func configure(_ data: Data, h264: Bool = false) throws {
         var sets: [Data] = [], offset = 0
         while offset + 4 <= data.count {
             let size = Int(word(data, offset)); offset += 4
             guard (2...65536).contains(size), offset + size <= data.count else { throw CocoaError(.coderReadCorrupt) }
             sets.append(data.subdata(in: offset..<offset + size)); offset += size
         }
-        guard offset == data.count, sets.count == 3 else { throw CocoaError(.coderReadCorrupt) }
+        // HEVC carries VPS, SPS and PPS; H.264 (an Android phone without a
+        // hardware HEVC encoder) carries SPS and PPS. Frames are the same record.
+        guard offset == data.count, sets.count == (h264 ? 2 : 3) else { throw CocoaError(.coderReadCorrupt) }
         resetDecoder()
         var description: CMFormatDescription?
-        let status = sets[0].withUnsafeBytes { a in sets[1].withUnsafeBytes { b in sets[2].withUnsafeBytes { c in
-            let pointers = [a.baseAddress!.assumingMemoryBound(to: UInt8.self), b.baseAddress!.assumingMemoryBound(to: UInt8.self), c.baseAddress!.assumingMemoryBound(to: UInt8.self)]
-            return CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: nil, parameterSetCount: 3, parameterSetPointers: pointers,
-                parameterSetSizes: sets.map(\.count), nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &description)
-        }}}
+        let status: OSStatus
+        if h264 {
+            status = sets[0].withUnsafeBytes { a in sets[1].withUnsafeBytes { b in
+                let pointers = [a.baseAddress!.assumingMemoryBound(to: UInt8.self), b.baseAddress!.assumingMemoryBound(to: UInt8.self)]
+                return CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: nil, parameterSetCount: 2, parameterSetPointers: pointers,
+                    parameterSetSizes: sets.map(\.count), nalUnitHeaderLength: 4, formatDescriptionOut: &description)
+            }}
+        } else {
+            status = sets[0].withUnsafeBytes { a in sets[1].withUnsafeBytes { b in sets[2].withUnsafeBytes { c in
+                let pointers = [a.baseAddress!.assumingMemoryBound(to: UInt8.self), b.baseAddress!.assumingMemoryBound(to: UInt8.self), c.baseAddress!.assumingMemoryBound(to: UInt8.self)]
+                return CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: nil, parameterSetCount: 3, parameterSetPointers: pointers,
+                    parameterSetSizes: sets.map(\.count), nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &description)
+            }}}
+        }
         guard status == noErr, let description else { throw CocoaError(.coderReadCorrupt) }
         format = description
         let coded = CMVideoFormatDescriptionGetDimensions(description)
@@ -258,7 +313,7 @@ final class NativeMediaReceiver: @unchecked Sendable {
         let depth = (CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_BitsPerComponent) as? NSNumber)?.intValue
         let transfer = CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
         let nativeYUV = nativeMediaUsesYUV(bitsPerComponent: depth, transferFunction: transfer)
-        iportalTrace("paired-video-format", ["codedWidth": coded.width, "codedHeight": coded.height,
+        iportalTrace("paired-video-format", ["codec": h264 ? "h264" : "hevc", "codedWidth": coded.width, "codedHeight": coded.height,
             "visibleWidth": aperture.width, "visibleHeight": aperture.height,
             "visibleX": aperture.minX, "visibleY": aperture.minY,
             "bitsPerComponent": depth ?? 0, "nativeYUV": nativeYUV])
@@ -338,6 +393,55 @@ final class NativeMediaReceiver: @unchecked Sendable {
         guard status == noErr else { throw CocoaError(.coderReadCorrupt) }
     }
 }
+
+// URLSession hands response bytes over as they arrive. A response that is not
+// the stream, and any end of it, is the same event to the receiver: failure.
+private final class NativeMediaStreamDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let received: (Data) -> Bool
+    private let ended: (Int) -> Void
+    private var status = 0
+    private var finished = false
+    init(received: @escaping (Data) -> Bool, ended: @escaping (Int) -> Void) { self.received = received; self.ended = ended }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        completionHandler(status == 200 ? .allow : .cancel)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // The receiver has already reported a record it could not use.
+        if !finished, !received(data) { finished = true; dataTask.cancel() }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !finished else { return }
+        finished = true
+        ended(status)
+    }
+}
+
+// BEGIN TESTABLE PCM AUDIO
+// An Android helper sends sound uncompressed: interleaved signed 16-bit
+// little-endian samples, in the same 10 ms packets as the iPhone's AAC-ELD.
+// The phone's AAC encoder cannot produce those (its low-delay frames are 512
+// samples and the packet clock here counts 480), and a local link carries
+// 1.5 Mbit/s without effort.
+func nativeAudioPCMBuffer(_ data: Data, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+    let channels = Int(format.channelCount), frames = data.count / (2 * max(1, channels))
+    guard channels > 0, frames > 0, frames <= 4800, data.count == frames * 2 * channels,
+          let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+          let output = buffer.floatChannelData else { return nil }
+    buffer.frameLength = AVAudioFrameCount(frames)
+    data.withUnsafeBytes { raw in
+        for frame in 0..<frames {
+            for channel in 0..<channels {
+                let offset = (frame * channels + channel) * 2
+                let sample = Int16(bitPattern: UInt16(raw[offset]) | UInt16(raw[offset + 1]) << 8)
+                output[channel][frame] = Float(sample) / 32768
+            }
+        }
+    }
+    return buffer
+}
+// END TESTABLE PCM AUDIO
 
 // Rotate pixels and their dimensions together before they enter FrameStore.
 // The helper reports the foreground app's interface orientation, so holding a
@@ -542,13 +646,37 @@ private final class NativeMediaAudio: @unchecked Sendable {
         graphConnected = true
     }
     func setVolume(_ volume: Float) { lock.lock(); self.volume = volume; lock.unlock() }
-    func consume(_ data: Data, timestamp: UInt32) {
+    func consume(_ data: Data, timestamp: UInt32, pcm: Bool = false) {
         // A serial owner also keeps a hardware-change notification from
         // mutating the graph halfway through scheduling a packet. The call is
         // synchronous so there is no unbounded queue of stale audio payloads.
-        work.sync { consumePacket(data, timestamp: timestamp) }
+        work.sync { consumePacket(data, timestamp: timestamp, uncompressed: pcm) }
     }
-    private func consumePacket(_ data: Data, timestamp: UInt32) {
+    private func decodeAAC(_ data: Data) -> AVAudioPCMBuffer? {
+        if converter == nil {
+            var format = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatMPEG4AAC_ELD,
+                mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 480, mBytesPerFrame: 0, mChannelsPerFrame: 2,
+                mBitsPerChannel: 0, mReserved: 0)
+            guard let input = AVAudioFormat(streamDescription: &format), let decoder = AVAudioConverter(from: input, to: output) else { return nil }
+            decoder.magicCookie = Data([0xF8, 0xE6, 0x40, 0x00]); converter = decoder
+        }
+        guard let converter, let pcm = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: 480) else { return nil }
+        let packet = AVAudioCompressedBuffer(format: converter.inputFormat, packetCapacity: 1, maximumPacketSize: data.count)
+        data.withUnsafeBytes { packet.data.copyMemory(from: $0.baseAddress!, byteCount: data.count) }
+        packet.byteLength = UInt32(data.count); packet.packetCount = 1
+        packet.packetDescriptions?.pointee = AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 480, mDataByteSize: UInt32(data.count))
+        var supplied = false, error: NSError?
+        let status = converter.convert(to: pcm, error: &error) { _, result in
+            if supplied { result.pointee = .noDataNow; return nil }
+            supplied = true; result.pointee = .haveData; return packet
+        }
+        guard error == nil, status != .error, pcm.frameLength > 0 else {
+            decodeFailures += 1
+            errors += 1; if errors >= 5 { self.converter = nil; errors = 0 }; return nil
+        }
+        return pcm
+    }
+    private func consumePacket(_ data: Data, timestamp: UInt32, uncompressed: Bool) {
         guard !isStopped else { return }
         guard ProcessInfo.processInfo.systemUptime >= nextOutputAttemptAt else { return }
         guard !data.isEmpty, let continuity = clock.observe(timestamp) else { return }
@@ -573,27 +701,11 @@ private final class NativeMediaAudio: @unchecked Sendable {
                 lastReport = now; maximumGap = 0; maximumQueue = 0
             }
         }
-        if converter == nil {
-            var format = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatMPEG4AAC_ELD,
-                mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 480, mBytesPerFrame: 0, mChannelsPerFrame: 2,
-                mBitsPerChannel: 0, mReserved: 0)
-            guard let input = AVAudioFormat(streamDescription: &format), let decoder = AVAudioConverter(from: input, to: output) else { return }
-            decoder.magicCookie = Data([0xF8, 0xE6, 0x40, 0x00]); converter = decoder
-        }
-        guard let converter, let pcm = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: 480) else { return }
-        let packet = AVAudioCompressedBuffer(format: converter.inputFormat, packetCapacity: 1, maximumPacketSize: data.count)
-        data.withUnsafeBytes { packet.data.copyMemory(from: $0.baseAddress!, byteCount: data.count) }
-        packet.byteLength = UInt32(data.count); packet.packetCount = 1
-        packet.packetDescriptions?.pointee = AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 480, mDataByteSize: UInt32(data.count))
-        var supplied = false, error: NSError?
-        let status = converter.convert(to: pcm, error: &error) { _, result in
-            if supplied { result.pointee = .noDataNow; return nil }
-            supplied = true; result.pointee = .haveData; return packet
-        }
-        guard error == nil, status != .error, pcm.frameLength > 0 else {
-            decodeFailures += 1
-            errors += 1; if errors >= 5 { self.converter = nil; errors = 0 }; return
-        }
+        // The helper's PCM packets hold exactly the 480 frames the clock above
+        // counts; anything else would be played out of step with its timestamp.
+        let decoded = uncompressed ? (data.count == 480 * 4 ? nativeAudioPCMBuffer(data, format: output) : nil) : decodeAAC(data)
+        if uncompressed, decoded == nil { decodeFailures += 1 }
+        guard let pcm = decoded else { return }
         decodedPackets += 1
         errors = 0
         if !reportedPlayback { reportedPlayback = true; iportalTrace("paired-audio-decoded", ["frames": pcm.frameLength]) }

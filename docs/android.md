@@ -1,8 +1,10 @@
 # Android
 
 Status: first working slice. An Android phone can be mirrored and controlled from
-the browser client, the local API and the Mac app. The Mac app uses basic video
-for Android, without sound. The iPhone and iPad path is unchanged.
+the browser client, the local API and the Mac app. The Mac app has a native
+video and audio path for Android that is built but not yet checked on a phone;
+it falls back to basic video, without sound. The iPhone and iPad path is
+unchanged.
 
 Background and measurements are in the [assessment](android-assessment.md).
 
@@ -87,6 +89,40 @@ as it is without the paired transport.
   its picture from the helper. Window sizing, the toolbar, keyboard and clipboard
   menus are the existing ones.
 
+### Native media
+
+The helper also serves `/v1/media`: the display mirrored into a hardware HEVC
+encoder (H.264 where there is none) and the phone's playback sound, as the
+16-byte-framed records the Mac already reads from the iPhone transport. The
+session server relays it at `GET /media`, because only that process holds the
+helper's socket and credential and follows its route changes. The Mac window
+reads it with the same decoder, display layer and audio queue as a paired
+iPhone, and falls back to basic video when it fails, retrying later.
+
+| Kind | Payload                                                               |
+| ---- | --------------------------------------------------------------------- |
+| 1    | One frame, length-prefixed NAL units. Flag 1 is a keyframe. 90 kHz.   |
+| 2    | HEVC VPS, SPS, PPS, each length-prefixed. Replaces the decoder.       |
+| 7    | JSON capabilities; `audio` is `unavailable` when capture was refused. |
+| 8    | The frame with this time is still what the screen shows.              |
+| 9    | Android only: 480 frames of 48 kHz stereo 16-bit little-endian PCM.   |
+| 10   | Android only: H.264 SPS, PPS, each length-prefixed.                   |
+
+- **Rotation.** The helper encodes the screen as it is rotated. A rotation is a
+  new encoder at the new size, which sends new parameter sets and a keyframe.
+- **Still screen.** Kind 8 twice a second keeps the stream alive, and the helper
+  has the system redraw the display every two seconds so there is a real frame.
+- **Sound.** PCM, not AAC-ELD: the phone's encoder makes 512-sample low-delay
+  frames, the Mac's packet clock counts 480, and a local link has the room.
+  Silence is not sent. Capturing sound silences the phone, so **View → Play
+  Android Audio** switched off asks for a stream without it (`/media?audio=0`).
+- **Sound level.** The capture is the remote submix with the framework's
+  `fixedVolume` tag, which a plain `REMOTE_SUBMIX` record lacks; that is the
+  likely cause of the quiet capture in the assessment. If the phone refuses it,
+  the helper tries a loop-back audio policy mix (Android 13 and later).
+  `adb shell setprop debug.iportal.audio submix|playback|off` picks one path;
+  the helper logs the path and peak levels in `/data/local/tmp/iportal-agent.log`.
+
 ## What differs for API clients
 
 `GET /api/status` and `/api/health` report `"platform": "android"`. Requests and
@@ -161,8 +197,8 @@ Observed behaviour worth knowing:
 
 ## Not built yet
 
-- **Native video and audio in the Mac app.** Android windows use the basic JPEG
-  stream, without sound, and the audio menu item is disabled for them.
+- **Native video and audio in the Mac app are unverified.** They compile and
+  pass tests against synthetic streams on the Mac; no part has run on a phone.
 - **Mac accessibility bridge actions.** The bridge addresses elements by `xpath`,
   which the Android helper does not support, and has no Android role table.
 - **Live touch.** The helper injects events as they happen, but the client still

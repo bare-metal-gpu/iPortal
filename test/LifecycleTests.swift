@@ -121,6 +121,20 @@ struct LifecycleTests {
         descriptor.osVersion = "26.5"; descriptor.capabilities.video = .unavailable
         assert(policy.select(descriptor, usb: true, cameraAllowed: true, at: 10002) == .usb)
         assert(policy.select(descriptor, usb: false, cameraAllowed: true, at: 10002) == .screenshots)
+        // An Android helper's own media stream: native or images, never the
+        // Mac capture device, with the paired stream's retry timing.
+        var helperMedia = MediaCapabilityPolicy()
+        assert(helperMedia.selectHelperMedia(at: 0) == .paired)
+        helperMedia.failed(at: 1)
+        assert(helperMedia.selectHelperMedia(at: 2) == .screenshots, "an unproven stream falls back at once")
+        assert(helperMedia.selectHelperMedia(at: 31) == .paired)
+        helperMedia.negotiated(PairedCapabilities(control: .eligible, video: .supported, audio: .unavailable))
+        assert(helperMedia.audio == .unavailable)
+        helperMedia.failed(at: 100)
+        assert(helperMedia.selectHelperMedia(at: 100) == .paired, "a stream that worked gets one immediate retry")
+        helperMedia.failed(at: 101)
+        assert(helperMedia.selectHelperMedia(at: 101) == .screenshots)
+        assert(helperMedia.selectHelperMedia(at: 131) == .paired)
         let phone = IPortalUSBDevice(serial: "phone", name: "Phone")
         let tablet = IPortalUSBDevice(serial: "tablet", name: "Tablet", kind: .iPad)
         let source = CaptureSourceIdentity(id: "video-uuid", isIOS: true)

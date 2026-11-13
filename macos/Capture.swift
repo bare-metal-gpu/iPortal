@@ -386,14 +386,16 @@ final class PhoneCapture {
     }
 
     /// Calls done(true) once video is running, or done(false) if access is denied or no iPhone shows up.
-    func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, paired: Bool = false, _ done: @escaping @MainActor (Bool) -> Void) {
+    /// `media` is a session server's framed media stream (Android); it takes the paired path without the transport.
+    func start(udid: String, singleUsbDevice: Bool, timeout: TimeInterval = 8, paired: Bool = false, media: URL? = nil,
+               _ done: @escaping @MainActor (Bool) -> Void) {
         guard !started, !stopped else { return done(false) }
         iportalTrace("capture-start-entered")
         started = true
         completion = done
         deviceUDID = udid
         allowSingleDeviceFallback = singleUsbDevice
-        if paired, NativeMediaReceiver.available {
+        if paired, media != nil || NativeMediaReceiver.available {
             startupTimeoutAt = ProcessInfo.processInfo.systemUptime + timeout
             // Resolve this public macOS 26 getter at runtime so builds using
             // older SDKs retain the renderer's recommendations on newer Macs.
@@ -414,7 +416,8 @@ final class PhoneCapture {
             }
             nativeMedia = receiver
             receiver.setVolume(preferredVolume)
-            do { try receiver.start(udid: udid); finish(true) } catch { finish(false) }
+            if let media { receiver.start(url: media, device: udid); finish(true) }
+            else { do { try receiver.start(udid: udid); finish(true) } catch { finish(false) } }
             return
         }
         var prop = CMIOObjectPropertyAddress(

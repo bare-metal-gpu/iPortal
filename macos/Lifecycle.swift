@@ -229,6 +229,12 @@ struct MediaCapabilityPolicy {
            video != .unavailable, now >= retryAt { return .paired }
         return usb && cameraAllowed ? .usb : .screenshots
     }
+    // A helper that streams its own encoded media (Android) has no paired
+    // descriptor and no Mac capture device: the choice is that stream or
+    // images, with the same retry timing as a paired stream.
+    mutating func selectHelperMedia(at now: TimeInterval) -> CaptureBackend {
+        video != .unavailable && now >= retryAt ? .paired : .screenshots
+    }
     mutating func negotiated(_ capabilities: PairedCapabilities) {
         video = capabilities.video; audio = capabilities.audio
     }

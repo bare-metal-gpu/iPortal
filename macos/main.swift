@@ -1100,9 +1100,10 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
 
     var preferredCaptureBackend: CaptureBackend {
         guard let udid = requestedDeviceUDID else { return .screenshots }
-        // Android has no Mac capture device or paired media service yet; its
-        // helper supplies the picture.
-        if kind == .android { return .screenshots }
+        // Android has no Mac capture device or paired media service. Its
+        // helper encodes the screen and sound itself and the session server
+        // relays them; that stream takes the paired path from here on.
+        if kind == .android { return mediaPolicy.selectHelperMedia(at: ProcessInfo.processInfo.systemUptime) }
         let monitor = owner?.usbMonitor
         let descriptor = NativeMediaReceiver.available ? monitor?.descriptor(for: udid) : nil
         return mediaPolicy.select(descriptor, usb: monitor?.isUSBConnected(udid) == true,
@@ -1110,6 +1111,15 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
             at: ProcessInfo.processInfo.systemUptime)
     }
     var usesPairedMedia: Bool { capture?.usesPairedMedia ?? (preferredCaptureBackend == .paired) }
+    /// The helper's media stream on this session's own server, once it listens.
+    var helperMediaURL: URL? {
+        guard kind == .android, let port else { return nil }
+        // Capturing the phone's sound silences the phone. With audio switched
+        // off here, leave it playing there.
+        return URL(string: "http://127.0.0.1:\(port)/media\(audioVolume > 0 ? "" : "?audio=0")")
+    }
+    /// Sound reaches the Mac only inside the helper's native stream, and only if the phone let it be captured.
+    var androidAudioAvailable: Bool { capture?.usesPairedMedia == true && mediaPolicy.audio != .unavailable }
 
     func startCapture(udid: String, singleUsbDevice: Bool) {
         guard !systemSleeping else { return }
@@ -1120,6 +1130,8 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         // Establish control first; existing streams survive route handovers.
         if backend == .paired, deviceLifecycle != "ready" { return }
         if backend == .screenshots { fallbackToStream(); return }
+        let media = helperMediaURL
+        if kind == .android, media == nil { fallbackToStream(); return }
         let now = ProcessInfo.processInfo.systemUptime
         guard captureBudget.beginAttempt(at: now) else {
             nextNativeAttemptAt = now + 30
@@ -1162,7 +1174,7 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
         capture = c
         nativeCall("useNativeVideo")
         updateLoadingBorder()
-        c.start(udid: udid, singleUsbDevice: singleUsbDevice, paired: backend == .paired) { [weak self, weak c] ok in
+        c.start(udid: udid, singleUsbDevice: singleUsbDevice, paired: backend == .paired, media: media) { [weak self, weak c] ok in
             guard let self, self.capture === c else { return }
             if !ok {
                 if !usesPairedMedia && CapturePermissions.shared.snapshot.blocksNativeCapture {
@@ -1539,7 +1551,14 @@ final class MirrorSession: NSObject, WKScriptMessageHandler, WKNavigationDelegat
     @objc func toggleAudio(_ item: NSMenuItem) {
         audioVolume = audioVolume > 0 ? 0 : 1
         capture?.setVolume(audioVolume)
-        if audioVolume > 0, CapturePermissions.shared.snapshot.canCaptureVideo {
+        // The helper captures sound per stream, so the switch takes a new one.
+        // This is the user's own request, not a failure to count against video.
+        if kind == .android, capture?.usesPairedMedia == true, let captureUdid, deviceLifecycle == "ready" {
+            captureBudget = CaptureRetryBudget()
+            startCapture(udid: captureUdid, singleUsbDevice: singleUsbDevice)
+        }
+        // The microphone permission belongs to the iPhone's USB capture device.
+        if kind != .android, audioVolume > 0, CapturePermissions.shared.snapshot.canCaptureVideo {
             Task { await CapturePermissions.shared.request(.microphone) }
         }
         item.state = audioVolume > 0 ? .on : .off
@@ -1791,8 +1810,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if item.action == #selector(controlCenter) { item.title = android ? "Quick Settings" : "Control Center" }
         if item.action == #selector(toggleAudio(_:)) { item.title = "Play \(kind) Audio" }
         if item.action == #selector(toggleAudio(_:)) { item.state = activeSession?.audioVolume ?? 0 > 0 ? .on : .off }
-        // Android has no audio path yet; do not offer a switch that does nothing.
-        if item.action == #selector(toggleAudio(_:)), activeSession?.kind == .android { item.state = .off; return false }
+        // Android sound travels in the native stream only. Without it (basic
+        // video, or a phone that refused capture) the switch would do nothing.
+        if item.action == #selector(toggleAudio(_:)), android, activeSession?.androidAudioAvailable != true { item.state = .off; return false }
         if item.action == #selector(toggleOnTop(_:)) { item.state = activeSession?.window?.level == .floating ? .on : .off }
         return activeSession != nil
     }

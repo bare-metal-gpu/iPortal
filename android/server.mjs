@@ -534,6 +534,7 @@ export async function runAndroid(opts, positionals) {
     ),
     mjpeg: "http://android-helper/v1/video",
     mjpegSocket: helperSocket,
+    media: "http://android-helper/v1/media",
     helperAuth,
     dispatch,
     statusEvents,

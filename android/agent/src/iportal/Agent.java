@@ -22,7 +22,7 @@ import org.json.JSONObject;
  * iPortal's Android helper. It is started over adb as the shell user with
  * app_process; nothing is installed on the device. It serves the same
  * authenticated contract as the iPhone helper (status, commands, events, basic
- * video) on a device-local socket that the Mac reaches through adb.
+ * video), and native media for the Mac window, on a device-local socket that the Mac reaches through adb.
  */
 public final class Agent {
   static final int PROTOCOL = 1;
@@ -34,6 +34,7 @@ public final class Agent {
   private final byte[] credential;
   private final Inspector inspector = new Inspector();
   private final Video video = new Video();
+  private final Media media = new Media();
   private final Commands commands = new Commands(this, inspector, video);
   private final Object commandLock = new Object();
   private final AtomicInteger streams = new AtomicInteger();
@@ -273,6 +274,9 @@ public final class Agent {
         } else if (method.equals("GET") && path.equals("/v1/video")) {
           video(out);
           return;
+        } else if (method.equals("GET") && (path.equals("/v1/media") || path.startsWith("/v1/media?"))) {
+          media(out, !path.endsWith("?audio=0"));
+          return;
         } else json(out, 404, new JSONObject().put("error", "not found"), true);
       }
     } catch (Throwable closed) {
@@ -324,6 +328,19 @@ public final class Agent {
       }
     } finally {
       video.release();
+      streams.decrementAndGet();
+    }
+  }
+
+  private void media(OutputStream out, boolean sound) throws Exception {
+    head(out, 200, "application/octet-stream", -1, true);
+    streams.incrementAndGet();
+    try {
+      media.stream(out, sound, () -> stopping);
+    } catch (Throwable error) {
+      // The Mac falls back to basic video; say why in the helper's log.
+      log("media stream ended: " + Device.unwrap(error));
+    } finally {
       streams.decrementAndGet();
     }
   }
