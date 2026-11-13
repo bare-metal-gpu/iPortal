@@ -10,11 +10,14 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -138,10 +141,81 @@ final class Inspector {
     for (int i = 0; i < node.getChildCount(); i++) collect(node.getChild(i), match, found);
   }
 
+  // ---- xpath ----
+
+  /**
+   * Attribute names an XPath may test. They are the ones a uiautomator dump
+   * uses, plus the names of iPortal's own attributes where those differ.
+   */
+  private static final Set<String> XPATH_ATTRIBUTES = new HashSet<>(Arrays.asList(
+      "text", "content-desc", "resource-id", "class", "package", "index", "checkable", "checked", "clickable",
+      "enabled", "focusable", "focused", "scrollable", "long-clickable", "password", "selected", "displayed",
+      "visible", "label", "value"));
+
+  private static String orEmpty(CharSequence value) {
+    return value == null ? "" : value.toString();
+  }
+
+  private static final XPath.Tree<AccessibilityNodeInfo> XPATH_TREE = new XPath.Tree<AccessibilityNodeInfo>() {
+    @Override
+    public List<AccessibilityNodeInfo> children(AccessibilityNodeInfo node) {
+      // The same children, in the same order, as the tree `source` returns:
+      // the Mac accessibility bridge builds its paths by counting those.
+      List<AccessibilityNodeInfo> children = new ArrayList<>();
+      for (int i = 0; i < node.getChildCount(); i++) {
+        AccessibilityNodeInfo child = node.getChild(i);
+        if (child != null) children.add(child);
+      }
+      return children;
+    }
+
+    @Override
+    public String name(AccessibilityNodeInfo node) {
+      return orEmpty(node.getClassName());
+    }
+
+    @Override
+    public String attribute(AccessibilityNodeInfo node, String name) {
+      switch (name) {
+        // A password's characters must not be recoverable by probing with contains().
+        case "text": return node.isPassword() ? "" : orEmpty(node.getText());
+        case "content-desc": return orEmpty(node.getContentDescription());
+        case "resource-id": return orEmpty(node.getViewIdResourceName());
+        case "class": return orEmpty(node.getClassName());
+        case "package": return orEmpty(node.getPackageName());
+        case "checkable": return String.valueOf(node.isCheckable());
+        case "checked": return String.valueOf(node.isChecked());
+        case "clickable": return String.valueOf(node.isClickable());
+        case "enabled": return String.valueOf(node.isEnabled());
+        case "focusable": return String.valueOf(node.isFocusable());
+        case "focused": return String.valueOf(node.isFocused());
+        case "scrollable": return String.valueOf(node.isScrollable());
+        case "long-clickable": return String.valueOf(node.isLongClickable());
+        case "password": return String.valueOf(node.isPassword());
+        case "selected": return String.valueOf(node.isSelected());
+        case "displayed":
+        case "visible": return String.valueOf(node.isVisibleToUser());
+        case "label": return label(node);
+        case "value": {
+          Object value = value(node);
+          return value == JSONObject.NULL ? "" : String.valueOf(value);
+        }
+        default: return null;
+      }
+    }
+  };
+
   JSONArray find(String using, String value) throws Exception {
-    Match match = selector(using, value);
-    List<AccessibilityNodeInfo> found = new ArrayList<>();
-    collect(root(), match, found);
+    List<AccessibilityNodeInfo> found;
+    if (using.equals("xpath")) {
+      // Parse before touching the screen, so a malformed selector fails the same way every time.
+      XPath path = XPath.parse(value, XPATH_ATTRIBUTES);
+      found = path.select(XPATH_TREE, root(), 2000);
+    } else {
+      Match match = selector(using, value);
+      found = new ArrayList<>();
+      collect(root(), match, found);
+    }
     JSONArray result = new JSONArray();
     int index = 0;
     for (AccessibilityNodeInfo node : found) {

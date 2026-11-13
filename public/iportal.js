@@ -49,6 +49,7 @@ function invalidateInput() {
   keyboardInput.value = "";
   clearTimeout(wheelTimer);
   wheelTimer = undefined;
+  abortLiveTouch();
 }
 let nativeSettingsVisible = false;
 /** @param {boolean} visible @param {number} epoch @param {string} documentId */
@@ -513,6 +514,7 @@ function api(name, body = {}, fromGesture = false) {
   if (!fromGesture) {
     flushWheel();
     flushPinch();
+    settleLiveGestures();
   } // Keep earlier gestures ahead of later input.
   if (name !== "type") flush(true); // keep typed text in order with other actions
   const requestId = crypto.randomUUID();
@@ -551,6 +553,281 @@ function api(name, body = {}, fromGesture = false) {
     () => {},
   );
   return task;
+}
+
+// ---------- Live touch (Android) ----------
+
+// The Android helper injects one touch event at a time, so on Android a stroke
+// is streamed while it happens and the phone follows the pointer. The iPhone
+// helper can only play back a whole gesture; nothing here runs for it.
+const liveTouch = platform === "android";
+// About one event per display frame. Sending more would only queue them behind
+// the round trip to the phone. A newer position replaces one not yet sent.
+const liveFrameMs = 16;
+// A finger held still has nothing to send, and the phone lifts a finger it has
+// not heard about for two seconds. Repeating the position keeps a press down.
+const liveBeatMs = 500;
+/**
+ * @typedef {{id: string, kind: "drag" | "wheel" | "pinch", origin: number[][], points: number[][],
+ *   dirty: boolean, sent: boolean, busy: boolean, closing: "up" | "cancel" | null, done: boolean,
+ *   movedAt: number, timer?: number, after: Promise<unknown>, finished: Promise<void>,
+ *   finish: () => void}} LiveStroke
+ */
+/** @type {LiveStroke | null} */
+let live = null;
+/** @type {{stroke: LiveStroke, x: number, y: number, dx: number, dy: number, phased: boolean, zoom: boolean, lifted: boolean} | null} */
+let liveScroll = null;
+/** @type {{stroke: LiveStroke, x: number, y: number, scale: number, source: string, lifted: boolean} | null} */
+let livePinch = null;
+
+/** The stroke in progress, if it is of this kind and still accepts events.
+ * @param {LiveStroke["kind"]} kind */
+function liveStroke(kind) {
+  return live && live.kind === kind && !live.closing && !live.done ? live : null;
+}
+/** @param {LiveStroke} s */
+function closeLive(s) {
+  s.done = true;
+  clearTimeout(s.timer);
+  s.finish();
+}
+// One request at a time per stroke, in order: down, the newest position at
+// most once a frame, then up or cancel. An event is never sent twice. If one
+// fails, the stroke is over, and the phone has already lifted the finger.
+/** @param {LiveStroke} s */
+function pumpLive(s) {
+  if (s.busy || s.done) return;
+  clearTimeout(s.timer);
+  /** @type {{phase: string, points?: number[][]}} */
+  let event;
+  if (!s.sent) {
+    // Abandoned before it reached the phone: there is nothing to lift.
+    if (s.closing === "cancel") return closeLive(s);
+    event = { phase: "down", points: s.origin };
+  } else if (s.closing === "up") event = { phase: "up", points: s.points };
+  else if (s.closing) event = { phase: "cancel" };
+  else if (s.dirty) {
+    const wait = s.movedAt + liveFrameMs - performance.now();
+    if (wait > 0) {
+      s.timer = setTimeout(() => pumpLive(s), wait);
+      return;
+    }
+    event = { phase: "move", points: s.points };
+    s.movedAt = performance.now();
+  } else {
+    s.timer = setTimeout(() => {
+      s.dirty = true;
+      pumpLive(s);
+    }, liveBeatMs);
+    return;
+  }
+  const first = !s.sent;
+  s.sent = true;
+  s.busy = true;
+  if (!first) s.dirty = false;
+  // The first event waits for input sent earlier, so a click cannot overtake
+  // the text typed before it, or the end of the stroke before this one.
+  void (first ? s.after : Promise.resolve())
+    .then(() =>
+      first && s.closing === "cancel"
+        ? null
+        : requestJSON(
+            "/api/pointer",
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-iportal-instance": /** @type {HTMLMetaElement} */ (
+                  document.querySelector('meta[name="iportal-instance"]')
+                ).content,
+              },
+              body: JSON.stringify({ stroke: s.id, ...event }),
+            },
+            5000,
+          ),
+    )
+    .then(
+      (json) => {
+        s.busy = false;
+        if (json && !json.ok && json.code !== "stroke ended") toast(actionMessage(json));
+        if (!json || !json.ok || event.phase === "up" || event.phase === "cancel") closeLive(s);
+        else pumpLive(s);
+      },
+      () => {
+        s.busy = false;
+        closeLive(s);
+        toast(`Connection lost. Check your ${deviceKind} before trying again.`);
+      },
+    );
+}
+/** @param {LiveStroke["kind"]} kind @param {number[][]} points */
+function beginLive(kind, points) {
+  // One stroke at a time: the phone has one touch stream.
+  const previous = live;
+  if (previous) endLive(previous, "up");
+  let finish = () => {};
+  /** @type {Promise<void>} */
+  const finished = new Promise((resolve) => (finish = resolve));
+  /** @type {LiveStroke} */
+  const s = {
+    id: crypto.randomUUID(),
+    kind,
+    origin: points,
+    points,
+    dirty: false,
+    sent: false,
+    busy: false,
+    closing: null,
+    done: false,
+    movedAt: -Infinity,
+    after: Promise.all([outbound, previous?.finished]),
+    finished,
+    finish,
+  };
+  live = s;
+  pumpLive(s);
+  return s;
+}
+/** @param {LiveStroke} s @param {number[][]} points */
+function moveLive(s, points) {
+  if (s.done || s.closing || String(points) === String(s.points)) return;
+  s.points = points;
+  s.dirty = true;
+  pumpLive(s);
+}
+/** @param {LiveStroke} s @param {"up" | "cancel"} how @param {number[][]} [points] */
+function endLive(s, how, points) {
+  if (s.done || s.closing) return;
+  if (points) s.points = points;
+  s.closing = how;
+  pumpLive(s);
+}
+// Called when input is invalidated: lock, reconnect, rotation, a new picture
+// size. Whatever finger is down is cancelled, not lifted, so it cannot tap.
+function abortLiveTouch() {
+  if (live) endLive(live, "cancel");
+  liveScroll = null;
+  livePinch = null;
+}
+// Other input lifts a scroll or pinch in progress and ignores its tail, the
+// way flushWheel and flushPinch send theirs early. A mouse drag stays down.
+function settleLiveGestures() {
+  if (liveScroll && !liveScroll.lifted) {
+    endLive(liveScroll.stroke, "up");
+    liveScroll.lifted = true;
+  }
+  if (livePinch && !livePinch.lifted) {
+    endLive(livePinch.stroke, "up");
+    livePinch.lifted = true;
+  }
+}
+
+// Two fingers level with each other, spread around a fixed centre. Near an
+// edge the spread stops at the screen; moving the centre would pan as well.
+/** @param {number} x @param {number} y @param {number} scale */
+function pinchPoints(x, y, scale) {
+  const cx = Math.max(0.15, Math.min(0.85, x)),
+    cy = Math.max(0.02, Math.min(0.98, y));
+  const half = Math.min(0.12 * Math.max(0.25, Math.min(4, scale)), cx - 0.01, 0.99 - cx);
+  return [
+    [cx - half, cy],
+    [cx + half, cy],
+  ];
+}
+/** @param {number} x @param {number} y @param {boolean} phased @param {boolean} zoom */
+function startLiveScroll(x, y, phased, zoom) {
+  flush(true);
+  // Leave room to travel in every direction.
+  x = Math.max(0.1, Math.min(0.9, x));
+  y = Math.max(0.1, Math.min(0.9, y));
+  const stroke = beginLive("wheel", zoom ? pinchPoints(x, y, 1) : [[x, y]]);
+  liveScroll = { stroke, x, y, dx: 0, dy: 0, phased, zoom, lifted: false };
+}
+/** @param {number} dx @param {number} dy */
+function trackLiveScroll(dx, dy) {
+  const s = liveScroll;
+  if (!s || s.lifted) return;
+  s.dx += dx;
+  s.dy += dy;
+  if (s.zoom) return moveLive(s.stroke, pinchPoints(s.x, s.y, Math.exp(-s.dy * 4)));
+  // Content follows the finger, so the finger moves against the scroll.
+  const x = s.x - s.dx,
+    y = s.y - s.dy;
+  if (x < 0.03 || x > 0.97 || y < 0.03 || y > 0.97) {
+    // The finger has run out of screen. Cancelling leaves the content where it
+    // is, where lifting would fling it. Then take a new grip at the start.
+    endLive(s.stroke, "cancel");
+    s.dx = 0;
+    s.dy = 0;
+    s.stroke = beginLive("wheel", [[s.x, s.y]]);
+    return;
+  }
+  moveLive(s.stroke, [[x, y]]);
+}
+/** @param {"up" | "cancel"} [how] */
+function finishLiveScroll(how) {
+  clearTimeout(wheelTimer);
+  wheelTimer = undefined;
+  if (liveScroll && !liveScroll.lifted) endLive(liveScroll.stroke, how === "cancel" ? how : "up");
+  liveScroll = null;
+}
+// A mouse wheel has no phases: the finger goes down with the first notch and
+// lifts when the wheel has been still for a moment.
+/** @param {number} x @param {number} y @param {number} dx @param {number} dy @param {boolean} zoom */
+function liveWheel(x, y, dx, dy, zoom) {
+  if (!canInteract() || liveStroke("drag") || livePinch) return;
+  if (liveScroll && (liveScroll.phased || liveScroll.zoom !== zoom)) finishLiveScroll();
+  if (!liveScroll) startLiveScroll(x, y, false, zoom);
+  trackLiveScroll(dx, dy);
+  clearTimeout(wheelTimer);
+  wheelTimer = setTimeout(finishLiveScroll, wheelIdleMs);
+}
+// A trackpad says when the fingers land and lift, so the stroke follows them
+// exactly. Its momentum is ignored: the phone flings by itself on the lift.
+/** @param {import("../public-contracts.ts").NativeScroll} event */
+function liveScrollEvent(event) {
+  if (event.phase === "momentum") return;
+  if (event.phase === "cancelled") return finishLiveScroll("cancel");
+  if (event.phase === "none")
+    return liveWheel(event.x, event.y, event.dx, event.dy, Boolean(event.zoom));
+  if (liveStroke("drag") || livePinch) return;
+  if (event.phase === "began") {
+    // A trackpad stroke that never ended was abandoned: cancel it, do not tap.
+    finishLiveScroll(liveScroll?.phased ? "cancel" : "up");
+    startLiveScroll(event.x, event.y, true, Boolean(event.zoom));
+  }
+  // Changes without a begin are the tail of a gesture that was interrupted.
+  if (!liveScroll?.phased) return;
+  trackLiveScroll(event.dx, event.dy);
+  if (event.phase === "ended") finishLiveScroll();
+}
+/** @param {import("../public-contracts.ts").NativePinch} event @param {string} source */
+function livePinchEvent(event, source) {
+  if (event.phase === "began") {
+    flush(true);
+    // macOS can turn a scroll into a pinch without lifting the fingers.
+    finishLiveScroll(liveScroll?.phased ? "cancel" : "up");
+    if (live) endLive(live, "cancel");
+    const stroke = beginLive("pinch", pinchPoints(event.x, event.y, 1));
+    livePinch = { stroke, x: event.x, y: event.y, scale: 1, source, lifted: false };
+  }
+  const p = livePinch;
+  if (!p || p.source !== source) return;
+  if (event.phase === "cancelled") {
+    endLive(p.stroke, "cancel");
+    livePinch = null;
+    return;
+  }
+  if (!p.lifted) {
+    if (typeof event.scale === "number" && Number.isFinite(event.scale)) p.scale = event.scale;
+    else if (typeof event.delta === "number" && Number.isFinite(event.delta))
+      p.scale += event.delta;
+    moveLive(p.stroke, pinchPoints(p.x, p.y, p.scale));
+  }
+  if (event.phase === "ended") {
+    endLive(p.stroke, "up");
+    livePinch = null;
+  }
 }
 
 // ---------- Connection ----------
@@ -766,11 +1043,21 @@ screen.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || !canInteract() || pinch) return;
   e.preventDefault();
   screen.setPointerCapture(e.pointerId);
+  if (liveTouch) {
+    flush(true);
+    finishLiveScroll();
+    if (livePinch) return;
+    beginLive("drag", [rel(e)]);
+    ripple(e);
+    return;
+  }
   touch = { t0: performance.now(), last: 0, points: [[...rel(e), 0]] };
   ripple(e);
 });
 
 screen.addEventListener("pointermove", (e) => {
+  const drag = liveStroke("drag");
+  if (drag) moveLive(drag, [rel(e)]);
   if (!touch) return;
   const t = Math.min(10000, performance.now() - touch.t0);
   if (t - touch.last < 16) return;
@@ -779,6 +1066,8 @@ screen.addEventListener("pointermove", (e) => {
 });
 
 screen.addEventListener("pointerup", (e) => {
+  const drag = liveStroke("drag");
+  if (drag) endLive(drag, "up", [rel(e)]);
   if (!touch) return;
   const end = Math.min(10000, performance.now() - touch.t0);
   let points = [...touch.points, [...rel(e), end]];
@@ -793,7 +1082,11 @@ screen.addEventListener("pointerup", (e) => {
   void api("gesture", { points, end: moved ? points[points.length - 1][2] : end < 250 ? 40 : end });
 });
 
-screen.addEventListener("pointercancel", () => (touch = null));
+screen.addEventListener("pointercancel", () => {
+  touch = null;
+  const drag = liveStroke("drag");
+  if (drag) endLive(drag, "cancel");
+});
 screen.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // ---------- Scrolling: one physical scroll gesture becomes one phone swipe ----------
@@ -843,6 +1136,7 @@ function finishWheel() {
 }
 /** @param {number} x @param {number} y @param {number} dx @param {number} dy */
 function accumulateWheel(x, y, dx, dy, phased = false, zoom = false) {
+  if (liveTouch) return liveWheel(x, y, dx, dy, zoom);
   if (!canInteract() || touch || pinch) return;
   // A modifier change starts a new mouse burst. For trackpads, keep the mode
   // chosen at finger-down even if Command is released before finger-up.
@@ -861,6 +1155,7 @@ function accumulateWheel(x, y, dx, dy, phased = false, zoom = false) {
 /** @param {import("../public-contracts.ts").NativeScroll} event @param {number} epoch @param {string} documentId */
 function nativeScroll(event, epoch, documentId) {
   if (epoch !== videoEpoch || documentId !== bridgeId || !canInteract() || pinch) return;
+  if (liveTouch) return liveScrollEvent(event);
   if (event.phase === "momentum") return;
   if (event.phase === "cancelled") {
     clearTimeout(wheelTimer);
@@ -933,6 +1228,7 @@ function flushPinch() {
 /** @param {import("../public-contracts.ts").NativePinch} event @param {string} source */
 function updatePinch(event, source) {
   if (!canInteract()) return;
+  if (liveTouch) return livePinchEvent(event, source);
   if (event.phase === "began") {
     // macOS can switch from scrolling to magnifying without lifting fingers.
     // Discard that unfinished scroll so pinching cannot also swipe the photo.

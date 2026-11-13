@@ -1,9 +1,14 @@
 package iportal;
 
 import android.content.ClipData;
+import android.content.ClipDescription;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.UUID;
@@ -15,6 +20,7 @@ final class Commands {
   private final Agent agent;
   private final Inspector inspector;
   private final Video video;
+  private final Pointer pointer = new Pointer();
   private String pidPackage;
   private int pid = 1;
   private long pidAt;
@@ -27,17 +33,18 @@ final class Commands {
 
   Object run(String operation, JSONObject a) throws Exception {
     switch (operation) {
-      case "touch": guard(a, true); return touch(a);
-      case "text": guard(a, true); type(a.getString("text")); return JSONObject.NULL;
-      case "key": guard(a, true); key(a); return JSONObject.NULL;
-      case "home": guard(a, true); Device.key(KeyEvent.KEYCODE_HOME, 0); return JSONObject.NULL;
-      case "button": guard(a, false); button(a.getString("name")); return JSONObject.NULL;
+      case "touch": guard(a, AWAKE); return touch(a);
+      case "pointer": return pointer(a);
+      case "text": guard(a, AWAKE); type(a.getString("text")); return JSONObject.NULL;
+      case "key": guard(a, AWAKE); key(a); return JSONObject.NULL;
+      case "home": guard(a, AWAKE); Device.key(KeyEvent.KEYCODE_HOME, 0); return JSONObject.NULL;
+      case "button": guard(a, ANY); button(a.getString("name")); return JSONObject.NULL;
       case "lock":
-        guard(a, false);
+        guard(a, ANY);
         if (Device.interactive()) Device.key(KeyEvent.KEYCODE_SLEEP, 0);
         return JSONObject.NULL;
       case "unlock":
-        guard(a, false);
+        guard(a, ANY);
         Device.key(KeyEvent.KEYCODE_WAKEUP, 0);
         try {
           Device.dismissKeyguard();
@@ -45,8 +52,8 @@ final class Commands {
           // A secure keyguard stays; the owner unlocks it.
         }
         return JSONObject.NULL;
-      case "launch": guard(a, true); launch(a.getString("bundleId")); return JSONObject.NULL;
-      case "openURL": guard(a, true); openURL(a.getString("url")); return JSONObject.NULL;
+      case "launch": guard(a, UNLOCKED); launch(a.getString("bundleId")); return JSONObject.NULL;
+      case "openURL": guard(a, UNLOCKED); openURL(a.getString("url")); return JSONObject.NULL;
       case "keepAlive": Device.userActivity(); return new JSONObject().put("completed", true);
       case "state": {
         Device.Screen screen = Device.screen();
@@ -56,43 +63,70 @@ final class Commands {
             .put("orientation", screen.orientation())
             .put("screen", geometry(screen));
       }
+      case "power": return new JSONObject().put("interactive", Device.interactive());
       case "app": return app();
       case "orientation": return Device.screen().orientation();
       case "geometry": return geometry(Device.screen());
-      case "elements": return inspector.find(a.getString("using"), a.getString("value"));
-      case "attribute": return Inspector.attribute(inspector.element(a.getString("id")), a.getString("name"));
-      case "tapElement": guard(a, true); inspector.tap(a.getString("id")); return JSONObject.NULL;
+      case "elements": unlocked(); return inspector.find(a.getString("using"), a.getString("value"));
+      case "attribute":
+        unlocked();
+        return Inspector.attribute(inspector.element(a.getString("id")), a.getString("name"));
+      case "tapElement": guard(a, UNLOCKED); inspector.tap(a.getString("id")); return JSONObject.NULL;
       case "typeElement":
-        guard(a, true);
+        guard(a, UNLOCKED);
         inspector.type(a.getString("id"), a.getString("text"));
         return JSONObject.NULL;
-      case "elementAction": guard(a, true); inspector.act(a.getString("id"), a); return JSONObject.NULL;
-      case "source": return inspector.source(a.getString("format"));
-      case "screenshot": return inspector.screenshot(a.has("id") ? a.getString("id") : null);
+      case "elementAction": guard(a, UNLOCKED); inspector.act(a.getString("id"), a); return JSONObject.NULL;
+      case "source": unlocked(); return inspector.source(a.getString("format"));
+      case "screenshot": unlocked(); return inspector.screenshot(a.has("id") ? a.getString("id") : null);
       case "clipboardPrepare":
+        unlocked();
         return new JSONObject()
             .put("lease", UUID.randomUUID().toString())
             .put("helperBundleId", Device.SHELL_PACKAGE)
             .put("restoreBundleId", JSONObject.NULL);
       case "clipboardStatus": return new JSONObject().put("changeCount", clipboardStamp());
-      case "clipboardRead": return clipboardRead();
-      case "clipboardWrite": return clipboardWrite(a);
+      case "clipboardRead": unlocked(); return transfer(a.getString("lease"), Commands::clipboardRead);
+      case "clipboardWrite": unlocked(); return transfer(a.getString("lease"), () -> clipboardWrite(a));
       case "clipboardRestore":
-      case "clipboardCancel": return new JSONObject().put("cancelled", true);
+      case "clipboardCancel":
+        transfer = null;
+        return new JSONObject().put("cancelled", true);
       case "presence":
         agent.presence(a.getBoolean("ready"), a.getLong("keepAwakeMs"));
         return agent.portal();
       case "portal": return agent.portal();
       case "quality": video.preset(a.getString("preset")); return JSONObject.NULL;
-      case "shutdown": agent.shutdownSoon(); return JSONObject.NULL;
+      case "shutdown": pointer.release(); agent.shutdownSoon(); return JSONObject.NULL;
       default: throw new Failure("unsupported operation", "Unsupported on Android: " + operation);
     }
   }
 
   // ---- guards ----
 
-  private void guard(JSONObject a, boolean needsUnlocked) throws Exception {
-    if (needsUnlocked && Device.locked()) throw new Failure("device locked", "Unlock the device");
+  // What an operation needs from the lock screen. Android mirrors its keyguard
+  // and accepts input on it, so the owner can unlock the phone from the Mac.
+  // Reading the keyguard's tree or pixels, and anything that acts inside an
+  // app, still needs the phone unlocked.
+  private static final int ANY = 0;
+  /** The screen is on: either unlocked, or showing the keyguard. */
+  private static final int AWAKE = 1;
+  private static final int UNLOCKED = 2;
+
+  private static void unlocked() throws Exception {
+    if (Device.locked()) throw new Failure("device locked", "Unlock the device");
+  }
+
+  private static void awake() throws Exception {
+    // With the screen off there is nothing to aim at, and input would be dropped.
+    if (Device.locked() && !Device.interactive()) throw new Failure("device locked", "Wake the device");
+  }
+
+  private void guard(JSONObject a, int needs) throws Exception {
+    // Two touch streams must not interleave: any other input ends a live stroke.
+    pointer.release();
+    if (needs == UNLOCKED) unlocked();
+    else if (needs == AWAKE) awake();
     if (a.has("expectedBundleId") && !a.getString("expectedBundleId").equals(foreground()))
       throw new Failure("app changed", "Foreground app changed");
     if (a.has("expectedOrientation")
@@ -211,13 +245,44 @@ final class Commands {
             .put("playbackMs", (System.nanoTime() - played) / 1e6));
   }
 
+  // ---- live touch ----
+
+  private Object pointer(JSONObject a) throws Exception {
+    String phase = a.getString("phase"), id = a.getString("stroke");
+    switch (phase) {
+      case "down":
+        // The guards are checked once, where the finger lands, as for a recorded gesture.
+        guard(a, AWAKE);
+        pointer.down(id, a.getJSONArray("points"), Device.screen());
+        break;
+      case "move":
+        // A drag may change the foreground app, but it must not carry on into
+        // a screen that has since turned off.
+        if (Device.locked() && !Device.interactive()) {
+          pointer.release();
+          throw new Failure("device locked", "Wake the device");
+        }
+        pointer.move(id, a.getJSONArray("points"), Device.screen());
+        break;
+      case "up": pointer.up(id, a.optJSONArray("points"), Device.screen()); break;
+      case "cancel": pointer.cancel(id); break;
+      default: throw new Failure("invalid argument", "Unknown pointer phase");
+    }
+    return JSONObject.NULL;
+  }
+
   // ---- keyboard ----
 
   private void type(String text) throws Exception {
     if (text.isEmpty()) return;
     // Key events behave like a real keyboard and reach every surface. Text the
     // virtual keyboard cannot produce is placed through the focused field instead.
-    if (!Device.typeKeys(text)) inspector.insert(text);
+    if (Device.typeKeys(text)) return;
+    // That second route reads the focused field. On the lock screen the field
+    // holds the PIN or password, which iPortal does not inspect.
+    if (Device.locked())
+      throw new Failure("unsupported operation", "The lock screen accepts only characters on a hardware keyboard");
+    inspector.insert(text);
   }
 
   private void key(JSONObject a) throws Exception {
@@ -318,26 +383,160 @@ final class Commands {
     return 1 + (stamp & 0xFFFFFFFFFFFFL);
   }
 
+  private interface Work {
+    JSONObject run() throws Exception;
+  }
+
+  /** One clipboard transfer, which may outlast the command that started it. */
+  private static final class Transfer {
+    final String lease;
+    JSONObject result;
+    Throwable error;
+    boolean done;
+
+    Transfer(String lease) {
+      this.lease = lease;
+    }
+  }
+
+  private Transfer transfer;
+
+  /**
+   * Runs a transfer once per lease. Storing or converting an image can take
+   * longer than one command may. The contract's "pending" reply lets the Mac
+   * ask again with the same lease, and the work is not started twice.
+   */
+  private JSONObject transfer(String lease, Work work) throws Exception {
+    Transfer current = transfer;
+    if (current == null || !current.lease.equals(lease)) {
+      Transfer started = new Transfer(lease);
+      Thread thread = new Thread(() -> {
+        JSONObject result = null;
+        Throwable error = null;
+        try {
+          result = work.run();
+        } catch (Throwable failed) {
+          error = failed;
+        }
+        synchronized (started) {
+          started.result = result;
+          started.error = error;
+          started.done = true;
+          started.notifyAll();
+        }
+      }, "iportal-clipboard");
+      thread.setDaemon(true);
+      thread.start();
+      transfer = current = started;
+    }
+    synchronized (current) {
+      if (!current.done) current.wait(1500);
+      if (!current.done) return new JSONObject().put("pending", true);
+    }
+    transfer = null;
+    if (current.error instanceof Exception) throw (Exception) current.error;
+    if (current.error != null) throw new RuntimeException(current.error);
+    return current.result;
+  }
+
+  private static final int IMAGE_LIMIT = 4 * 1024 * 1024;
+  private static final long PIXEL_LIMIT = 20_000_000;
+  /** Names the pictures iPortal stores for the clipboard, so it removes its own and no others. */
+  private static final String IMAGE_PREFIX = "iportal-clipboard-";
+
+  private static JSONObject payload(String format, byte[] bytes) throws Exception {
+    return new JSONObject().put("format", format).put("content", Base64.getEncoder().encodeToString(bytes));
+  }
+
+  private static boolean png(byte[] bytes) {
+    return bytes.length > 8 && (bytes[0] & 0xff) == 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G';
+  }
+
+  /** The image behind a clipboard URI as PNG within the transfer limits, or null if it is not an image. */
+  private static JSONObject image(Uri uri) throws Exception {
+    byte[] raw;
+    try {
+      // Reading the clipboard granted the shell user access to this URI.
+      raw = Device.readContent(uri, 32 * 1024 * 1024);
+    } catch (Failure failure) {
+      throw failure;
+    } catch (Exception refused) {
+      Agent.log("clipboard image unreadable: " + refused.getClass().getSimpleName());
+      throw new Failure("unsupported operation", "The app that copied this image does not let iPortal read it");
+    }
+    BitmapFactory.Options options = new BitmapFactory.Options();
+    options.inJustDecodeBounds = true;
+    BitmapFactory.decodeByteArray(raw, 0, raw.length, options);
+    if (options.outWidth <= 0 || options.outHeight <= 0) return null;
+    long pixels = (long) options.outWidth * options.outHeight;
+    if (png(raw) && raw.length <= IMAGE_LIMIT && pixels <= PIXEL_LIMIT) return payload("image", raw);
+    // The Mac takes PNG. A photograph is far larger as PNG than as JPEG, so it
+    // starts smaller. Either way the picture is halved until it fits.
+    long budget = png(raw) ? PIXEL_LIMIT : 3_000_000;
+    options.inJustDecodeBounds = false;
+    for (int sample = 1; sample <= 64; sample *= 2) {
+      if (pixels / ((long) sample * sample) > budget) continue;
+      options.inSampleSize = sample;
+      Bitmap bitmap = BitmapFactory.decodeByteArray(raw, 0, raw.length, options);
+      if (bitmap == null) return null;
+      ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 20);
+      bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+      bitmap.recycle();
+      if (out.size() <= IMAGE_LIMIT) return payload("image", out.toByteArray());
+    }
+    throw new Failure("unsupported operation", "The copied image is too large to transfer");
+  }
+
   private static JSONObject clipboardRead() throws Exception {
     ClipData clip = Device.readClip();
-    CharSequence text = clip == null || clip.getItemCount() == 0 ? null : clip.getItemAt(0).getText();
-    if (text == null && clip != null && clip.getItemCount() > 0 && clip.getItemAt(0).getUri() != null
-        && !"content".equals(clip.getItemAt(0).getUri().getScheme()))
-      text = clip.getItemAt(0).getUri().toString();
+    if (clip == null || clip.getItemCount() == 0) return new JSONObject().put("empty", true);
+    ClipData.Item item = clip.getItemAt(0);
+    Uri uri = item.getUri();
+    // One representation is transferred, preferring an image, as on iPhone.
+    if (uri != null && "content".equals(uri.getScheme())
+        && (clip.getDescription().hasMimeType("image/*") || clip.getDescription().hasMimeType("text/uri-list"))) {
+      JSONObject image = image(uri);
+      if (image != null) return image;
+    }
+    CharSequence text = item.getText();
+    if (text == null && uri != null && !"content".equals(uri.getScheme())) text = uri.toString();
     if (text == null || text.length() == 0) return new JSONObject().put("empty", true);
     String value = text.toString();
     boolean link = value.matches("(?i)https?://\\S+");
-    return new JSONObject()
-        .put("format", link ? "url" : "text")
-        .put("content", Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8)));
+    return payload(link ? "url" : "text", value.getBytes(StandardCharsets.UTF_8));
   }
 
   private static JSONObject clipboardWrite(JSONObject a) throws Exception {
     String format = a.getString("format");
-    if (format.equals("image"))
-      throw new Failure("unsupported operation", "Images cannot be sent to this device's clipboard yet");
     byte[] bytes = Base64.getDecoder().decode(a.getString("content"));
-    Device.writeClip(ClipData.newPlainText("iPortal", new String(bytes, StandardCharsets.UTF_8)));
+    if (!format.equals("image")) {
+      Device.writeClip(ClipData.newPlainText("iPortal", new String(bytes, StandardCharsets.UTF_8)));
+      return new JSONObject().put("format", format).put("bytes", bytes.length);
+    }
+    boolean jpeg = bytes.length > 3 && (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8;
+    if (!png(bytes) && !jpeg) throw new Failure("invalid argument", "Send the image as PNG or JPEG");
+    String type = jpeg ? "image/jpeg" : "image/png";
+    // The helper is not an installed app and has no content provider of its
+    // own. An image on the clipboard must be a content URI that another app
+    // can open, so the picture goes into the phone's media store and the
+    // clipboard points there. Only the latest one is kept.
+    Uri stored;
+    try {
+      Device.deleteImages(IMAGE_PREFIX);
+      stored = Device.insertImage(IMAGE_PREFIX + UUID.randomUUID() + (jpeg ? ".jpg" : ".png"), type, bytes);
+    } catch (Failure failure) {
+      throw failure;
+    } catch (Exception refused) {
+      Agent.log("clipboard image not stored: " + refused.getClass().getSimpleName());
+      throw new Failure("unsupported operation", "This device did not let iPortal store an image for its clipboard");
+    }
+    try {
+      Device.writeClip(new ClipData(new ClipDescription("iPortal", new String[] {type}), new ClipData.Item(stored)));
+    } catch (Exception refused) {
+      Agent.log("clipboard image not placed: " + refused.getClass().getSimpleName());
+      Device.deleteImages(IMAGE_PREFIX);
+      throw new Failure("unsupported operation", "This device did not let iPortal put an image on its clipboard");
+    }
     return new JSONObject().put("format", format).put("bytes", bytes.length);
   }
 }
