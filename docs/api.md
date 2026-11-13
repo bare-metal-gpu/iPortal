@@ -261,6 +261,22 @@ Reject events from obsolete server instances and observations preceding a local 
 transition. Readiness still requires both a verified unlocked helper and fresh video;
 receiving an event alone does not enable input. Existing local host/origin checks apply.
 
+One unanswered helper probe does not change the published state. A busy helper or a
+Wi-Fi hiccup drops a probe now and then; while the last snapshot was `ready` or
+`locked`, the server keeps it (same `eventSequence` and `observedAt`, nothing is sent)
+and probes again after 500 ms. A second unanswered probe at least one second after the
+first publishes `connecting` with `ok: false`, about two seconds after the first miss.
+Only silence is tolerated. A detached device or changed route, a new helper generation,
+a helper that answers `blocked` or `stopping` or with an unknown lock state, a helper
+restart, and a failed authentication or build check are published immediately.
+
+Commands are still admitted during that hold, because the published state was never
+what admits them: every input checks the helper itself before it is dispatched (a
+missed probe clears the cached helper status, so the next command must first get a
+fresh answer), and the helper checks lock state and guards again natively. Against a
+helper that is really gone the command fails as it would have before, `not executed`
+if nothing was dispatched. `observedAt` tells a client how old the verification is.
+
 ## Clipboard
 
 `POST /api/clipboard-read {}` reads the selected device’s clipboard. Returns

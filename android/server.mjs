@@ -26,6 +26,7 @@ import { claimDevice } from "../device-runtime.mjs";
 import { packaged, sourceRoot, statePath } from "../runtime-paths.mjs";
 import { createHelperAuthentication } from "../helper-auth.mjs";
 import { createHelperClient } from "../helper-client.ts";
+import { unansweredProbe } from "../helper-lifecycle.ts";
 import { loadIPortalHTML } from "../web-assets.mjs";
 import { observability } from "../observability.ts";
 import { createAdb } from "./adb.mjs";
@@ -228,6 +229,8 @@ export async function runAndroid(opts, positionals) {
   let downSince = 0;
   let retryAt = 0;
   let failures = 0;
+  /** Set once this server has ended a helper, until the next one answers. */
+  let replaced = false;
   // The helper is not installed: one small file is pushed to temporary storage
   // and run as the adb shell user. It outlives the adb connection that started
   // it, so a cable pull does not end the session.
@@ -252,6 +255,7 @@ export async function runAndroid(opts, positionals) {
     const mine = await shell([`pgrep -f "[i]portal.Agent --socket ${socketName}" || true`]);
     if (mine.trim() && Date.now() - downSince < 20000) return;
     observability.event("helper-launch", { replacing: Boolean(mine.trim()) });
+    replaced = true;
     // One helper per device: a previous server's helper may still be running.
     // The pattern's bracket keeps this shell's own command line from matching.
     await shell(['pkill -f "[i]portal.Agent" ; true']);
@@ -294,14 +298,18 @@ export async function runAndroid(opts, positionals) {
       });
   };
 
-  /** @param {AbortSignal} [signal] */
-  const helperUp = async (signal) => {
+  /** @param {AbortSignal} [signal] @param {import("../status-events.ts").StatusProbe} [probe] */
+  const helperUp = async (signal, probe) => {
     try {
       const state = await helper.status(signal);
       downSince = 0;
+      replaced = false;
       return state.automationReady === true || state.locked === true;
-    } catch {
+    } catch (error) {
       if (!signal?.aborted) {
+        // Silence from a helper this server has not replaced may be one slow
+        // probe. The status stream decides whether to wait for a second.
+        if (unansweredProbe(error) && !replaced) probe?.missed();
         if (!downSince) observability.event("helper-unreachable", {}, "Warning");
         downSince ||= Date.now();
       }
@@ -369,8 +377,8 @@ export async function runAndroid(opts, positionals) {
 
   // ---- status ----
 
-  /** @param {AbortSignal} [signal] */
-  async function status(signal) {
+  /** @param {AbortSignal} [signal] @param {import("../status-events.ts").StatusProbe} [probe] */
+  async function status(signal, probe) {
     const observedAt = Date.now();
     const device = await pick().catch(() => null);
     /** @type {string | null} */
@@ -382,7 +390,7 @@ export async function runAndroid(opts, positionals) {
         attachmentProblem(monitor?.transports() ?? []) ??
         "Connect your Android device and turn on USB debugging.";
     signal?.throwIfAborted();
-    const up = Boolean(device) && (await helperUp(signal));
+    const up = Boolean(device) && (await helperUp(signal, probe));
     signal?.throwIfAborted();
     let locked = null;
     /** @type {import("../public-contracts.ts").PublicStatus["orientation"]} */
@@ -440,7 +448,8 @@ export async function runAndroid(opts, positionals) {
   const keepAwake = createKeepAwake({ helper, enqueue: (fn) => scheduler.maintenance(fn) });
   const portalStatus = createIPortalStatus({ helper, keepAwake: keepAwake.status });
   const statusEvents = createStatusEvents({
-    read: async (signal) => Schema.decodeUnknownSync(StatusSchema)(await status(signal)),
+    read: async (signal, probe) =>
+      Schema.decodeUnknownSync(StatusSchema)(await status(signal, probe)),
   });
   let contentRevision = 0;
   /** @type {ReturnType<typeof createCommands> | undefined} */

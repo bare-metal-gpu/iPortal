@@ -124,6 +124,67 @@ try {
   assert.equal(failedLock.lifecycle, "connecting", "a failed lock read is not unlocked");
   fake.ui.locked = false;
 
+  // One unanswered status probe (a busy helper, a Wi-Fi hiccup) is not a
+  // reconnect: nothing is published. A helper that stays silent still is.
+  {
+    const response = await fetch(`${base}/api/events`);
+    assert(response.body);
+    const reader = response.body.getReader();
+    /** @type {Record<string, any>[]} */
+    const seen = [];
+    const pump = (async () => {
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) return;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let end;
+        while ((end = buffer.indexOf("\n\n")) >= 0) {
+          seen.push(JSON.parse(buffer.slice(6, end)));
+          buffer = buffer.slice(end + 2);
+        }
+      }
+    })();
+    /** @param {() => boolean} predicate @param {string} message */
+    const until = async (predicate, message, ms = 8000) => {
+      for (const started = performance.now(); !predicate();) {
+        assert.ok(performance.now() - started < ms, message);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
+    await until(() => seen.at(-1)?.lifecycle === "ready", "session is ready before the miss");
+    seen.length = 0;
+    fake.ui.dropStatus = 1;
+    await until(() => fake.ui.dropStatus === 0, "the probe was sent");
+    const dropped = fake.log.findLastIndex((entry) => entry.dropped);
+    // Its 1.5 s timeout, then the prompt second probe that settles it.
+    await until(
+      () => fake.log.slice(dropped + 1).some((entry) => entry.operation === "status"),
+      "a missed probe is followed up",
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(
+      seen.filter((event) => event.lifecycle !== "ready" || event.ok !== true),
+      [],
+      "a single missed probe must not leave ready",
+    );
+    const afterMiss = await readJSON(await fetch(`${base}/api/status`));
+    assert.deepEqual([afterMiss.lifecycle, afterMiss.ok], ["ready", true]);
+    assert.equal((await post("home", {})).ok, true, "input still passes its own helper check");
+
+    fake.ui.dropStatus = Infinity;
+    await until(
+      () => seen.at(-1)?.lifecycle === "connecting",
+      "a helper that stays silent is reported",
+    );
+    assert.equal(seen.at(-1)?.ok, false);
+    fake.ui.dropStatus = 0;
+    await until(() => seen.at(-1)?.lifecycle === "ready", "the session recovers");
+    await reader.cancel();
+    await pump;
+  }
+
   const res = await fetch(`${base}/stream`);
   assert.match(res.headers.get("content-type") ?? "", /multipart\/x-mixed-replace/);
   assert(res.body);

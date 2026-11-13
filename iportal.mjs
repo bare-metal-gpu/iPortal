@@ -44,7 +44,7 @@ import { startupFailure } from "./helper-startup.ts";
 import { createHelperAuthentication } from "./helper-auth.mjs";
 import { createHelperClient } from "./helper-client.ts";
 import { readHelperBuild } from "./helper-build.mjs";
-import { createHelperLifecycle } from "./helper-lifecycle.ts";
+import { createHelperLifecycle, unansweredProbe } from "./helper-lifecycle.ts";
 import { startupTrace } from "./startup-trace.ts";
 import { observability } from "./observability.ts";
 
@@ -302,8 +302,8 @@ const helper = createHelperClient({
 });
 let replacedIncompatibleHelper = false;
 let confirmedHelperInstallation = false;
-/** @param {AbortSignal} [signal] */
-const helperUp = async (signal) => {
+/** @param {AbortSignal} [signal] @param {import("./status-events.ts").StatusProbe} [probe] */
+const helperUp = async (signal, probe) => {
   try {
     const wasReady = helperLifecycle.state.phase === "ready";
     const state = await helper.status(signal);
@@ -324,6 +324,15 @@ const helperUp = async (signal) => {
     return state.automationReady === true || state.locked === true;
   } catch (error) {
     if (!signal?.aborted) helperLifecycle.unavailable();
+    // Silence from a helper that was verified, and that nothing here has since
+    // restarted, stopped or seen exit, may be one slow probe. The status stream
+    // decides whether to wait for a second; every other failure is published.
+    if (
+      !signal?.aborted &&
+      unansweredProbe(error) &&
+      ["ready", "locked"].includes(helperLifecycle.state.phase)
+    )
+      probe?.missed();
     if (errorInfo(error).code === "incompatible helper" && !MANUAL && !replacedIncompatibleHelper) {
       replacedIncompatibleHelper = true;
       forceHelperInstall = true;
@@ -684,8 +693,8 @@ process.on("SIGTERM", () => void shutdown());
 
 // ---------- HTTP server ----------
 
-/** @param {AbortSignal} [signal] */
-async function status(signal) {
+/** @param {AbortSignal} [signal] @param {import("./status-events.ts").StatusProbe} [probe] */
+async function status(signal, probe) {
   const observedAt = Date.now();
   /** @type {Awaited<ReturnType<typeof pickDevice>>} */
   let device = null;
@@ -707,7 +716,7 @@ async function status(signal) {
     startupLock.observe(device);
     startHelper(device);
   }
-  const up = (MANUAL || device) && (await helperUp(signal));
+  const up = (MANUAL || device) && (await helperUp(signal, probe));
   if (up) lastControlSuccess = Date.now();
   else {
     lastControlSuccess = 0;
@@ -818,7 +827,8 @@ const inspection = createInspection({ helper, enqueue });
 const keepAwake = createKeepAwake({ helper, enqueue: (fn) => scheduler.maintenance(fn) });
 const portalStatus = createIPortalStatus({ helper, keepAwake: keepAwake.status });
 const statusEvents = createStatusEvents({
-  read: async (signal) => Schema.decodeUnknownSync(StatusSchema)(await status(signal)),
+  read: async (signal, probe) =>
+    Schema.decodeUnknownSync(StatusSchema)(await status(signal, probe)),
 });
 let contentRevision = 0;
 const contentChanged = () => statusEvents.patch({ contentRevision: ++contentRevision });

@@ -75,6 +75,99 @@ test("slow event readers retain a bounded latest snapshot and can cancel", async
   }
 });
 
+test("one unanswered probe keeps a verified session; a second, or any real signal, ends it", async () => {
+  const reads = [];
+  let clock = 0;
+  const hub = createStatusEvents({
+    read: (signal, probe) => new Promise((resolve) => reads.push({ resolve, probe })),
+    readyMs: 60000,
+    retryMs: 60000,
+    now: () => clock,
+  });
+  // Each step is one status read: answered, or with its helper probe unanswered.
+  const answered = (value) => {
+    const pending = hub.refresh();
+    reads.at(-1).resolve(value);
+    return pending;
+  };
+  const unanswered = (value = { lifecycle: "connecting", ok: false }) => {
+    const pending = hub.refresh();
+    reads.at(-1).probe.missed();
+    reads.at(-1).resolve(value);
+    return pending;
+  };
+  const ready = { lifecycle: "ready", ok: true };
+  try {
+    const verified = await answered(ready);
+    const held = await unanswered();
+    assert.equal(held.lifecycle, "ready");
+    assert.equal(held.ok, true, "reachability is not withdrawn for one probe");
+    assert.equal(held.eventSequence, verified.eventSequence, "nothing is published");
+    const recovered = await answered(ready);
+    assert.equal(recovered.eventSequence, held.eventSequence + 1);
+
+    // A reset tunnel refuses several probes within the same moment.
+    assert.equal((await unanswered()).lifecycle, "ready");
+    clock += 20;
+    assert.equal((await unanswered()).lifecycle, "ready", "an instant repeat is the same miss");
+    clock += 1500;
+    const lost = await unanswered();
+    assert.equal(lost.lifecycle, "connecting", "a second unanswered probe is a lost helper");
+    assert.equal(lost.ok, false);
+    assert.equal((await unanswered()).lifecycle, "connecting");
+
+    // Everything the read actually learned is published at once.
+    await answered(ready);
+    assert.equal(
+      (await unanswered({ lifecycle: "disconnected", ok: false })).lifecycle,
+      "disconnected",
+      "a detached device is not a missed probe",
+    );
+    await answered(ready);
+    assert.equal(
+      (await answered({ lifecycle: "connecting", ok: false })).lifecycle,
+      "connecting",
+      "a helper that answered blocked, or was restarted, is not a missed probe",
+    );
+    await answered(ready);
+    await unanswered();
+    hub.invalidate({ lifecycle: "connecting", ok: false });
+    reads.at(-1).resolve({ lifecycle: "connecting", ok: false });
+    assert.equal((await hub.refresh()).lifecycle, "connecting", "a route change ends the hold");
+
+    await answered({ lifecycle: "locked", ok: true });
+    const locked = await unanswered({ lifecycle: "locked", ok: false });
+    assert.deepEqual([locked.lifecycle, locked.ok], ["locked", true]);
+    assert.equal(
+      (await unanswered({ lifecycle: "connecting", ok: false })).lifecycle,
+      "locked",
+      "still the first miss",
+    );
+  } finally {
+    hub.stop();
+  }
+});
+
+test("a tolerated miss is probed again at the retry cadence, not the ready one", async () => {
+  let reads = 0;
+  const hub = createStatusEvents({
+    read: async (signal, probe) => {
+      if (++reads === 2) probe.missed();
+      return { lifecycle: reads === 2 ? "connecting" : "ready" };
+    },
+    readyMs: 60000,
+    retryMs: 5,
+  });
+  try {
+    await hub.refresh();
+    assert.equal((await hub.refresh())?.lifecycle, "ready");
+    for (let i = 0; i < 100 && reads < 3; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(reads, 3, "the held snapshot is settled promptly");
+  } finally {
+    hub.stop();
+  }
+});
+
 test("usbmux events handle fragmented/coalesced frames and fall back after listener failure", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-usb-"));
   const address = path.join(directory, "mux");

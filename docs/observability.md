@@ -47,6 +47,12 @@ and installation preparation. `status.refresh` measures the shared observation,
 while `helper.events`, `status.events` and `video.stream` track stream lifetimes.
 `video.connect` measures fallback-video connection setup.
 
+A `status-probe-missed` log record marks a helper status probe that got no answer
+while the session was `ready` or `locked`. `confirmed: false` (Info) means the
+published state was kept and the probe repeated; `confirmed: true` (Warn) means a
+following probe also went unanswered and `connecting` was published. Pair them with
+the `helper.status` spans to see how long the helper was silent.
+
 These are server timings, not input-to-visible-frame latency or internal Swift
 execution traces. Existing native Mac capture/reconnect traces and Xcode helper
 logs remain separate. Correlate them by timestamp and process identity. Server

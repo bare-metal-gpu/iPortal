@@ -14,6 +14,18 @@ type LifecycleState = {
   locked: boolean | null;
   authorized: boolean | null;
 };
+// A probe that got no answer (a timeout, a reset tunnel) says nothing about the
+// helper: it may be busy, or Wi-Fi dropped a packet. Any answer is evidence,
+// including a refused credential, another build or a retired generation; those
+// carry an API status and must be acted on at once.
+export function unansweredProbe(error: unknown) {
+  return (
+    error === null ||
+    typeof error !== "object" ||
+    !("status" in error) ||
+    typeof error.status !== "number"
+  );
+}
 export function createHelperLifecycle(ownerId: string, now = Date.now) {
   let state: LifecycleState = {
     ownerId,

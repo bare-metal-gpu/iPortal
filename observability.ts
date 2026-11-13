@@ -77,6 +77,7 @@ const events = new Set([
   "helper-ended",
   "helper-restarting",
   "helper-unreachable",
+  "status-probe-missed",
   "android-devices",
   "android-adb-lost",
   "operation-completed",

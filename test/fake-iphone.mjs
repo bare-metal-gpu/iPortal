@@ -71,6 +71,8 @@ export function startFakeIphone({
     staleOnce: false,
     staleLookupOnce: false,
     delayMs: 0,
+    // Status probes to leave unanswered, as a busy helper or a stalled tunnel does.
+    dropStatus: 0,
     locked: /** @type {boolean | null} */ (false),
     app: "com.apple.Preferences",
     orientation: "PORTRAIT",
@@ -152,6 +154,11 @@ export function startFakeIphone({
       return;
     }
     if (req.url === "/v1/status") {
+      if (ui.dropStatus > 0) {
+        ui.dropStatus--;
+        log.push({ operation: "status", monitor: true, dropped: true });
+        return;
+      }
       log.push({ operation: "status", monitor: true });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(status()));
