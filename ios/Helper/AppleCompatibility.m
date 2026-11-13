@@ -53,6 +53,10 @@
 - (void)endButtonPressWithPage:(NSUInteger)page usage:(NSUInteger)usage;
 - (void)pressButtonsWithPages:(NSArray *)pages usages:(NSArray *)usages duration:(double)duration;
 - (NSData *)dataRepresentation;
++ (id)applicationProxyForIdentifier:(NSString *)identifier;
+- (id)initWithBundleIdentifier:(NSString *)identifier
+              allowPlaceholder:(BOOL)placeholder
+                         error:(NSError **)error;
 @end
 
 static atomic_int lockValue = -1;
@@ -166,6 +170,161 @@ static id IPStream(void (^actions)(id<IPAppleRuntime>)) {
     return record;
 }
 
+// ---- Foreground app display name ----
+// Nothing here may touch the foreground app or XCTest: no accessibility
+// snapshot, no element query, no daemon request. The sources are the system's
+// own app records and, failing those, the bundle identifier.
+static id IPValue(id object, NSString *key) {
+    return [object respondsToSelector:NSSelectorFromString(key)] ? [object valueForKey:key] : nil;
+}
+static NSString *IPText(id value) {
+    if (![value isKindOfClass:NSString.class])
+        return nil;
+    NSString *text =
+        [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return text.length && text.length <= 128 ? text : nil;
+}
+// The name an installed bundle declares for itself. Unreadable bundles (the
+// sandbox hides most of them) simply have none.
+static NSString *IPBundleName(id location) {
+    NSURL *url = nil;
+    if ([location isKindOfClass:NSURL.class])
+        url = location;
+    else if ([location isKindOfClass:NSString.class] && [location length])
+        url = [NSURL fileURLWithPath:location];
+    NSBundle *bundle = url.isFileURL ? [NSBundle bundleWithURL:url] : nil;
+    for (NSDictionary *info in
+         @[ bundle.localizedInfoDictionary ?: @{}, bundle.infoDictionary ?: @{} ])
+        for (NSString *key in @[ @"CFBundleDisplayName", @"CFBundleName" ]) {
+            NSString *name = IPText(info[key]);
+            if (name)
+                return name;
+        }
+    return nil;
+}
+// LaunchServices answers from its own database. These classes are private on
+// iOS and may be absent, or return records without a name to a process that is
+// not entitled to see other apps; every step is therefore optional.
+static NSString *IPSystemName(NSString *bundle, NSString *path) {
+    @try {
+        id records = IPRuntime(@"LSApplicationRecord");
+        if ([records instancesRespondToSelector:@selector(initWithBundleIdentifier:
+                                                                   allowPlaceholder:error:)]) {
+            id record = [[records alloc] initWithBundleIdentifier:bundle
+                                                 allowPlaceholder:NO
+                                                            error:NULL];
+            NSString *name = IPText(IPValue(record, @"localizedName"))
+                                 ?: IPBundleName(IPValue(record, @"URL"));
+            if (name)
+                return name;
+        }
+        id proxies = IPRuntime(@"LSApplicationProxy");
+        if ([proxies respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
+            id proxy = [proxies applicationProxyForIdentifier:bundle];
+            NSString *name = IPText(IPValue(proxy, @"localizedName"))
+                                 ?: IPBundleName(IPValue(proxy, @"bundleURL"));
+            if (name)
+                return name;
+        }
+        return IPBundleName(path);
+    } @catch (NSException *exception) {
+        return nil;
+    }
+}
+// A readable stand-in when the system gives no name: the identifier's last
+// meaningful part. It is English and approximate ("com.google.ios.youtube"
+// becomes "Youtube"), which is still better than an empty title.
+static NSString *IPDerivedName(NSString *bundle) {
+    static NSDictionary<NSString *, NSString *> *known;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      // Apple's own identifiers say little about the app they belong to.
+      known = @{
+          @"com.apple.springboard" : @"Home Screen",
+          @"com.apple.preferences" : @"Settings",
+          @"com.apple.mobilesafari" : @"Safari",
+          @"com.apple.mobileslideshow" : @"Photos",
+          @"com.apple.mobilemail" : @"Mail",
+          @"com.apple.mobilesms" : @"Messages",
+          @"com.apple.mobilephone" : @"Phone",
+          @"com.apple.mobilecal" : @"Calendar",
+          @"com.apple.mobilenotes" : @"Notes",
+          @"com.apple.mobiletimer" : @"Clock",
+          @"com.apple.mobileaddressbook" : @"Contacts",
+          @"com.apple.appstore" : @"App Store",
+          @"com.apple.documentsapp" : @"Files",
+          @"com.apple.tv" : @"TV",
+          @"com.apple.passbook" : @"Wallet",
+      };
+    });
+    NSString *exact = known[bundle.lowercaseString];
+    if (exact)
+        return exact;
+    NSArray<NSString *> *generic = @[ @"app", @"ios", @"iphone", @"ipad", @"mobile", @"client" ];
+    NSString *part = @"";
+    for (NSString *candidate in
+         [bundle componentsSeparatedByString:@"."].reverseObjectEnumerator) {
+        part = candidate;
+        if (part.length && ![generic containsObject:part.lowercaseString])
+            break;
+    }
+    NSMutableArray<NSString *> *words = [NSMutableArray array];
+    NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"-_ "];
+    for (NSString *word in [part componentsSeparatedByCharactersInSet:separators])
+        if (word.length)
+            [words addObject:[[word substringToIndex:1].uppercaseString
+                                 stringByAppendingString:[word substringFromIndex:1]]];
+    return [words componentsJoinedByString:@" "];
+}
+// Each bundle is looked up once, on a queue of its own, and the answer kept.
+// The caller waits only briefly: LaunchServices normally answers in a few
+// milliseconds, and if it ever does not, the command that asked still returns
+// on time with the derived name. A lookup that never returns costs one parked
+// thread and leaves later apps with derived names; it cannot stall a command.
+static NSString *IPDisplayName(NSString *bundle, NSString *path) {
+    static NSMutableDictionary<NSString *, NSString *> *names;
+    static NSMutableSet<NSString *> *pending;
+    static NSLock *lock;
+    static dispatch_queue_t lookups;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      names = [NSMutableDictionary dictionary];
+      pending = [NSMutableSet set];
+      lock = [NSLock new];
+      lookups = dispatch_queue_create("iportal.application-name", DISPATCH_QUEUE_SERIAL);
+    });
+    if (!bundle.length)
+        return @"";
+    [lock lock];
+    NSString *name = names[bundle];
+    BOOL start = !name && ![pending containsObject:bundle];
+    if (start)
+        [pending addObject:bundle];
+    [lock unlock];
+    if (name)
+        return name;
+    NSString *derived = IPDerivedName(bundle);
+    if (!start)
+        return derived;
+    dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+    dispatch_async(lookups, ^{
+      NSString *found = IPSystemName(bundle, path) ?: derived;
+      [lock lock];
+      if (names.count >= 256)
+          [names removeAllObjects];
+      names[bundle] = found;
+      [pending removeObject:bundle];
+      [lock unlock];
+      dispatch_semaphore_signal(finished);
+    });
+    if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC)))
+        return derived;
+    [lock lock];
+    name = names[bundle];
+    [lock unlock];
+    return name ?: derived;
+}
+
 @implementation IPApple
 + (BOOL)activate:(XCUIApplication *)app error:(NSError **)error {
     return [self protect:^id {
@@ -239,27 +398,17 @@ static id IPStream(void (^actions)(id<IPAppleRuntime>)) {
     // snapshot of the foreground app, which can hang for many seconds while the
     // app plays video or animates. A hung query times out, the helper reports
     // itself blocked, and the mirror drops to Connecting. The system's record of
-    // the app's display name needs no snapshot.
-    NSString *name = @"";
+    // the app needs no snapshot; where it has none, the name is derived from
+    // the bundle identifier rather than left empty.
+    NSString *path = nil;
     @try {
-        NSString *bundle = info[@"bundleId"];
-        Class proxies = NSClassFromString(@"LSApplicationProxy");
-        SEL lookup = NSSelectorFromString(@"applicationProxyForIdentifier:");
-        if (bundle.length && [proxies respondsToSelector:lookup]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            id proxy = [proxies performSelector:lookup withObject:bundle];
-#pragma clang diagnostic pop
-            id localized = [proxy respondsToSelector:NSSelectorFromString(@"localizedName")]
-                               ? [proxy valueForKey:@"localizedName"]
-                               : nil;
-            if ([localized isKindOfClass:NSString.class])
-                name = localized;
-        }
-    } @catch (NSException *e) {
-        name = @"";
+        // A stored property of the application object, set only for apps this
+        // runner was given by path. Reading it performs no query.
+        path = IPText(IPValue(app, @"path"));
+    } @catch (NSException *exception) {
+        path = nil;
     }
-    info[@"name"] = name;
+    info[@"name"] = IPDisplayName(info[@"bundleId"], path);
     return info;
 }
 + (NSDictionary *)applicationIdentity:(XCUIApplication *)app {
