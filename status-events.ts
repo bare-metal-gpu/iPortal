@@ -21,6 +21,7 @@ export function createStatusEvents<T extends { lifecycle: string }>({
 }) {
   type Snapshot = T & { eventSequence: number };
   const listeners = new Set<(value: Snapshot) => void>();
+  const closers = new Set<() => void>();
   const persistentPatch: Partial<T> = {};
   let current: Snapshot | undefined;
   let running: Promise<Snapshot | undefined> | undefined;
@@ -130,8 +131,21 @@ export function createStatusEvents<T extends { lifecycle: string }>({
             if ((output.desiredSize ?? 0) > 0) output.enqueue(encode(value));
             else pending = value; // Bound slow clients to the latest observation.
           };
+          if (stopped) return output.close();
+          const close = () => {
+            unsubscribe?.();
+            try {
+              output.close();
+            } catch {
+              /* The reader already cancelled or errored this stream. */
+            }
+          };
           listeners.add(send);
-          unsubscribe = () => listeners.delete(send);
+          closers.add(close);
+          unsubscribe = () => {
+            listeners.delete(send);
+            closers.delete(close);
+          };
           if (current) send(current);
           void refresh();
         },
@@ -146,10 +160,14 @@ export function createStatusEvents<T extends { lifecycle: string }>({
         },
       });
     },
+    // Ending every subscriber's stream lets the HTTP server finish those
+    // responses at once; left open, they hold a closing server until its
+    // drain deadline, and the device lease with it.
     stop() {
       stopped = true;
       clearTimeout(timer);
       controller?.abort();
+      for (const close of [...closers]) close();
       listeners.clear();
     },
   };

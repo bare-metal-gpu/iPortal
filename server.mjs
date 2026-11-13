@@ -145,7 +145,7 @@ export function openVideoStream(
   });
 }
 
-/** @param {{port:number,instanceId:string,html:string,mjpeg:string,mjpegSocket?:string,helperAuth?:ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>,dispatch:(name:string,body:unknown,signal:AbortSignal)=>Promise<{status:number,body:unknown}>,statusEvents?:{stream:()=>ReadableStream<Uint8Array>},onListening?:(port:number)=>void,identity?:{owner?:string,pinnedUdid?:string|null,platform?:'android'},fallbackPort?:boolean,requests?:Record<string,import('effect').Schema.ConstraintDecoder<unknown>>,validateResponse?:(name:string,raw:unknown,request?:unknown)=>void}} options */
+/** @param {{port:number,instanceId:string,html:string,mjpeg:string,mjpegSocket?:string,helperAuth?:ReturnType<typeof import('./helper-auth.mjs').createHelperAuthentication>,dispatch:(name:string,body:unknown,signal:AbortSignal)=>Promise<{status:number,body:unknown}>,statusEvents?:{stream:()=>ReadableStream<Uint8Array>},closing?:AbortSignal,onListening?:(port:number)=>void,identity?:{owner?:string,pinnedUdid?:string|null,platform?:'android'},fallbackPort?:boolean,requests?:Record<string,import('effect').Schema.ConstraintDecoder<unknown>>,validateResponse?:(name:string,raw:unknown,request?:unknown)=>void}} options */
 export function startServer({
   port,
   instanceId,
@@ -155,6 +155,7 @@ export function startServer({
   helperAuth,
   dispatch,
   statusEvents,
+  closing,
   onListening,
   identity = {},
   fallbackPort = false,
@@ -171,6 +172,16 @@ export function startServer({
     "x-frame-options": "DENY",
     "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   };
+  // A closing server ends its endless responses itself. Bun otherwise waits for
+  // each client to hang up, and a mirror page never does.
+  const untilClosing = closing
+    ? Effect.callback((resume) => {
+        const done = () => resume(Effect.void);
+        if (closing.aborted) return done();
+        closing.addEventListener("abort", done, { once: true });
+        return Effect.sync(() => closing.removeEventListener("abort", done));
+      })
+    : Effect.never;
   /** @param {{status:number,body:unknown}} response */
   const json = (response) =>
     HttpServerResponse.jsonUnsafe(response.body, { status: response.status, headers });
@@ -217,13 +228,22 @@ export function startServer({
         if (request.method === "GET" && url.pathname === "/api/diagnostics") {
           return json({ status: 200, body: observability.snapshot() });
         }
+        if (
+          closing?.aborted &&
+          request.method === "GET" &&
+          (url.pathname === "/api/events" || url.pathname === "/stream")
+        )
+          return json(errorResponse(apiError("Mirror closed", 503, "session closed")));
         if (request.method === "GET" && url.pathname === "/api/events" && statusEvents) {
           const parent = yield* Effect.currentSpan;
           return HttpServerResponse.stream(
             Stream.fromReadableStream({
               evaluate: () => statusEvents.stream(),
               onError: (e) => e,
-            }).pipe(Stream.withSpan("status.events", { parent })),
+            }).pipe(
+              Stream.interruptWhen(untilClosing),
+              Stream.withSpan("status.events", { parent }),
+            ),
             {
               headers: {
                 ...headers,
@@ -243,7 +263,10 @@ export function startServer({
           );
           const parent = yield* Effect.currentSpan;
           return HttpServerResponse.stream(
-            video.stream.pipe(Stream.withSpan("video.stream", { parent })),
+            video.stream.pipe(
+              Stream.interruptWhen(untilClosing),
+              Stream.withSpan("video.stream", { parent }),
+            ),
             {
               // WebKit's multipart response loader rejects fetch().body reads.
               // Our canvas decoder needs the original framed bytes, without the

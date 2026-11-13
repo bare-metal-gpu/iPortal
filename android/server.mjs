@@ -131,6 +131,9 @@ export async function runAndroid(opts, positionals) {
   let transport = new AbortController();
   let quality = "balanced";
   let shuttingDown = false;
+  // Ends the long-lived HTTP responses (status events, video) when the server
+  // closes, so an open mirror page cannot hold the process and its device lease.
+  const closing = new AbortController();
   /** @type {string | null} */
   let problem = adb.available
     ? null
@@ -495,13 +498,16 @@ export async function runAndroid(opts, positionals) {
     portalStatus.stop();
     stopHelperEvents();
     statusEvents.stop();
+    closing.abort();
     monitor?.stop();
     // The helper would exit by itself once nothing talks to it; ending it now
     // releases the device's automation connection immediately.
     if (helper.cached) await helper.command("shutdown", {}, { timeout: 750 }).catch(() => {});
     transport.abort(apiError("Mirror closed", 409, "session closed"));
     for (const tunnel of tunnels) tunnel.destroy();
-    await observability.close();
+    // Receipts are already durable: an unfinished command is marked unknown by
+    // the next server. Nothing else is worth holding the lease for.
+    await observability.close(1000);
     process.exit();
   }
   process.on("SIGINT", () => void shutdown());
@@ -531,6 +537,7 @@ export async function runAndroid(opts, positionals) {
     helperAuth,
     dispatch,
     statusEvents,
+    closing: closing.signal,
     identity: opts.owner
       ? { owner: opts.owner, pinnedUdid: pinned, platform: "android" }
       : { platform: "android" },

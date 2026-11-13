@@ -168,6 +168,21 @@ test("a tolerated miss is probed again at the retry cadence, not the ready one",
   }
 });
 
+test("stopping ends every open event stream and refuses new ones", async () => {
+  const hub = createStatusEvents({ read: async () => ({ lifecycle: "ready" }) });
+  await hub.refresh();
+  const reader = hub.stream().getReader();
+  assert.equal(decode((await reader.read()).value).lifecycle, "ready");
+  const cancelled = hub.stream().getReader();
+  await cancelled.cancel();
+  hub.stop();
+  // Drain whatever was queued before the stop; the stream must then end.
+  let chunk = await reader.read();
+  for (let i = 0; i < 5 && !chunk.done; i++) chunk = await reader.read();
+  assert.equal(chunk.done, true, "an open stream would hold a closing HTTP server");
+  assert.equal((await hub.stream().getReader().read()).done, true);
+});
+
 test("usbmux events handle fragmented/coalesced frames and fall back after listener failure", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "iportal-usb-"));
   const address = path.join(directory, "mux");

@@ -525,9 +525,22 @@ export function createObservability({
           ),
         );
     },
-    async close() {
+    // Closing the scope interrupts the HTTP server, which then waits for its
+    // open connections. A process on its way out passes a deadline: it must
+    // not keep its device lease for a response nobody is going to finish.
+    async close(deadlineMs?: number) {
       if (closed) return;
-      await Effect.runPromise(Scope.close(scope, Exit.void));
+      const closing = Effect.runPromise(Scope.close(scope, Exit.void));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await (deadlineMs === undefined
+        ? closing
+        : Promise.race([
+            closing,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, deadlineMs);
+            }),
+          ]));
+      clearTimeout(timer);
       for (const span of active) span.end(BigInt(Date.now()) * 1_000_000n, Exit.interrupt());
       closed = true;
     },

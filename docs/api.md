@@ -277,6 +277,11 @@ fresh answer), and the helper checks lock state and guards again natively. Again
 helper that is really gone the command fails as it would have before, `not executed`
 if nothing was dispatched. `observedAt` tells a client how old the verification is.
 
+When the server closes (SIGTERM, SIGINT or the Mac app closing the mirror) it ends
+`/api/events` and `/stream` itself instead of waiting for clients to disconnect, and
+answers new requests for them with 503 `session closed`. Treat the end of the event
+stream as a lost server, as for any broken stream.
+
 ## Clipboard
 
 `POST /api/clipboard-read {}` reads the selected device’s clipboard. Returns

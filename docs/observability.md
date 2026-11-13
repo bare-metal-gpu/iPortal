@@ -71,7 +71,9 @@ replays a command or releases the command executor early.
 `Effect.withSpan`, `Tracer.NativeSpan`, `Metric` counters/gauges/histograms and
 runtime fiber metrics. `FiberSet` belongs to an explicit `Scope`; completed fibers
 remove themselves, and shutdown interrupts remaining tracked work after device
-teardown. A small AsyncLocalStorage adapter carries Effect span identity through
+teardown. A closing server ends its event and video responses first and gives that
+interruption one second, so an open page cannot keep the process and its per-device
+lease alive; command receipts are already on disk by then. A small AsyncLocalStorage adapter carries Effect span identity through
 the existing Promise queue without replacing its ownership or deadline logic.
 
 The regression suite covers parentage across queued work, per-owner isolation,

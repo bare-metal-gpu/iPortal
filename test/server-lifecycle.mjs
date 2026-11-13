@@ -1,8 +1,17 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import net from "node:net";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { randomBytes } from "node:crypto";
 import { Effect, Stream } from "effect";
 import { openVideoStream, readBody } from "../server.mjs";
+import { startFakeIphone } from "./fake-iphone.mjs";
+import { serverCommand, runtimeEnvironment } from "./server-command.mjs";
+import { readJSON } from "./json.mjs";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -120,5 +129,180 @@ test("connection deadline does not truncate a healthy long-lived stream", async 
     assert.equal(Buffer.concat(frames.map((x) => Buffer.from(x))).toString(), "frame".repeat(5));
   } finally {
     await source.close();
+  }
+});
+
+// A managed server as the Mac app starts one, on a port the system picks.
+function startMirror(scratch, args, env) {
+  const child = spawn(
+    serverCommand[0],
+    [
+      ...serverCommand.slice(1),
+      "--no-open",
+      "--managed",
+      "--owner",
+      "test",
+      "--port",
+      "0",
+      ...args,
+    ],
+    {
+      cwd: scratch,
+      env: { ...runtimeEnvironment(scratch), IPORTAL_LOG_LEVEL: "None", ...env },
+      stdio: ["ignore", "pipe", "inherit"],
+    },
+  );
+  let output = "";
+  child.stdout.on("data", (chunk) => {
+    output += chunk;
+  });
+  return {
+    child,
+    async base() {
+      for (let i = 0; i < 200; i++) {
+        const port = output.match(/"event":"iportal-listening".*"port":(\d+)/)?.[1];
+        if (port) return `http://127.0.0.1:${port}`;
+        assert.equal(child.exitCode, null, "server must stay up");
+        await wait(25);
+      }
+      throw new Error("server did not start");
+    },
+    // The interval a closed mirror keeps its device lease.
+    async terminate() {
+      const exited = once(child, "exit");
+      const started = performance.now();
+      child.kill("SIGTERM");
+      const guard = setTimeout(() => child.kill("SIGKILL"), 8000);
+      await exited;
+      clearTimeout(guard);
+      return performance.now() - started;
+    },
+  };
+}
+/** @param {string} url */
+async function openStream(url) {
+  const response = await fetch(url);
+  assert.equal(response.status, 200);
+  assert(response.body);
+  return response.body.getReader();
+}
+// Resolves when the server ends the response, however it ends it.
+/** @param {{read: () => Promise<{done: boolean}>}} reader */
+function ended(reader) {
+  return (async () => {
+    try {
+      while (!(await reader.read()).done);
+    } catch {
+      /* A reset connection is also an ended response. */
+    }
+  })();
+}
+
+test("SIGTERM exits promptly under open event and video streams, and keeps the receipt", async () => {
+  const scratch = fs.mkdtempSync("/tmp/iportal-term-");
+  const udid = `${randomBytes(4).toString("hex")}-${randomBytes(8).toString("hex")}`.toUpperCase();
+  const fake = startFakeIphone({
+    helperPort: 18340,
+    socketPath: path.join(scratch, "mux.sock"),
+  });
+  fake.ui.devices = [{ id: 7, udid, connection: "USB" }];
+  const env = {
+    IPORTAL_HELPER_TOKEN: fake.helperToken,
+    USBMUXD_SOCKET_ADDRESS: path.join(scratch, "mux.sock"),
+    IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
+  };
+  const mirrors = [];
+  try {
+    const first = startMirror(scratch, ["--udid", udid], env);
+    mirrors.push(first);
+    const base = await first.base();
+    for (let i = 0; i < 100; i++) {
+      if ((await readJSON(await fetch(`${base}/api/status`))).lifecycle === "ready") break;
+      await wait(50);
+    }
+    // What an open mirror page holds: the status stream and the video stream.
+    const events = await openStream(`${base}/api/events`);
+    const video = await openStream(`${base}/stream`);
+    assert.ok((await events.read()).value?.length);
+    assert.ok((await video.read()).value?.length);
+    // And a command the phone has started but not acknowledged.
+    fake.ui.delayMs = 15000;
+    const command = fetch(`${base}/api/home`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId: "interrupted-by-close" }),
+    }).then(
+      (response) => readJSON(response),
+      () => null,
+    );
+    for (let i = 0; i < 100 && !fake.log.some((entry) => entry.operation === "home"); i++)
+      await wait(20);
+    assert.ok(
+      fake.log.some((entry) => entry.operation === "home"),
+      "command reached the phone",
+    );
+
+    const streamsEnded = Promise.all([ended(events), ended(video)]);
+    const elapsed = await first.terminate();
+    assert.ok(elapsed < 1500, `exit took ${Math.round(elapsed)} ms with a page open`);
+    await streamsEnded;
+    const reply = await command;
+    if (reply) assert.equal(reply.outcome, "unknown", "an interrupted input is never a success");
+
+    // The lease is free at once, and the next server knows the outcome is unknown.
+    fake.ui.delayMs = 0;
+    const second = startMirror(scratch, ["--udid", udid], env);
+    mirrors.push(second);
+    const receipt = await readJSON(
+      await fetch(`${await second.base()}/api/commands/interrupted-by-close`),
+    );
+    assert.equal(receipt.value.state, "unknown");
+    assert.equal(receipt.value.response.body.outcome, "unknown");
+    assert.ok((await second.terminate()) < 1500);
+  } finally {
+    for (const mirror of mirrors) if (mirror.child.exitCode === null) mirror.child.kill("SIGKILL");
+    fake.close();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("the Android composition also exits promptly under an open event stream", async () => {
+  const scratch = fs.mkdtempSync("/tmp/iportal-term-");
+  // Neither a real adb nor a real device: an executable that does nothing and
+  // an adb server with an empty device list.
+  const adb = path.join(scratch, "adb");
+  fs.writeFileSync(adb, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const sockets = new Set();
+  const adbServer = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+    socket.once("data", () => socket.write("OKAY0000"));
+  });
+  await new Promise((resolve) => adbServer.listen(0, "127.0.0.1", () => resolve(undefined)));
+  let mirror;
+  try {
+    mirror = startMirror(
+      scratch,
+      ["--platform", "android", "--udid", `TEST${randomBytes(6).toString("hex")}`],
+      {
+        ADB: adb,
+        ANDROID_ADB_SERVER_PORT: String(
+          /** @type {import("node:net").AddressInfo} */ (adbServer.address()).port,
+        ),
+        IPORTAL_COMMANDS_FILE: path.join(scratch, "commands.json"),
+      },
+    );
+    const events = await openStream(`${await mirror.base()}/api/events`);
+    assert.match(new TextDecoder().decode((await events.read()).value), /"platform":"android"/);
+    const streamEnded = ended(events);
+    const elapsed = await mirror.terminate();
+    assert.ok(elapsed < 1500, `exit took ${Math.round(elapsed)} ms with a page open`);
+    await streamEnded;
+  } finally {
+    if (mirror?.child.exitCode === null) mirror.child.kill("SIGKILL");
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => adbServer.close(resolve));
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 });

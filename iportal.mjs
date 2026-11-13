@@ -460,6 +460,9 @@ let helperProblem = null;
 let forceHelperInstall = false;
 let repairedHelperInstall = false;
 let shuttingDown = false;
+// Ends the long-lived HTTP responses (status events, video) when the server
+// closes, so an open mirror page cannot hold the process and its device lease.
+const closing = new AbortController();
 const startupLock = createStartupLock({ changed: () => statusEvents.invalidate() });
 /** @param {string} udid @param {string | number} connectionID @param {string} [address] */
 async function maybeStartHelper(udid, connectionID, address) {
@@ -666,6 +669,7 @@ async function shutdown() {
   portalStatus.stop();
   stopHelperEvents();
   statusEvents.stop();
+  closing.abort();
   usbMonitor?.stop();
   pairedMonitor?.stop();
   if (helperProcess) await helper.command("shutdown", {}, { timeout: 750 }).catch(() => {});
@@ -685,7 +689,9 @@ async function shutdown() {
       clearTimeout(timer);
     }
   }
-  await observability.close();
+  // Receipts are already durable: an unfinished command is marked unknown by
+  // the next server. Nothing else is worth holding the lease for.
+  await observability.close(1000);
   process.exit();
 }
 process.on("SIGINT", () => void shutdown());
@@ -893,6 +899,7 @@ startServer({
   helperAuth,
   dispatch,
   statusEvents,
+  closing: closing.signal,
   identity: opts.owner ? { owner: opts.owner, pinnedUdid } : {},
   fallbackPort: opts.managed,
   onListening: (port) => {
