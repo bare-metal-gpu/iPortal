@@ -22,6 +22,7 @@ try {
 import CoreImage
 import CoreVideo
 import AVFoundation
+import Network
 ${source}
 // Compile the entire production pipeline, including callbacks and SDK API
 // availability. These collaborators replace only the window/process boundary.

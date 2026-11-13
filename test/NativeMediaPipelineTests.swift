@@ -136,3 +136,187 @@ func nativeMediaCodecRoundtrip() throws {
 }
 
 try nativeMediaCodecRoundtrip()
+
+// An Android helper's stream: the same records over HTTP, with H.264 parameter
+// sets (kind 10) where the phone has no hardware HEVC encoder, uncompressed
+// sound (kind 9), and its own "screen unchanged" and capability records.
+extension NativeMediaReceiver {
+    func testIngest(_ data: Data) -> Bool { ingest(data) }
+}
+
+final class HelperStreamEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var unchangedTimes: [UInt32] = []
+    private var negotiated: [PairedCapabilities] = []
+    func unchanged(_ time: UInt32) { lock.lock(); unchangedTimes.append(time); lock.unlock() }
+    func capabilities(_ value: PairedCapabilities) { lock.lock(); negotiated.append(value); lock.unlock() }
+    var times: [UInt32] { lock.lock(); defer { lock.unlock() }; return unchangedTimes }
+    var audio: [String] { lock.lock(); defer { lock.unlock() }; return negotiated.map(\.audio) }
+}
+
+func helperMediaRecord(_ kind: UInt32, flags: UInt32 = 0, time: UInt32 = 0, _ body: Data = Data()) -> Data {
+    var record = Data()
+    for word in [kind, flags, time, UInt32(body.count)] {
+        var value = word.bigEndian
+        withUnsafeBytes(of: &value) { record.append(contentsOf: $0) }
+    }
+    record.append(body)
+    return record
+}
+
+func helperMediaStreamRoundtrip() throws -> Data {
+    var candidate: VTCompressionSession?
+    precondition(VTCompressionSessionCreate(allocator: nil, width: 64, height: 96,
+        codecType: kCMVideoCodecType_H264, encoderSpecification: nil,
+        imageBufferAttributes: nil, compressedDataAllocator: nil, outputCallback: nil,
+        refcon: nil, compressionSessionOut: &candidate) == noErr)
+    let encoder = candidate!
+    defer { VTCompressionSessionInvalidate(encoder) }
+    precondition(VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue) == noErr)
+    precondition(VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse) == noErr)
+    let encoded = EncodedMediaSamples()
+    for index in 0..<10 {
+        var createdImage: CVPixelBuffer?
+        precondition(CVPixelBufferCreate(nil, 64, 96, kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary, &createdImage) == kCVReturnSuccess)
+        let image = createdImage!
+        CVPixelBufferLockBaseAddress(image, [])
+        memset(CVPixelBufferGetBaseAddress(image)!, Int32(40 + index * 10), CVPixelBufferGetDataSize(image))
+        CVPixelBufferUnlockBaseAddress(image, [])
+        precondition(VTCompressionSessionEncodeFrame(encoder, imageBuffer: image,
+            presentationTimeStamp: CMTime(value: Int64(index), timescale: 60),
+            duration: CMTime(value: 1, timescale: 60), frameProperties: nil,
+            infoFlagsOut: nil) { status, _, sample in encoded.add(status: status, sample: sample) } == noErr)
+    }
+    precondition(VTCompressionSessionCompleteFrames(encoder, untilPresentationTimeStamp: .invalid) == noErr)
+    let samples = encoded.samples
+    precondition(samples.count == 10)
+    let description = CMSampleBufferGetFormatDescription(samples[0])!
+    var parameters = Data()
+    for index in 0..<2 {
+        var pointer: UnsafePointer<UInt8>?, size = 0, count = 0, length: Int32 = 0
+        precondition(CMVideoFormatDescriptionGetH264ParameterSetAtIndex(description,
+            parameterSetIndex: index, parameterSetPointerOut: &pointer,
+            parameterSetSizeOut: &size, parameterSetCountOut: &count,
+            nalUnitHeaderLengthOut: &length) == noErr)
+        precondition(count == 2 && length == 4)
+        var sizeBytes = UInt32(size).bigEndian
+        withUnsafeBytes(of: &sizeBytes) { parameters.append(contentsOf: $0) }
+        parameters.append(pointer!, count: size)
+    }
+    var stream = helperMediaRecord(7, Data(#"{"control":"eligible","video":"supported","audio":"unavailable"}"#.utf8))
+    stream.append(helperMediaRecord(10, parameters))
+    for (index, sample) in samples.enumerated() {
+        let block = CMSampleBufferGetDataBuffer(sample)!
+        var bytes = Data(count: CMBlockBufferGetDataLength(block))
+        precondition(bytes.withUnsafeMutableBytes {
+            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!)
+        } == noErr)
+        stream.append(helperMediaRecord(1, flags: index == 0 ? 1 : 0, time: UInt32(index * 1500), bytes))
+    }
+    stream.append(helperMediaRecord(8, time: 9 * 1500))
+    let lifetime = CaptureLifetime(), frames = FrameStore(), events = HelperStreamEvents()
+    let failures = MediaTestEvents()
+    let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames,
+        capabilities: { events.capabilities($0) }, unchanged: { events.unchanged($0) },
+        failed: { failures.record("failed") })
+    // The network delivers records in arbitrary pieces.
+    var offset = 0
+    while offset < stream.count {
+        let end = min(stream.count, offset + 7 + offset % 5)
+        precondition(receiver.testIngest(stream.subdata(in: offset..<end)))
+        offset = end
+    }
+    let deadline = Date(timeIntervalSinceNow: 5)
+    while frames.samples.last.map({ CMSampleBufferGetPresentationTimeStamp($0).value }) != 9 * 1500, Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.005)
+    }
+    let decoded = frames.samples
+    precondition(decoded.last.map { CMSampleBufferGetPresentationTimeStamp($0).value } == 9 * 1500,
+        "The final H.264 frame must be decoded")
+    let pixel = CMSampleBufferGetImageBuffer(decoded.last!)!
+    precondition(CVPixelBufferGetWidth(pixel) == 64 && CVPixelBufferGetHeight(pixel) == 96)
+    precondition(events.times == [9 * 1500], "The still-screen record names the frame it confirms")
+    precondition(events.audio == ["unavailable"])
+    precondition(failures.count("failed") == 0)
+    precondition(!receiver.testIngest(helperMediaRecord(10, parameters.dropLast(1))), "Truncated parameter sets end the stream")
+    precondition(failures.count("failed") == 1)
+    precondition(!receiver.testIngest(helperMediaRecord(99)), "Unknown records end the stream")
+    lifetime.cancel()
+    receiver.testRetireDecoder()
+    receiver.stop()
+    print("Native media: a helper stream split across reads decodes H.264, confirms a still screen and reports capabilities.")
+    return stream
+}
+
+// The same stream as the session server relays it: an HTTP response that
+// never ends. Frames must reach the decoder while it is still open, and its
+// end must be reported so the window can fall back.
+func helperMediaOverHTTP(_ stream: Data) throws {
+    let listener = try NWListener(using: .tcp, on: .any)
+    let serving = DispatchQueue(label: "helper-media-test")
+    let accepted = DispatchSemaphore(value: 0), ready = DispatchSemaphore(value: 0)
+    final class Connection: @unchecked Sendable { var value: NWConnection? }
+    let client = Connection()
+    listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+    listener.newConnectionHandler = { connection in
+        client.value = connection
+        connection.start(queue: serving)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\nconnection: close\r\n\r\n"
+            let cut = stream.count / 2
+            connection.send(content: Data(head.utf8) + stream.prefix(cut), completion: .contentProcessed { _ in })
+            serving.asyncAfter(deadline: .now() + 0.2) {
+                connection.send(content: stream.suffix(from: cut), completion: .contentProcessed { _ in accepted.signal() })
+            }
+        }
+    }
+    listener.start(queue: serving)
+    precondition(ready.wait(timeout: .now() + 3) == .success)
+    let lifetime = CaptureLifetime(), frames = FrameStore(), events = HelperStreamEvents()
+    let failures = MediaTestEvents()
+    let receiver = NativeMediaReceiver(lifetime: lifetime, frames: frames,
+        capabilities: { events.capabilities($0) }, unchanged: { events.unchanged($0) },
+        failed: { failures.record("failed") })
+    receiver.start(url: URL(string: "http://127.0.0.1:\(listener.port!.rawValue)/media")!, device: "synthetic-android")
+    precondition(accepted.wait(timeout: .now() + 5) == .success)
+    let deadline = Date(timeIntervalSinceNow: 5)
+    while events.times.isEmpty || frames.samples.last.map({ CMSampleBufferGetPresentationTimeStamp($0).value }) != 9 * 1500, Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.005)
+    }
+    precondition(frames.samples.last.map { CMSampleBufferGetPresentationTimeStamp($0).value } == 9 * 1500,
+        "Frames must be decoded while the response is still open")
+    precondition(events.times == [9 * 1500] && failures.count("failed") == 0)
+    // Android frames arrive as the phone shows them; the iPhone's rotation
+    // must not be applied on top.
+    receiver.setOrientation("LANDSCAPE")
+    let landscape = Mirror(reflecting: receiver).children.first { $0.label == "rotation" }!.value as! NativeMediaRotation
+    let unrotated = CMSampleBufferGetImageBuffer(frames.samples.last!)!
+    precondition(landscape.apply(unrotated) === unrotated)
+    client.value?.cancel()
+    let ended = Date(timeIntervalSinceNow: 5)
+    while failures.count("failed") == 0, Date() < ended { Thread.sleep(forTimeInterval: 0.005) }
+    precondition(failures.count("failed") == 1, "The end of the helper's stream is a capture failure")
+    listener.cancel()
+    lifetime.cancel()
+    receiver.stop()
+    print("Native media: a helper stream over HTTP decodes while open, is not rotated again, and reports its end.")
+}
+try helperMediaOverHTTP(try helperMediaStreamRoundtrip())
+
+let pcmFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+var pcmPacket = Data()
+for frame in 0..<480 {
+    // Left ramps up from silence, right holds full negative scale.
+    for sample in [Int16(frame), Int16.min] {
+        pcmPacket.append(UInt8(truncatingIfNeeded: sample)); pcmPacket.append(UInt8(truncatingIfNeeded: sample >> 8))
+    }
+}
+let pcmBuffer = nativeAudioPCMBuffer(pcmPacket, format: pcmFormat)!
+precondition(pcmBuffer.frameLength == 480)
+precondition(pcmBuffer.floatChannelData![0][0] == 0 && pcmBuffer.floatChannelData![0][479] == 479.0 / 32768)
+precondition(pcmBuffer.floatChannelData![1][0] == -1 && pcmBuffer.floatChannelData![1][479] == -1)
+precondition(nativeAudioPCMBuffer(pcmPacket.dropLast(1), format: pcmFormat) == nil, "A torn sample frame is not audio")
+precondition(nativeAudioPCMBuffer(Data(), format: pcmFormat) == nil)
+precondition(nativeAudioPCMBuffer(Data(count: 4801 * 4), format: pcmFormat) == nil, "Oversized packets are refused")
+print("Native audio: 16-bit little-endian stereo PCM packets convert exactly and malformed ones are refused.")

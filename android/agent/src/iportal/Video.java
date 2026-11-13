@@ -14,7 +14,7 @@ import java.nio.ByteBuffer;
 /**
  * Basic video: the default display mirrored into JPEG frames, for the browser
  * client and for the Mac window's fallback path. It runs only while a client is
- * connected. Native H.264/HEVC for the Mac window is a separate, later stream.
+ * connected. The Mac window's native stream is {@link Media}.
  */
 final class Video {
   private HandlerThread thread;
@@ -70,6 +70,13 @@ final class Video {
     return frame == null ? null : new Object[] {frame, sequence};
   }
 
+  /** A virtual display that mirrors the default display into {@code surface}. */
+  static VirtualDisplay mirror(String name, int width, int height, Surface surface) throws Exception {
+    return (VirtualDisplay) Class.forName("android.hardware.display.DisplayManager")
+        .getMethod("createVirtualDisplay", String.class, int.class, int.class, int.class, Surface.class)
+        .invoke(null, name, width, height, 0, surface);
+  }
+
   private void teardown() {
     if (display != null) display.release();
     if (reader != null) reader.close();
@@ -93,9 +100,7 @@ final class Video {
       ImageReader next = ImageReader.newInstance(nextWidth, nextHeight, PixelFormat.RGBA_8888, 2);
       next.setOnImageAvailableListener(ignored -> capture(), handler);
       if (display == null) {
-        display = (VirtualDisplay) Class.forName("android.hardware.display.DisplayManager")
-            .getMethod("createVirtualDisplay", String.class, int.class, int.class, int.class, Surface.class)
-            .invoke(null, "iportal", nextWidth, nextHeight, 0, next.getSurface());
+        display = mirror("iportal", nextWidth, nextHeight, next.getSurface());
       } else {
         display.resize(nextWidth, nextHeight, 160);
         display.setSurface(next.getSurface());

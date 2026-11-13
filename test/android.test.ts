@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import net from "node:net";
-import { Schema } from "effect";
+import { Effect, Fiber, Schema } from "effect";
 import {
   createAdb,
   locateAdb,
@@ -17,6 +17,8 @@ import {
   validateAndroidResponse,
 } from "../android/protocol.ts";
 import { RequestSchemas } from "../schemas.ts";
+import { startServer } from "../server.mjs";
+import { createHelperAuthentication } from "../helper-auth.mjs";
 import { helperOperations, iosHelperProtocol } from "../helper-protocol.ts";
 import { validatePublicResponse } from "../responses.ts";
 
@@ -221,5 +223,100 @@ test("talks to the adb server: list, track and tunnel", async () => {
     expect(seen).toContain("host:transport:25271JEGR16740");
   } finally {
     server.close();
+  }
+});
+
+test("the media route proxies the helper's framed stream with its credential, only where a helper has one", async () => {
+  // Two records as the Android helper frames them: capabilities, then PCM.
+  const record = (kind: number, time: number, body: Uint8Array) => {
+    const bytes = new Uint8Array(16 + body.length);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, kind);
+    view.setUint32(8, time);
+    view.setUint32(12, body.length);
+    bytes.set(body, 16);
+    return bytes;
+  };
+  const records = [
+    record(
+      7,
+      0,
+      new TextEncoder().encode('{"control":"eligible","video":"supported","audio":"supported"}'),
+    ),
+    record(9, 480, new Uint8Array(1920).fill(3)),
+  ];
+  const helperAuth = createHelperAuthentication();
+  const seen: { path: string; authorization: string | null }[] = [];
+  const queries: string[] = [];
+  let authenticated = true;
+  const helper = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      queries.push(new URL(request.url).search);
+      seen.push({
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("authorization"),
+      });
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            for (const bytes of records) controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+        { headers: authenticated ? { "x-iportal-helper-auth": "1" } : {} },
+      );
+    },
+  });
+  const start = (media?: string) => {
+    const listening = Promise.withResolvers<number>();
+    const server = startServer({
+      port: 0,
+      instanceId: "media-test",
+      html: "",
+      mjpeg: "http://127.0.0.1:1",
+      media,
+      helperAuth,
+      dispatch: async () => ({ status: 200, body: { ok: true } }),
+      onListening: listening.resolve,
+    });
+    return { server, port: listening.promise };
+  };
+  const android = start(`http://127.0.0.1:${helper.port}/v1/media`);
+  const iphone = start();
+  try {
+    const base = `http://127.0.0.1:${await android.port}`;
+    const response = await fetch(`${base}/media`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+      new Uint8Array(Buffer.concat(records)),
+    );
+    expect(seen).toEqual([{ path: "/v1/media", authorization: helperAuth.headers.authorization }]);
+
+    // Only the one switch the helper knows is passed on.
+    await (await fetch(`${base}/media?audio=0&other=1`)).arrayBuffer();
+    expect(queries).toEqual(["", "?audio=0"]);
+    seen.length = 1;
+
+    // The same host protections as every other route.
+    const foreign = await fetch(`${base}/media`, { headers: { origin: "https://evil.example" } });
+    expect(foreign.status).toBe(403);
+    expect(seen.length).toBe(1);
+
+    // A stream from something that is not this session's helper is refused.
+    authenticated = false;
+    const impostor = await fetch(`${base}/media`);
+    expect(impostor.status).toBe(503);
+    await impostor.body?.cancel();
+
+    // The iPhone composition passes no media source and keeps answering 404.
+    const absent = await fetch(`http://127.0.0.1:${await iphone.port}/media`);
+    expect(absent.status).toBe(404);
+  } finally {
+    await helper.stop(true);
+    await Effect.runPromise(Fiber.interrupt(android.server));
+    await Effect.runPromise(Fiber.interrupt(iphone.server));
   }
 });
