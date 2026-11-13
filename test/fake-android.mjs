@@ -92,6 +92,8 @@ function createPhone(serial, { model = "Pixel 6a", wireless = null, build }) {
   let nextPid = 4000;
   const ui = {
     locked: /** @type {boolean | null} */ (false),
+    // Screen on. A locked phone with its screen on shows the keyguard and takes input.
+    interactive: true,
     app: "com.android.settings",
     orientation: "PORTRAIT",
     size: { width: 1080, height: 2400 },
@@ -293,8 +295,11 @@ function createPhone(serial, { model = "Pixel 6a", wireless = null, build }) {
           if (command.generation !== helper.generation)
             return fail("stale generation", "The helper restarted");
           if (phone.faults.error) return fail(phone.faults.error);
-          const guarded = (needsUnlocked = true) => {
-            if (needsUnlocked && ui.locked) fail("device locked", "Unlock the device");
+          // "screen": needs the screen on only (touch, typing, keys, Home).
+          // true: needs the phone unlocked. false: allowed in any state.
+          const guarded = (/** @type {boolean | "screen"} */ needs = true) => {
+            if (needs === "screen" && !ui.interactive) fail("device locked", "Wake the device");
+            else if (needs === true && ui.locked) fail("device locked", "Unlock the device");
             else if (args.expectedBundleId && args.expectedBundleId !== ui.app)
               fail("app changed", "Foreground app changed");
             else if (args.expectedOrientation && args.expectedOrientation !== ui.orientation)
@@ -320,19 +325,21 @@ function createPhone(serial, { model = "Pixel 6a", wireless = null, build }) {
             index,
           });
           switch (operation) {
+            case "power":
+              return reply({ interactive: ui.interactive });
             case "touch":
-              if (!guarded()) return;
+              if (!guarded("screen")) return;
               entry.executed = true;
               return reply({
                 completed: true,
                 timing: { guardMs: 1, playbackMs: args.end, confirmationMs: 0 },
               });
             case "text":
-              if (!guarded()) return;
+              if (!guarded("screen")) return;
               ui.typed += args.text;
               return reply(null);
             case "key":
-              if (!guarded()) return;
+              if (!guarded("screen")) return;
               // The server sends the Mac's Command; the helper maps it to Control.
               if (args.modifiers.includes("command") && "cx".includes(args.key) && ui.selection) {
                 ui.clipboard = {
@@ -343,7 +350,7 @@ function createPhone(serial, { model = "Pixel 6a", wireless = null, build }) {
               }
               return reply(null);
             case "home":
-              if (!guarded()) return;
+              if (!guarded("screen")) return;
               ui.app = "com.google.android.apps.nexuslauncher";
               return reply(null);
             case "button":
@@ -352,7 +359,9 @@ function createPhone(serial, { model = "Pixel 6a", wireless = null, build }) {
             case "lock":
             case "unlock":
               if (!guarded(false)) return;
+              // Power off locks; Wake turns the screen on and an insecure keyguard goes.
               ui.locked = operation === "lock";
+              ui.interactive = operation === "unlock";
               reply(null);
               return notify();
             case "launch":

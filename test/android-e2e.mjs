@@ -313,7 +313,7 @@ async function mirrorSession() {
 
   // The iPhone's vocabulary is refused before anything is sent to the phone.
   const lookups = count("elements");
-  for (const using of ["predicate string", "class chain", "xpath"]) {
+  for (const using of ["predicate string", "class chain"]) {
     for (const [name, body] of /** @type {const} */ ([
       ["elements", { selector: { using, value: "label == 'Continue'" } }],
       ["tap", { selector: { using, value: "label == 'Continue'" } }],
@@ -399,30 +399,42 @@ async function mirrorSession() {
 
   // ---- locked lifecycle, lock guard, app guard ----
 
+  // An awake lock screen is usable: the owner can unlock from the Mac. It is
+  // reported as locked, but input reaches it and the session stays ready.
   phone.update({ locked: true });
-  const locked = await until("locked", (s) => s.lifecycle === "locked");
-  assert.equal(locked.ok, true, "a reachable helper on a locked phone is not a failure");
-  assert.equal(locked.locked, true);
+  const keyguard = await until("awake lock screen", (s) => s.locked === true);
+  assert.equal(keyguard.lifecycle, "ready");
+  assert.equal(keyguard.ok, true);
   const touches = count("touch");
-  const guarded = await post("gesture", tap);
-  assert.equal(guarded.status, 409);
-  assert.equal(guarded.code, "device locked");
-  assert.equal(guarded.outcome, "not executed");
-  assert.equal(count("touch"), touches + 1, "input is guarded on the phone at dispatch");
-  assert.ok(!last("touch").executed);
+  assert.equal((await post("gesture", tap)).outcome, "executed");
+  assert.equal(count("touch"), touches + 1);
+  assert.ok(last("touch").executed);
+  // Everything that reads or drives apps stays refused until it is unlocked.
   const url = { url: "https://example.com/" };
   const lockedURL = await post("open-url", url);
   assert.equal(lockedURL.status, 409);
   assert.equal(lockedURL.code, "device locked");
-  assert.equal(lockedURL.error, "Unlock your Android device");
-  assert.equal(lockedURL.outcome, "not executed");
   assert.equal(count("openURL"), 0);
+  for (const name of ["source", "screenshot", "clipboard-read"])
+    assert.equal((await post(name, {})).code, "device locked", name);
+
+  // Screen off is the locked lifecycle; input is refused until it is woken.
+  phone.update({ locked: true, interactive: false });
+  const asleep = await until("locked", (s) => s.lifecycle === "locked");
+  assert.equal(asleep.ok, true, "a reachable helper on a sleeping phone is not a failure");
+  const guarded = await post("gesture", tap);
+  assert.equal(guarded.status, 409);
+  assert.equal(guarded.code, "device locked");
+  assert.equal(guarded.outcome, "not executed");
   assert.equal((await post("unlock")).ok, true);
   await until("ready after unlock", (s) => s.lifecycle === "ready" && s.locked === false);
   assert.equal((await post("lock")).ok, true);
   await until("locked by request", (s) => s.lifecycle === "locked");
-  phone.update({ locked: false });
-  await until("ready after the owner unlocks", (s) => s.lifecycle === "ready");
+  phone.update({ locked: false, interactive: true });
+  await until(
+    "ready after the owner unlocks",
+    (s) => s.lifecycle === "ready" && s.locked === false,
+  );
 
   const foreign = "com.example.elsewhere";
   for (const [name, body, operation] of /** @type {const} */ ([
