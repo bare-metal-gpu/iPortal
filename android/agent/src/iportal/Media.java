@@ -481,6 +481,7 @@ final class Media {
             return;
           }
           recording = record;
+          if (source.equals("submix")) fullSubmixVolume();
           Agent.log("media audio: capturing from " + source);
           capabilities("supported");
           capture(record, source);
@@ -568,6 +569,25 @@ final class Media {
      * is the likely reason the feasibility probe captured its tone far too
      * quietly.
      */
+    /**
+     * The remote submix is an output device with its own media-volume setting,
+     * and while nothing has set it, it takes the phone's default index. On the
+     * test phone that was 8 of 25, which arrived 36 dB too quiet; the
+     * "fixedVolume" tag did not change it. Setting that one device to its
+     * maximum gives the full level and leaves the speaker's and every other
+     * device's volume as the owner set it.
+     */
+    private static void fullSubmixVolume() {
+      try {
+        String max = Device.run("cmd", "audio", "get-max-volume", "3").replaceAll("[^0-9]+", " ").trim();
+        String index = max.isEmpty() ? "15" : max.substring(max.lastIndexOf(' ') + 1);
+        // 3 is the media stream; 32768 is AUDIO_DEVICE_OUT_REMOTE_SUBMIX.
+        Device.run("cmd", "audio", "set-device-volume", "3", index, "32768");
+      } catch (Throwable error) {
+        Agent.log("media audio: could not raise the submix volume: " + Device.unwrap(error));
+      }
+    }
+
     private static AudioRecord submixCapture() throws Exception {
       try {
         AudioAttributes.Builder attributes = new AudioAttributes.Builder();

@@ -347,8 +347,11 @@ Observed behaviour worth knowing:
 
 - **The PIN pad is black in the mirror.** Android marks it as a secure window. The
   lock screen itself is shown, and typed digits and Enter still reach the pad.
-- **Native audio is unverified with real playback.** Native video runs on the
-  test phone; the helper captures audio, but its level has not been checked.
+- **Native audio is not confirmed by ear.** On the test phone the helper captures
+  a test tone at full level and sends it to the Mac; nobody has yet listened to
+  the Mac's output. The second capture path (playback capture, which would keep
+  the phone audible) does not work: it needs an application context the helper
+  does not have.
 - **Mac accessibility bridge on Android is unverified on a phone.** The bridge has
   an Android role table and the helper accepts the bridge's `xpath` paths.
 - **Clipboard images without the gallery.** A picture sent to the phone's
